@@ -1,0 +1,19 @@
+# Local, per-machine configuration (never committed — .env.example is the template)
+.env
+.env.*
+!.env.example
+
+# Local test artifacts — the workspace rule is "do not commit docker artifacts for testing"
+.test/
+*.log
+logs/
+
+# Generated wallet material (dev-only, but regenerate rather than commit)
+wallets/generated/
+
+# Build output / deps of the vendored app images
+node_modules/
+dist/
+build/
+
+.DS_Store
