@@ -10,17 +10,18 @@ A single Docker Compose project that brings up a complete local Midnight 2.x dem
 | offer-files kernel + Celestia | `offerfiles` | zswap offer-files sync node + batcher + local Celestia devnet — *Phase 4, not yet implemented* |
 | zswap-da frontend | `frontend` | React/Vite swap demo SPA — *Phase 5, not yet implemented* |
 
-**Everything here is dev-only.** The seeds and mnemonics in this repo are the well-known Midnight
-`CFG_PRESET=dev` genesis seeds. They hold value only on a throwaway local `undeployed` chain.
-Never reuse them anywhere else.
+**Everything here is dev-only.** Every seed in this repo is public: the genesis ones are the
+well-known Midnight `CFG_PRESET=dev` seeds, and the `demo-*` ones are obvious placeholders
+invented here. They control value only on a throwaway local `undeployed` chain. Never reuse any
+of them anywhere else.
 
 ## Status
 
 This repo is being built in phases (see the plan in the organizer workspace). Implemented so far:
 
 - [x] Phase 0 — repo scaffold
-- [ ] Phase 1 — Midnight core stack
-- [ ] Phase 2 — wallet funding tooling
+- [x] Phase 1 — Midnight core stack (node + indexer + proof-server)
+- [x] Phase 2 — wallet funding tooling (NIGHT + DUST)
 - [ ] Phase 3 — umbra-evm (read-only JSON-RPC)
 - [ ] Phase 4 — offer-files kernel + Celestia
 - [ ] Phase 5 — zswap-da frontend
@@ -29,11 +30,30 @@ This repo is being built in phases (see the plan in the organizer workspace). Im
 ## Quickstart
 
 ```bash
-cp .env.example .env     # then edit ports/tags if needed
-./up.sh                  # bring up the core stack and wait for health
-./verify.sh              # assert health + prefunded wallets
-./down.sh -v             # tear down, wiping all volumes
+cp .env.example .env                  # then edit ports/tags if needed
+./up.sh                               # bring up the core stack; blocks until it is usable
+./scripts/fund-wallet.sh --all-demo   # optional: fund the demo-* wallets
+./verify.sh                           # assert health + prefunded wallets
+./down.sh -v                          # tear down, wiping all state
 ```
+
+`up.sh` returns only when the stack is genuinely usable, which is stricter than "docker says
+healthy":
+
+| Service | What is waited on | Why not the healthcheck |
+|---|---|---|
+| node | RPC answers `chain_getBlockHash[1]`, **and** finalized height ≥ 1 | The node answers RPC several blocks before finality moves off genesis, and in that window the toolkit refuses to build transactions (`OnlyGenesisFinalized`) |
+| indexer | GraphQL v4 answers a block query | Its container healthcheck only proves the supervisor is alive — the entrypoint touches the running-file *before* launching the indexer |
+| proof-server | the port accepts a TCP connection | The image has no curl/wget, and its bash sits behind a per-tag `/nix/store/<hash>…` path |
+
+Default endpoints (all overridable in `.env`):
+
+| Endpoint | URL |
+|---|---|
+| node RPC | `http://127.0.0.1:9944` |
+| indexer GraphQL | `http://127.0.0.1:8088/api/v4/graphql` |
+| indexer GraphQL WS | `ws://127.0.0.1:8088/api/v4/graphql/ws` |
+| proof server | `http://127.0.0.1:6300` |
 
 ## Layout
 
@@ -80,9 +100,116 @@ The research basis for this stack lives in the `midnight-ref-ai` reference check
 | `effectstream/zswap-offerfiles-kernel@main` — `README.md`, `.env.preview.example`, `@effectstream/midnight-contracts/midnight-env` | The kernel's `MIDNIGHT_*` env resolution and its Celestia requirement |
 | `effectstream/effectstream@v-next` — `templates/zswap-da/src/config.ts` | The frontend's runtime endpoint resolution (`window.API_BASE` / `window.BATCHER_URL`) |
 
+## Wallets
+
+`wallets/wallets.json` is the manifest: every wallet this stack knows about, its seed, all
+its address forms, and whether it is funded by genesis or by the funding script. The
+addresses there are derived from `seed + networkId` only, so they stay valid across a
+`./down.sh -v` reset.
+
+### Prefunded at genesis — nothing to run
+
+`CFG_PRESET=dev` genesis funds these four wallets **and registers their DUST addresses**, so
+they can pay fees from the first block. Verified on node 2.0.0-rc.4: 5 unshielded NIGHT UTXOs
+of 50,000,000 NIGHT each (250,000,000 NIGHT total, i.e. 250,000,000,000,000 stars), 5 DUST
+UTXOs, DUST balance 1.25 × 10²⁴ specks.
+
+| Name | Seed | Role |
+|---|---|---|
+| `genesis-1` | `0x…0001` (32 bytes) | faucet — the default funding source for `fund-wallet.sh` |
+| `genesis-2` | `0x…0002` (32 bytes) | reserved as the offer-files batcher wallet (Phase 4) |
+| `genesis-3` | `0x…0003` (32 bytes) | spare prefunded wallet / second demo actor |
+| `lace-test` | `a51c86de…0593ec9` (64 bytes, 128 hex chars) | the wallet Lace uses for its own testing — import this one to drive the demo from Lace |
+
+Two things that are easy to get wrong here:
+
+- **`0x…0004` is NOT funded.** The seed list in midnight-node's
+  `scripts/genesis_wallets_test.sh` includes a fourth `0x…0004` seed, but on the published
+  `CFG_PRESET=dev` genesis that wallet is empty (0 UTXOs, 0 DUST). Only 01/02/03 and the
+  Lace seed are funded.
+- **The Lace seed is 128 hex characters**, not 64. It is a 64-byte seed and the toolkit
+  accepts it as-is wherever a `--seed` is taken.
+
+### Funding more wallets
+
+```bash
+# fund one wallet: NIGHT + DUST registration + wait until fees are payable
+./scripts/fund-wallet.sh <seed-or-address>
+
+# fund every wallets.json entry marked funding="fund-script" (demo-alice/bob/carol)
+./scripts/fund-wallet.sh --all-demo
+
+# same thing as a one-shot compose service instead of a host script
+docker compose --profile fund -f compose/core.yml run --rm fund
+
+# assert the genesis wallets are funded and fee-capable
+./scripts/verify-wallets.sh
+./scripts/verify-wallets.sh --include-script-funded   # after funding the demo wallets
+```
+
+Pass a **seed** whenever you can. Given a seed the script does the whole job: sends NIGHT,
+registers the DUST address, and waits for a spendable DUST UTXO. Given only an **address** it
+can only send NIGHT — DUST registration is a transaction signed by the wallet's own key, so
+the owner has to register before that wallet can pay a fee.
+
+**Why the default amount is 10,000,000 NIGHT.** DUST accrues in proportion to the NIGHT
+backing it, so the funded amount decides how soon the wallet can pay a fee — it is not about
+the demo needing that much value. Measured on this stack: a wallet funded with **100 NIGHT**
+gets its DUST UTXO immediately but still fails a transfer with
+`Insufficient DUST (trying to spend 260838254857211, need 102111854857211 more)`, and would
+need roughly 45 minutes of accrual to clear a single fee. Funded with **10,000,000 NIGHT** the
+same wallet pays its fees as soon as the DUST UTXO appears. Lower `--amount` only if you are
+prepared to wait.
+
 ## Token model gotchas
 
-*(filled in in Phase 2)*
+Distilled from `NIGHT-shielded-vs-unshielded-FINDINGS.md` in the reference checkout, and
+confirmed against this stack.
+
+- **`nativeToken()` returns *unshielded* NIGHT**, despite the name. `unshieldedToken()` is the
+  same thing; shielded NIGHT is `shieldedToken()`.
+- **Shielded and unshielded NIGHT share the same 32-zero-byte colour** and differ only by an
+  enum tag (`Unshielded=0`, `Shielded=1`, `Dust=2`). You cannot tell them apart by colour, so
+  filter the UTXO list by token type when you mean unshielded NIGHT.
+- **Fees are paid in DUST, never in NIGHT.** `feeToken()` is `TokenType::Dust`.
+- **DUST is generated by registered *unshielded* NIGHT UTXOs.** Registration
+  (`register-dust-address`) respends the wallet's NIGHT UTXOs so they begin generating — which
+  is why the funding script registers *after* sending NIGHT, not before.
+- **Shielded NIGHT can neither pay fees nor be registered for DUST.** It is contract-spendable
+  value only. `fund-wallet.sh --shielded-amount` exists for that purpose and warns accordingly.
+- **DUST readiness is a non-empty `dust_utxos` list, not `dust-balance.total > 0`.** After a
+  registration the balance figure moves before a spendable UTXO exists; a wallet with balance
+  and no UTXO cannot pay anything. Both the funding script and `verify-wallets.sh` assert the
+  UTXO.
+- Units: 1 NIGHT = 10⁶ stars; 1 DUST = 10¹⁵ specks.
+
+## Verifying and tearing down
+
+```bash
+./verify.sh              # node finality + indexer GraphQL + proof-server + wallets
+./verify.sh --core-only  # skip the wallet checks (each spawns a toolkit container)
+./down.sh                # stop, keep the chain — ./up.sh resumes it
+./down.sh -v             # FULL RESET: wipes node, indexer and toolkit-cache volumes
+```
+
+`down.sh -v` wipes the node volume and the indexer volume **together**, and that is a
+correctness requirement rather than tidiness: a ledger v8→v9 chain cannot be upgraded in
+place, so a fresh node genesis paired with a surviving indexer database gives you an indexer
+serving a chain that no longer exists. The toolkit's fetch cache goes with them for the same
+reason.
+
+## Running two stacks at once
+
+Every host port and the compose project name come from the env file, and no service addresses
+another by a host port — they talk over the compose network on fixed container ports. So a
+second, fully independent stack is just a second env file:
+
+```bash
+./scripts/pick-ports.sh > .env.test   # random project name + a free port block >= 10100
+ENV_FILE=.env.test ./up.sh
+ENV_FILE=.env.test ./verify.sh
+ENV_FILE=.env.test ./down.sh -v       # leaves the other stack untouched
+```
 
 ## Known limitations
 
@@ -98,3 +225,16 @@ The research basis for this stack lives in the `midnight-ref-ai` reference check
 - **The indexer image is published for `linux/amd64` only** at `4.4.0-rc.1`. On Apple Silicon it
   runs under emulation (compose pins `platform: linux/amd64`); expect it to be the slowest service
   to become healthy.
+- **A healthy stack is not immediately transactable.** The node answers RPC and produces blocks
+  several seconds before finality moves off genesis, and until it does the toolkit refuses to
+  build transactions (`OnlyGenesisFinalized`). `up.sh` waits for finalized height ≥ 1 so this is
+  handled, but anything else that transacts right after bring-up needs the same gate.
+- **Upstream toolkit bug, worked around here:** `midnight-node-toolkit:2.0.0-rc.4` panics on its
+  first chain command against an empty fetch cache
+  (`redb_backend.rs … failed to create database: … NotFound`), while still leaving a usable cache
+  file behind so the next call succeeds. The scripts prime the cache with a throwaway query
+  (`toolkit_warmup`); without that the panic would land on the first funding transaction. Drop
+  the workaround when a fixed toolkit ships.
+- **`toolkit version` under-reports.** It prints `Ledger: =7.0.3` / `Compactc: 0.31.0` for a
+  toolkit that transacts happily against a ledger-v9 chain, so only its `Node:` line is used as a
+  compatibility signal.

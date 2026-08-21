@@ -8,6 +8,10 @@
 *.log
 logs/
 
+# The midnight-node-toolkit fetch/ledger cache, one directory per compose project.
+# Wiped by ./down.sh -v.
+.cache/
+
 # Generated wallet material (dev-only, but regenerate rather than commit)
 wallets/generated/
 

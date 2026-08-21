@@ -1,0 +1,176 @@
+# Midnight 2.x core stack — node + indexer + proof-server.
+#
+# Never invoked directly; `./up.sh` / `./down.sh` assemble the `docker compose -f …` command
+# and load `.env`. To drive compose by hand:
+#
+#   docker compose --env-file .env -f compose/core.yml up -d
+#
+# Derived from $HOME/midnight-ref-ai/midnight-canary/envs/docker-compose-dynamic.yml with the
+# port-override pattern of $HOME/midnight-ref-ai/matrix/compose/v2.0.0-rc.4.yml folded into
+# .env variables, so several stacks can run side by side on one machine.
+#
+# EVERY host port is parameterized (Q5): the defaults are the Midnight-standard
+# 9944 / 8088 / 6300 that Lace's `undeployed` preset hardcodes; a shared machine overrides
+# them with a free block above 10000. No service addresses another by a host port — they talk
+# over the compose network on the container ports, which never change.
+
+services:
+  # ── node ───────────────────────────────────────────────────────────────────
+  # CFG_PRESET=dev gives the `undeployed` genesis whose dev seeds already hold NIGHT and
+  # have registered DUST addresses (see wallets/wallets.json).
+  node:
+    image: 'midnightntwrk/midnight-node:${NODE_TAG:-2.0.0-rc.4}'
+    cap_drop:
+      - ALL
+    # The entrypoint mkdir's and chowns BASE_PATH before dropping to the node binary.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - 'no-new-privileges:true'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${NODE_HOST_PORT:-9944}:9944'
+    volumes:
+      # MUST be /node, not /data: the image sets BASE_PATH=/node/chain, so a volume at
+      # /data leaves the chain db on the container's writable layer and it is lost on
+      # `docker compose down` without anyone noticing.
+      - node-data:/node
+    environment:
+      CFG_PRESET: 'dev'
+      SIDECHAIN_BLOCK_BENEFICIARY: '04bcf7ad3be7a5c790460be82a713af570f22e0f801f6659ab8e84a52be6969e'
+      # Storage monitor: the node gracefully terminates when free space on the db volume
+      # drops below `threshold` MiB (default 512). On a laptop with a full disk that kills
+      # a long-running demo mid-flow; 0 disables the monitor.
+      THRESHOLD: '0'
+      RUST_BACKTRACE: '1'
+    healthcheck:
+      # Block #1 exists only once the chain has actually started producing, so this is a
+      # readiness probe and not just "the RPC socket is open". The image ships curl.
+      test:
+        - 'CMD-SHELL'
+        - >
+          curl -fs -H 'Content-Type: application/json' -d
+          '{"id":1,"jsonrpc":"2.0","method":"chain_getBlockHash","params":[1]}' http://localhost:9944 | grep -q
+          '"result":"0x'
+      interval: 2s
+      timeout: 5s
+      retries: 45
+      start_period: 5s
+
+  # ── indexer ────────────────────────────────────────────────────────────────
+  indexer:
+    image: 'midnightntwrk/indexer-standalone:${INDEXER_TAG:-4.4.0-rc.1}'
+    # 4.4.0-rc.1 is published for linux/amd64 ONLY (no arm64 manifest entry), so on Apple
+    # Silicon this one service runs emulated while node and proof-server run native.
+    # Expect it to be the slowest service to come up.
+    platform: '${INDEXER_PLATFORM:-linux/amd64}'
+    cap_drop:
+      - ALL
+    security_opt:
+      - 'no-new-privileges:true'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${INDEXER_HOST_PORT:-8088}:8088'
+    volumes:
+      # config.yaml puts both sqlite files under /data (storage.cnn_url =
+      # /data/indexer.sqlite, ledger_db.cnn_url = /data/ledger-db.sqlite).
+      - indexer-data:/data
+    environment:
+      RUST_LOG: 'indexer=info,chain_indexer=info,indexer_api=info,wallet_indexer=info,indexer_common=info,fastrace_opentelemetry=off,info'
+      APP__APPLICATION__NETWORK_ID: 'undeployed'
+      APP__INFRA__NODE__URL: 'ws://node:9944'
+      # indexer >=4.3 opens a SECOND (SPO) connection with its own URL. Left at the
+      # config default it dials ws://localhost:9944 inside this container, never connects,
+      # burns its reconnect budget and the WHOLE indexer exits after ~5 minutes.
+      APP__INFRA__SPO_NODE__URL: 'ws://node:9944'
+      # Must be a non-empty string or startup fails outright. SPO features are unused on a
+      # local devnet, so any placeholder is accepted.
+      APP__INFRA__SPO_NODE__BLOCKFROST_ID: 'demo-infra-not-using-spo'
+      # Belt and braces for the same failure mode: cap the backoff so high that the
+      # reconnect budget (reconnect_max_attempts: 30) can never be exhausted during a demo.
+      APP__INFRA__SPO_NODE__RECONNECT_MAX_DELAY: '24h'
+      # No default in the image's config.yaml — must be supplied. Dev value from .env.
+      APP__INFRA__SECRET: '${INDEXER_SECRET:-303132333435363738393031323334353637383930313233343536373839303132}'
+    healthcheck:
+      # The image has neither curl nor wget, so an HTTP /ready probe can never pass and the
+      # container would sit "unhealthy" forever. Use the file the entrypoint manages.
+      #
+      # CAVEAT: entrypoint.sh touches this file BEFORE launching indexer-standalone and
+      # removes it on exit, so "healthy" means "the supervisor is alive", not "the API
+      # serves GraphQL". Real readiness is asserted from the host by up.sh/verify.sh,
+      # which query /api/v4/graphql.
+      test: ['CMD-SHELL', 'cat /var/run/indexer-standalone/running']
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      node:
+        condition: service_healthy
+
+  # ── proof-server ───────────────────────────────────────────────────────────
+  proof-server:
+    image: 'midnightntwrk/proof-server:${PROOF_TAG:-9.0.0-rc.5}'
+    cap_drop:
+      - ALL
+    security_opt:
+      - 'no-new-privileges:true'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${PROOF_HOST_PORT:-6300}:6300'
+    environment:
+      RUST_BACKTRACE: 'full'
+      EXTRA_ARGS: '-v'
+    healthcheck:
+      # A nix-built image with no curl/wget, and its bash lives at an unstable
+      # /nix/store/<hash>-bash-interactive-<arch>… path that changes per tag and per
+      # architecture — too brittle to hardcode in a healthcheck. up.sh waits on the
+      # listening port from the host instead.
+      disable: true
+
+  # ── fund (one-shot, profile `fund`) ────────────────────────────────────────
+  # Funds the wallets.json entries marked funding=fund-script on first bring-up:
+  #
+  #   docker compose --profile fund -f compose/core.yml run --rm fund
+  #   # or, equivalently and preferred:
+  #   ./scripts/fund-wallet.sh --all-demo
+  #
+  # It carries the `fund` compose profile, so a plain `up -d` never starts it. This exists
+  # so a bring-up can be fully self-contained inside compose; the script is the interface
+  # a human should use, since it prints progress and can target one wallet.
+  fund:
+    profiles: ['fund']
+    image: 'midnightntwrk/midnight-node-toolkit:${TOOLKIT_TAG:-2.0.0-rc.4}'
+    entrypoint: ['/bin/bash', '/fund/fund-in-container.sh']
+    environment:
+      # Reached over the compose network, so the container port — never a host port.
+      TOOLKIT_NODE_URL: 'ws://node:9944'
+      NETWORK_ID: 'undeployed'
+      FUND_FROM_SEED: '${FUND_FROM_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      FUND_AMOUNT: '${FUND_AMOUNT:-10000000000000}'
+      FUND_DUST_WAIT: '${FUND_DUST_WAIT:-240}'
+      # Matches the image's own default. The script reads it to prepare the cache dir the
+      # way the image entrypoint would.
+      MN_FETCH_CACHE: 'redb:/.cache/toolkit_fetch_cache.db'
+      MN_LEDGER_CACHE_DB: '/.cache/toolkit_ledger_cache_db'
+    volumes:
+      - ../scripts/fund-in-container.sh:/fund/fund-in-container.sh:ro
+      - ../wallets/wallets.json:/fund/wallets.json:ro
+      # The toolkit's block/ledger fetch cache, as a HOST directory rather than a named
+      # volume. The same cache is used by scripts/lib/toolkit.sh, which reaches the toolkit
+      # through `docker run` and so cannot create a compose-owned volume — a named volume
+      # created that way carries no compose labels, which means `docker compose down -v`
+      # silently leaves it behind and a later run inherits a cache built against a genesis
+      # that no longer exists. A host path has one unambiguous owner: down.sh deletes it.
+      - ../.cache/${COMPOSE_PROJECT_NAME:-demo-infra}:/.cache
+    depends_on:
+      node:
+        condition: service_healthy
+    restart: 'no'
+
+volumes:
+  # Wiped together by `./down.sh -v`. They MUST be wiped together: a ledger v8→v9 chain
+  # cannot be upgraded in place, so a fresh node genesis against a stale indexer db
+  # produces an indexer that either refuses to sync or serves data for a chain that no
+  # longer exists.
+  node-data:
+  indexer-data:

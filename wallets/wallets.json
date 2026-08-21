@@ -1,0 +1,136 @@
+{
+  "$comment": [
+    "The wallets this demo stack knows about. DEV ONLY.",
+    "Every seed below is public: the first three are the well-known Midnight CFG_PRESET=dev",
+    "genesis seeds, the fourth is the seed Lace uses for its own testing, and the demo-* ones",
+    "are placeholders invented for this repo. They control value only on a throwaway local",
+    "`undeployed` chain. Never reuse any of them anywhere else.",
+    "",
+    "Addresses were produced with `midnight-node-toolkit:2.0.0-rc.4 show-address --network",
+    "undeployed --seed <seed>` and are stable for a given seed + network id — they do not",
+    "depend on the chain, so they stay valid across a ./down.sh -v reset.",
+    "",
+    "funding = 'genesis'      : the CFG_PRESET=dev genesis already funds this wallet AND",
+    "                           registers its DUST address. Nothing to run. Asserted by",
+    "                           scripts/verify-wallets.sh.",
+    "funding = 'fund-script'  : empty until scripts/fund-wallet.sh (or the `fund` compose",
+    "                           service) is run for it."
+  ],
+  "networkId": "undeployed",
+  "toolkitImage": "midnightntwrk/midnight-node-toolkit",
+  "wallets": [
+    {
+      "name": "genesis-1",
+      "role": "faucet / funding source for scripts/fund-wallet.sh",
+      "seed": "0000000000000000000000000000000000000000000000000000000000000001",
+      "seedBytes": 32,
+      "funding": "genesis",
+      "expect": {
+        "unshieldedUtxos": 5,
+        "unshieldedTotalStars": 250000000000000,
+        "dustUtxos": 5,
+        "dustRegisteredAtGenesis": true
+      },
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1h3ssm5ru2t6eqy4g3she78zlxn96e36ms6pq996aduvmateh9p9sk96u7s",
+        "shielded": "mn_shield-addr_undeployed1r020sfa7jllsz0z2wqhykz8npmphsu5223nsea7vjt9ekxs5almtvtnrpgpszud4uyd0yjrlqyp7v5xvwqljsng2g79j5w4al9c4kuqy0xtw4",
+        "dust": "mn_dust_undeployed1w0l54txthpu8q05j9j9ttk3j5dyu5766dc9zkz2s435vdglzwdr35dw790y",
+        "userAddress": "bc610dd07c52f59012a88c2f9f1c5f34cbacc75b868202975d6f19beaf37284b"
+      }
+    },
+    {
+      "name": "genesis-2",
+      "role": "reserved as the offer-files batcher wallet (Phase 4)",
+      "seed": "0000000000000000000000000000000000000000000000000000000000000002",
+      "seedBytes": 32,
+      "funding": "genesis",
+      "expect": {
+        "unshieldedUtxos": 5,
+        "unshieldedTotalStars": 250000000000000,
+        "dustUtxos": 5,
+        "dustRegisteredAtGenesis": true
+      },
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1gkasr3z3vwyscy2jpp53nzr37v7n4r3lsfgj6v5g584dakjzt0xqun4d4r",
+        "shielded": "mn_shield-addr_undeployed1tth9g6jf8he6cmhgtme6arty0jde7wnypsg53qc3x5navl9za355jqqvfftm8asg986dx9puzwkmedeune9nfkuqvtmccmxtjwvlrvccwypcs",
+        "dust": "mn_dust_undeployed1wdvvhux7luy22g5w6qsr3qerf49h0curwzfa2fv7acx9x258gmpzz2mtpt2",
+        "userAddress": "45bb01c45163890c11520869198871f33d3a8e3f82512d3288a1eadeda425bcc"
+      }
+    },
+    {
+      "name": "genesis-3",
+      "role": "spare prefunded wallet (a second demo actor)",
+      "seed": "0000000000000000000000000000000000000000000000000000000000000003",
+      "seedBytes": 32,
+      "funding": "genesis",
+      "expect": {
+        "unshieldedUtxos": 5,
+        "unshieldedTotalStars": 250000000000000,
+        "dustUtxos": 5,
+        "dustRegisteredAtGenesis": true
+      },
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1g9nr3mvjcey7ca8shcs5d4yjndcnmczf90rhv4nju7qqqlfg4ygs0t4ngm",
+        "shielded": "mn_shield-addr_undeployed1ngp7ce7cqclgucattj5kuw68v3s4826e9zwalhhmurymwet3v7psvrs4gtpv5p2zx8rd3jxpgjr4m8mxh7js7u3l33g23gcty67uq9cug4xep",
+        "dust": "mn_dust_undeployed1wvkuqlvn6ks5ygxcwqu46qhmrlyrvkj58r9c3j4xrt7epg78hr9kxea6gam",
+        "userAddress": "416638ed92c649ec74f0be2146d4929b713de0492bc7765672e780007d28a911"
+      }
+    },
+    {
+      "name": "lace-test",
+      "role": "the wallet Lace uses for its own testing — import this one to drive the demo from Lace",
+      "$comment": "64-byte (128 hex char) seed, from midnight-node's Earthfile genesis-seeds block where it is labelled 'wallet-seed-3 is the wallet Lace uses for testing'. Verified prefunded on CFG_PRESET=dev.",
+      "seed": "a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9",
+      "seedBytes": 64,
+      "funding": "genesis",
+      "expect": {
+        "unshieldedUtxos": 5,
+        "unshieldedTotalStars": 250000000000000,
+        "dustUtxos": 5,
+        "dustRegisteredAtGenesis": true
+      },
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m",
+        "shielded": "mn_shield-addr_undeployed1qpc63v0np98f86ycsx0jn6letdrr9gdf92rpkgae43dd2etsv58x3zypyz9t39lq38zr0kxx4v6fug7wack76gkjrqdsgtsxf7800kg208t0p",
+        "dust": "mn_dust_undeployed1ww6dfltk3kc6shrqcsk48ldzmjedszata6rthu4h3ywgxaak70vxzvugm87",
+        "userAddress": "982edeaf90a374b61334f00f4ad9a386b8351170f9c9d220498348acc56c5ef3"
+      }
+    },
+    {
+      "name": "demo-alice",
+      "role": "demo actor — funded by scripts/fund-wallet.sh, not by genesis",
+      "seed": "de110000000000000000000000000000000000000000000000000000000a11ce",
+      "seedBytes": 32,
+      "funding": "fund-script",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1r85td6495c2tgezq527p3mlau3qsqzavlqk6g9ckpqql63arczrs6gr5hc",
+        "shielded": "mn_shield-addr_undeployed16kle3uv9y6uzr9tjk3x25ufhan2gj3qcx07ufrrcr370ut338968p2xv6p7s74kxz8xcee3ult57jmek5kc9t5nyc9r9p4dfxdukysc8evarf",
+        "dust": "mn_dust_undeployed1wdrlg9ggmcuj7jwj7jccz2c282ps6fm6afwpuc5nz2z4gqryvl05kzultzx"
+      }
+    },
+    {
+      "name": "demo-bob",
+      "role": "demo actor — funded by scripts/fund-wallet.sh, not by genesis",
+      "seed": "de110000000000000000000000000000000000000000000000000000000b0b00",
+      "seedBytes": 32,
+      "funding": "fund-script",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1vddp8d3lnewudg0fnk83hkmf9qqq3d3e5nend5sldysr50therjqff4m4x",
+        "shielded": "mn_shield-addr_undeployed1h0vfzafs09zkw9famz8z5m8z998k28fwejw96v35fcgczvscqkqvkvmzw962nfjprhyamtenhzmylyxwn4jveafffja4yus9228x7ssqn9496",
+        "dust": "mn_dust_undeployed1wv2x9ash93dp7uueu6yfqaeapwejnz5tuw85sac43lz34a4aden9qxxn77e"
+      }
+    },
+    {
+      "name": "demo-carol",
+      "role": "demo actor — funded by scripts/fund-wallet.sh, not by genesis",
+      "seed": "de110000000000000000000000000000000000000000000000000000000ca201",
+      "seedBytes": 32,
+      "funding": "fund-script",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed125wz4e8aflcc7p8wjcp00gj9msdu3uglt5q8jru4lhmg8xvhvgmsfdp4rm",
+        "shielded": "mn_shield-addr_undeployed1fxlyvl3wljtzvh2uuwkf2lg3g30244rl8r26cvh7t9fwjmmg2j09amj34nevpavg6u8c45hkc4deme9ulhc947hfwjs7ckhrk8qqhqghwz0tj",
+        "dust": "mn_dust_undeployed1w028z3slvktfnz3ng0qk053pxgk46k4exkrlvq7v548v8mtwtt05jfwhdws"
+      }
+    }
+  ]
+}
