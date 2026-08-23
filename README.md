@@ -6,7 +6,7 @@ A single Docker Compose project that brings up a complete local Midnight 2.x dem
 |---|---|---|
 | Midnight node + indexer + proof-server | `core` (always) | `midnight-node:2.0.0-rc.4` / `indexer-standalone:4.4.0-rc.1` / `proof-server:9.0.0-rc.5` on `CFG_PRESET=dev` (network id `undeployed`) |
 | Wallet funding tooling | `core` | Genesis-prefunded NIGHT+DUST dev wallets + a CLI to fund arbitrary extra wallets |
-| umbra-evm | `evm` | Ethereum JSON-RPC **read** façade over Midnight (chainId 2400) — *Phase 3, not yet implemented* |
+| umbra-evm | `evm` | Ethereum JSON-RPC **read-only** façade over Midnight (chainId 2400): HTTP `:8545` + WS `:10021`, backed by Postgres |
 | offer-files kernel + Celestia | `offerfiles` | zswap offer-files sync node + batcher + local Celestia devnet — *Phase 4, not yet implemented* |
 | zswap-da frontend | `frontend` | React/Vite swap demo SPA — *Phase 5, not yet implemented* |
 
@@ -22,7 +22,7 @@ This repo is being built in phases (see the plan in the organizer workspace). Im
 - [x] Phase 0 — repo scaffold
 - [x] Phase 1 — Midnight core stack (node + indexer + proof-server)
 - [x] Phase 2 — wallet funding tooling (NIGHT + DUST)
-- [ ] Phase 3 — umbra-evm (read-only JSON-RPC)
+- [x] Phase 3 — umbra-evm (read-only JSON-RPC)
 - [ ] Phase 4 — offer-files kernel + Celestia
 - [ ] Phase 5 — zswap-da frontend
 - [ ] Phase 6 — integration, e2e, docs
@@ -32,10 +32,15 @@ This repo is being built in phases (see the plan in the organizer workspace). Im
 ```bash
 cp .env.example .env                  # then edit ports/tags if needed
 ./up.sh                               # bring up the core stack; blocks until it is usable
+./up.sh --with evm                    # …plus the read-only Ethereum JSON-RPC façade
 ./scripts/fund-wallet.sh --all-demo   # optional: fund the demo-* wallets
-./verify.sh                           # assert health + prefunded wallets
+./verify.sh                           # assert health + prefunded wallets (+ evm, if it is up)
 ./down.sh -v                          # tear down, wiping all state
 ```
+
+A **profile** is a compose fragment in `compose/`, named after the profile: `--with evm` adds
+`compose/evm.yml`, `--all` adds every fragment there is. `down.sh` always tears down every
+fragment that exists, so a profile brought up earlier can never be orphaned.
 
 `up.sh` returns only when the stack is genuinely usable, which is stricter than "docker says
 healthy":
@@ -45,15 +50,18 @@ healthy":
 | node | RPC answers `chain_getBlockHash[1]`, **and** finalized height ≥ 1 | The node answers RPC several blocks before finality moves off genesis, and in that window the toolkit refuses to build transactions (`OnlyGenesisFinalized`) |
 | indexer | GraphQL v4 answers a block query | Its container healthcheck only proves the supervisor is alive — the entrypoint touches the running-file *before* launching the indexer |
 | proof-server | the port accepts a TCP connection | The image has no curl/wget, and its bash sits behind a per-tag `/nix/store/<hash>…` path |
+| evm-rpc (`--with evm`) | `eth_chainId` answers over HTTP, **and** the WS port completes a `101 Switching Protocols` handshake | A TCP probe of a *published* port proves nothing: docker's port proxy accepts the connection before it dials the container, so `nc -z` reports a working endpoint that refuses every client |
 
 Default endpoints (all overridable in `.env`):
 
-| Endpoint | URL |
-|---|---|
-| node RPC | `http://127.0.0.1:9944` |
-| indexer GraphQL | `http://127.0.0.1:8088/api/v4/graphql` |
-| indexer GraphQL WS | `ws://127.0.0.1:8088/api/v4/graphql/ws` |
-| proof server | `http://127.0.0.1:6300` |
+| Endpoint | URL | Profile |
+|---|---|---|
+| node RPC | `http://127.0.0.1:9944` | `core` |
+| indexer GraphQL | `http://127.0.0.1:8088/api/v4/graphql` | `core` |
+| indexer GraphQL WS | `ws://127.0.0.1:8088/api/v4/graphql/ws` | `core` |
+| proof server | `http://127.0.0.1:6300` | `core` |
+| **eth JSON-RPC** | `http://127.0.0.1:8545` (chainId 2400 = `0x960`) | `evm` |
+| **eth WS (`eth_subscribe`)** | `ws://127.0.0.1:10021` | `evm` |
 
 ## Layout
 
@@ -183,20 +191,167 @@ confirmed against this stack.
   UTXO.
 - Units: 1 NIGHT = 10⁶ stars; 1 DUST = 10¹⁵ specks.
 
+## umbra-evm — read-only Ethereum JSON-RPC (profile `evm`)
+
+```bash
+./up.sh --with evm      # builds the image on first use, then blocks until eth_chainId answers
+./verify.sh             # the `evm` section runs automatically when the profile is up
+```
+
+Point any Ethereum tool at it:
+
+```bash
+cast chain-id                --rpc-url http://127.0.0.1:8545     # 2400
+cast block-number            --rpc-url http://127.0.0.1:8545
+cast balance 0x178c5bad4ded7d8455542f8e6bd667e3d986f3a0 --rpc-url http://127.0.0.1:8545
+```
+
+Or add it to MetaMask as a custom network: RPC `http://127.0.0.1:8545`, chain ID `2400`, symbol
+`NIGHT`. Balances and blocks show up; sends do not (see below).
+
+### THE SURFACE IS READ-ONLY, AND THAT IS FINAL FOR THIS PROJECT
+
+There is no relayer, no `RELAY_URL`, and therefore no `eth_sendRawTransaction` — upstream only
+registers that method when `RELAY_URL` is set, so read-only here is a property of the
+configuration, not a filter bolted on top. `verify.sh` **asserts** that
+`eth_sendRawTransaction` answers `-32601`, so a future accidental write path fails the build
+rather than quietly appearing.
+
+**These endpoints are reserved for a future EVM-wallet / Compact signing project**, which will
+connect an EVM wallet through them to sign messages consumed by a Compact contract. Treat the
+exposed surface as a stable contract: the two ports, the service names, chainId 2400, and the
+method shapes documented in the source repo's `evm-rpc/METHODS.md`. Changing any of them is a
+breaking change for that project, not a detail.
+
+### What is served, and what each answer is made of
+
+| Method(s) | Source of truth |
+|---|---|
+| `eth_chainId`, `net_version`, `web3_clientVersion`, `eth_gasPrice`, `eth_estimateGas`, `eth_feeHistory`, `eth_accounts` (`[]`), `eth_syncing` (`false`) | constants / config |
+| `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountBy*` | the **indexer** GraphQL v4, live |
+| `eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getTransactionByHash`, `eth_getTransactionReceipt` | **Postgres**, filled by `wallet-monitor` |
+| `eth_getLogs`, `eth_subscribe("logs")`, ERC20 `eth_call` views | **Postgres**, filled by the contract-event ingester from `config/watch.json` |
+| `eth_subscribe("newHeads")` | the indexer head (see the patch note below) |
+
+Two consequences worth knowing before you debug something:
+
+- **`eth_getLogs` never touches the indexer.** Log and balance reads keep working while the
+  indexer is down or restarting; only the block-shaped methods fail (with `-32603`) until it is
+  back. Verified: `docker kill`-ing the indexer leaves `evm-rpc` running with `restarts=0`, still
+  answering `eth_chainId`/`eth_getLogs`/`eth_getBalance`, and `eth_blockNumber` plus `newHeads`
+  resume on their own when it returns — no restart, no manual step.
+- **`eth_getBalance` is only as good as the watch list.** It reads a Postgres table that
+  `wallet-monitor` fills from the indexer's `unshieldedTransactions` subscription, per watched
+  address. An address nobody watches is not an error — it reads `0x0`.
+
+### Error policy: `-32004` vs `-32601`
+
+The difference is load-bearing for clients, so it is asserted in `verify.sh`:
+
+| Code | Meaning | Example |
+|---|---|---|
+| `-32004` | "I know this method and am deliberately not serving it" — a client can fall back | `eth_getStorageAt` (no EVM storage trie exists), `eth_newFilter` (poll `eth_getLogs` instead) |
+| `-32601` | "I have never heard of this name" — a typo or a foreign namespace | `eth_thisMethodDoesNotExist`, and `eth_sendRawTransaction` on this read-only stack |
+
+The full `-32004` list with a reason per method is in the source repo's
+`evm-rpc/METHODS.md#not-implemented--32004`; every `-32004` response carries its classification
+and reason in the error `data`.
+
+### Finding a wallet's EVM address
+
+An EVM address here is `keccak256(bech32m payload of the mn_addr)[12:32]`. It is not guessable,
+so there is a tool:
+
+```bash
+./scripts/evm-address.sh --watched     # exactly what wallet-monitor is watching
+./scripts/evm-address.sh --all         # every wallets/wallets.json entry
+./scripts/evm-address.sh 0000000000000000000000000000000000000000000000000000000000000001
+# <input>	<mn_addr>	<0x evm address>
+```
+
+Balances are **stars scaled by 10¹²** and presented as wei, so a genesis wallet's 250,000,000
+NIGHT reads as `0xcecb8f27f4200f3a000000` (2.5 × 10²⁶).
+
+### Which wallets are monitored
+
+All seven `wallets/wallets.json` entries, out of the box, via two env vars:
+
+| Variable | Takes | Why both |
+|---|---|---|
+| `EVM_WATCH_SEEDS` | comma-separated **32-byte** seeds; the monitor derives the address itself | Short, already in `.env`, and self-checking — the monitor's HD derivation was verified identical to `midnight-node-toolkit show-address` for all six seeds |
+| `EVM_WATCH_ADDRESSES` | comma-separated `mn_addr` values, verbatim | The **Lace test wallet's seed is 64 bytes**, which the monitor's derivation rejects outright. Address is the only way to watch it |
+
+The four genesis wallets report a non-zero balance within a second or two of bring-up with **no
+funding step**: the indexer replays their genesis UTXOs as ordinary unshielded transactions.
+Running `./scripts/fund-wallet.sh --all-demo` then brings the three `demo-*` wallets to
+`0x84595161401484a000000` (10,000,000 NIGHT) and drops the faucet's balance by the same amount —
+which is a nice way to watch the whole node → indexer → monitor → Postgres → RPC path work.
+
+### Watching contract events
+
+`config/watch.json` is `[]`, because this demo deploys no contracts. Adding an entry turns on
+`eth_getLogs`, `eth_subscribe("logs")` and the ERC20 `eth_call` views for that contract; it needs
+no rebuild, just a restart of `evm-rpc`. Entry shape and the two gotchas (duplicate addresses are
+rejected; `decimals` defaults to **0**, not 18) are in [`config/README.md`](config/README.md).
+
+`DEMO_TOKEN_AS_NIGHT` is deliberately left off. It makes `eth_getBalance` add an address's
+Transfer-folded token balance to its native balance so MetaMask shows minted tokens as the account
+number — useful only in a demo that actually deploys a token, and it conflates native with token
+value.
+
+### How the image is built
+
+`images/umbra-evm/Dockerfile` fetches `acedward/UmbraDB` at `UMBRA_REF`
+(default `feat/00006-json-rpc-review`, PR #7) and installs it — the upstream repo ships no Docker
+packaging, so this is it. Three services share the one image: `evm-rpc`
+(`npm run evm-rpc:all`), `wallet-monitor` (`npm run monitor:wallet`) and the one-shot
+`evm-migrate` (`npx tsx tools/migrate.ts`).
+
+- **`evm-migrate` is not optional.** `serve-all.ts` does not apply its own migrations — upstream,
+  only `wallet-monitor` does — so without an explicit init step the two services race for the
+  schema and `evm-rpc` dies on a missing relation whenever it wins. Both depend on it with
+  `service_completed_successfully`. It is idempotent, so it re-runs as a no-op on every bring-up.
+- **Docker cannot tell that a branch moved.** `UMBRA_REF` defaults to a branch name, so a rebuild
+  reuses the cached fetch layer. Use `docker compose … build --no-cache evm-rpc`, or pin
+  `UMBRA_REF` to a commit sha. `docker run --rm midnight-2-offers/umbra-evm:local cat
+  /app/.umbra-commit` prints the commit actually baked in.
+- **Two upstream defects are patched at build time** (`images/umbra-evm/patches/apply.mjs`), both
+  in the `createSubscribeServer` call and both about the WebSocket surface. Neither touches the
+  write path. The patcher does exact-anchor rewrites and **fails the build** if an anchor moved,
+  printing it — a fuzzy patch that half-applies would be far worse than a broken build:
+  1. `evm-rpc/logs/ws.ts` defaults `listen(port, host = "127.0.0.1")` and `serve-all.ts` never
+     passes a host, so the WS server binds container-loopback and refuses every client. It fails
+     invisibly: the published port accepts TCP (docker-proxy), the client sees only close `1006`,
+     and the server logs nothing.
+  2. With no `blockSource`, `newHeads` falls back to a source that can only announce blocks
+     carrying a *watched contract log* — i.e. nothing at all with an empty `watch.json`. The patch
+     injects a source polling the same indexer head that answers `eth_blockNumber`.
+
 ## Verifying and tearing down
 
 ```bash
-./verify.sh              # node finality + indexer GraphQL + proof-server + wallets
-./verify.sh --core-only  # skip the wallet checks (each spawns a toolkit container)
+./verify.sh              # node finality + indexer GraphQL + proof-server + wallets (+ evm if up)
+./verify.sh --core-only  # skip the wallet checks (each spawns a toolkit container) and evm
+./verify.sh --evm        # require the evm section — fail if the profile is not up
+./verify.sh --no-evm     # skip the evm section even when it is up
 ./down.sh                # stop, keep the chain — ./up.sh resumes it
-./down.sh -v             # FULL RESET: wipes node, indexer and toolkit-cache volumes
+./down.sh -v             # FULL RESET: wipes node, indexer, evm-postgres and toolkit-cache volumes
 ```
+
+The `evm` section runs automatically when the profile's containers exist, so `./verify.sh` needs
+no argument either way. `./scripts/verify-evm.sh` runs it alone (`--quick` skips the `newHeads`
+check, which waits for a block).
 
 `down.sh -v` wipes the node volume and the indexer volume **together**, and that is a
 correctness requirement rather than tidiness: a ledger v8→v9 chain cannot be upgraded in
 place, so a fresh node genesis paired with a surviving indexer database gives you an indexer
-serving a chain that no longer exists. The toolkit's fetch cache goes with them for the same
-reason.
+serving a chain that no longer exists. The toolkit's fetch cache and the umbra-evm Postgres volume
+go with them for the same reason — every one of them holds state keyed to one specific genesis.
+
+`down.sh` always passes **every** fragment in `compose/`, so a profile you brought up earlier is
+torn down even if you do not name it now. Every volume is declared in a fragment for the same
+reason: only a compose-created volume carries the project label that the "nothing left behind"
+count filters on.
 
 ## Running two stacks at once
 
@@ -214,9 +369,31 @@ ENV_FILE=.env.test ./down.sh -v       # leaves the other stack untouched
 ## Known limitations
 
 - **EVM write path is out of scope.** umbra-evm is exposed read-only: no relayer, no `RELAY_URL`,
-  no `eth_sendRawTransaction`. The read surface (ports, chainId 2400, method shapes) is treated as
-  a stable contract for a follow-up project that will connect an EVM wallet and sign messages
-  consumed by a Compact contract.
+  no `eth_sendRawTransaction`. **These endpoints are reserved for a future EVM-wallet / Compact
+  signing project** that will connect an EVM wallet through them to sign messages consumed by a
+  Compact contract, so the read surface (the two ports, service names, chainId 2400, and the method
+  shapes in the source repo's `evm-rpc/METHODS.md`) is treated as a stable contract. `verify.sh`
+  asserts `eth_sendRawTransaction` → `-32601` so a write path cannot appear by accident.
+- **umbra-evm has no historical state and no EVM execution.** `eth_getStorageAt`, `eth_getProof`,
+  `eth_call` into contract code, `eth_simulateV1` and the polling-filter family answer `-32004` by
+  design — Midnight contract state is a ledger blob, not an EVM storage trie. A block tag other
+  than a height or `latest`-family is accepted syntactically but there is no archival state behind
+  it. `eth_getCode` returns a non-empty stub for known contract addresses, not real bytecode.
+- **`eth_getBalance` only knows the wallets it is told to watch,** and reports `0x0` (not an
+  error) for anything else. Reorgs are not handled either: `eth_getLogs` rows are never marked
+  `removed`.
+- **The umbra-evm image is built from a moving branch.** `UMBRA_REF` defaults to
+  `feat/00006-json-rpc-review`, and Docker cannot detect that a branch advanced — a rebuild reuses
+  the cached fetch layer until you pass `--no-cache`. Pin `UMBRA_REF` to a commit sha for a
+  reproducible build; `docker run --rm midnight-2-offers/umbra-evm:local cat /app/.umbra-commit`
+  reports what is actually in the image. Two upstream defects are patched during that build (the
+  WS server's container-loopback bind, and `newHeads` having no chain-head source) — if upstream
+  moves those lines, the build **fails loudly** and the patch anchors need re-deriving; see
+  `images/umbra-evm/patches/apply.mjs`.
+- **The umbra-evm image is large (~1 GB).** It installs UmbraDB's full dev dependency tree because
+  `tsx` and the `@midnightntwrk/wallet-sdk-*` packages the wallet monitor imports are all
+  devDependencies, and the repo is run as TypeScript rather than built. The upside is that the
+  repo's own offline test suites can be run inside the image.
 - **Ledger v8 → v9 chains cannot be upgraded in place.** Wiping the node volume means wiping the
   indexer (and kernel / umbra-evm) state in the same breath — `./down.sh -v` does exactly that.
 - **The proof-server tag `9.0.0-rc.5` is the zkir-v2 build.** Circuits compiled to zkir-v3

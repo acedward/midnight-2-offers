@@ -6,8 +6,9 @@
 #   core     node RPC + finality advancing, indexer GraphQL v4 tracking the chain,
 #            proof-server accepting connections
 #   wallets  every wallets.json entry marked funding=genesis holds NIGHT and spendable DUST
+#   evm      the umbra-evm read-only JSON-RPC surface (skipped unless the profile is up)
 #
-# Later phases append their own sections (evm reads, kernel config endpoint, frontend HTTP).
+# Later phases append their own sections (kernel config endpoint, frontend HTTP).
 #
 set -euo pipefail
 
@@ -16,6 +17,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 
 SKIP_WALLETS=0
+EVM_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -23,8 +25,14 @@ Usage: ./verify.sh [options]
 
 Options:
   --core-only    only the node/indexer/proof-server checks; skip the wallet assertions
-                 (they each spawn a toolkit container and take ~10s per wallet)
+                 (they each spawn a toolkit container and take ~10s per wallet) and the
+                 umbra-evm section
+  --evm          require the umbra-evm section (fail if the profile is not up)
+  --no-evm       skip the umbra-evm section even if the profile is up
   -h, --help     this text
+
+By default the umbra-evm section runs if and only if the profile's containers exist for this
+compose project, so ./verify.sh works unchanged whether or not `./up.sh --with evm` was used.
 
 Environment:
   ENV_FILE=<path>  verify a different stack instance (see .env.example)
@@ -33,7 +41,9 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; shift ;;
+    --core-only) SKIP_WALLETS=1; EVM_MODE=off; shift ;;
+    --evm)       EVM_MODE=on; shift ;;
+    --no-evm)    EVM_MODE=off; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -101,6 +111,40 @@ if (( ! SKIP_WALLETS )); then
     FAILURES=$(( FAILURES + 1 ))
   fi
 fi
+
+# ── evm (umbra-evm read-only JSON-RPC) ───────────────────────────────────────
+# Presence is detected from the containers rather than from a flag, so `./verify.sh` needs no
+# argument to do the right thing after `./up.sh` or after `./up.sh --with evm`.
+EVM_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=evm-rpc" 2>/dev/null)" ]]; then
+  EVM_PRESENT=1
+fi
+
+case "$EVM_MODE" in
+  off) ;;
+  on|auto)
+    if (( EVM_PRESENT )); then
+      echo
+      log "evm"
+      if "$REPO_ROOT/scripts/verify-evm.sh"; then
+        ok "umbra-evm assertions passed"
+      else
+        err "umbra-evm assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$EVM_MODE" == "on" ]]; then
+      echo
+      err "--evm was requested but no evm-rpc container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with evm"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "evm profile not up — skipping (./up.sh --with evm to include it)"
+    fi
+    ;;
+esac
 
 echo
 if (( FAILURES == 0 )); then

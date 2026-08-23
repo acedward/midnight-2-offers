@@ -12,6 +12,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
 source "$REPO_ROOT/scripts/lib/common.sh"
+# shellcheck source=scripts/lib/evm.sh
+source "$REPO_ROOT/scripts/lib/evm.sh"
 
 PROFILES=""
 DO_PULL=0
@@ -119,6 +121,24 @@ if (( ! FAILED )); then
   wait_indexer_graphql "$INDEXER_GQL_URL" "$INDEXER_WAIT_TIMEOUT" || FAILED=1
 fi
 
+# Optional profiles, after the core stack they depend on. Each one waits on the thing that
+# proves the profile is usable, not merely started — same rule as the core services.
+if (( ! FAILED )) && [[ " $PROFILES " == *" evm "* ]]; then
+  evm_defaults
+  # The one-shot migration service must have run to completion (compose enforces the ordering,
+  # but a FAILED migration leaves evm-rpc never started, which is worth naming explicitly).
+  wait_compose_healthy evm-rpc "$EVM_WAIT_TIMEOUT" || FAILED=1
+  if (( ! FAILED )); then
+    wait_evm_rpc "$EVM_WAIT_TIMEOUT" || FAILED=1
+  fi
+  if (( ! FAILED )); then
+    # A handshake, not a TCP probe: docker's port proxy accepts connections even when nothing in
+    # the container is listening, so `nc -z` here would report a working WS surface that refuses
+    # every client (see images/umbra-evm/patches/apply.mjs).
+    evm_ws_handshake 60 || FAILED=1
+  fi
+fi
+
 if (( FAILED )); then
   echo
   err "stack did not come up. Last 40 log lines per service:"
@@ -134,6 +154,10 @@ info "node RPC          ${NODE_RPC_URL}"
 info "indexer GraphQL   ${INDEXER_GQL_URL}"
 info "indexer GraphQL WS ws://${HOST_ADDR}:${INDEXER_HOST_PORT}/api/v4/graphql/ws"
 info "proof server      http://${HOST_ADDR}:${PROOF_HOST_PORT}"
+if [[ " $PROFILES " == *" evm "* ]]; then
+  info "evm JSON-RPC      ${EVM_RPC_URL}   (chainId ${EVM_CHAIN_ID}, READ-ONLY)"
+  info "evm WS            ws://${HOST_ADDR}:${EVM_WS_HOST_PORT}"
+fi
 echo
 info "next: ./verify.sh    (health + prefunded wallet assertions)"
 info "      ./down.sh -v   (stop and wipe all chain/indexer state)"

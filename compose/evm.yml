@@ -1,0 +1,191 @@
+# umbra-evm — READ-ONLY Ethereum JSON-RPC over the Midnight demo stack.  Profile: `evm`
+#
+#   ./up.sh --with evm      (up.sh/down.sh pick this fragment up by filename)
+#
+# Read-only is FINAL for this project (plan Q2): there is deliberately no `RELAY_URL` anywhere
+# below, and without it `evm-rpc/serve-all.ts` never registers `eth_sendRawTransaction` at all.
+# A follow-up project will connect an EVM wallet through these endpoints to sign messages a
+# Compact contract consumes, so the exposed surface — the two ports, chainId 2400, and the method
+# shapes in the source repo's `evm-rpc/METHODS.md` — is treated as a stable contract. Don't
+# rename services or change the container ports without treating it as a breaking change.
+#
+# Four services:
+#   evm-postgres   postgres:17-alpine, the store for balances/tx index/logs
+#   evm-migrate    ONE-SHOT: applies the evm_rpc migration lineage, then exits 0
+#   evm-rpc        HTTP JSON-RPC :8545 + WS eth_subscribe :10021
+#   wallet-monitor folds the indexer's unshielded transactions for the watched wallets into PG
+#
+# `profiles:` is deliberately NOT used here. This repo's notion of a profile is the FRAGMENT
+# FILENAME — up.sh adds `-f compose/<name>.yml` for `--with <name>` and never passes
+# `--profile` — so a service carrying a compose profile key would silently never start. (The
+# `fund` service in core.yml does carry one, on purpose: it must not start with `up -d`.)
+
+services:
+  # ── postgres ───────────────────────────────────────────────────────────────
+  # Deliberately NOT published to a host port: nothing outside the compose network needs it, and
+  # every unnecessary published port is one more collision on a shared machine. Reach it with
+  #   docker compose ... exec evm-postgres psql -U umbra umbra
+  evm-postgres:
+    image: 'postgres:${EVM_PG_TAG:-17-alpine}'
+    security_opt:
+      - 'no-new-privileges:true'
+    environment:
+      POSTGRES_USER: '${EVM_PG_USER:-umbra}'
+      POSTGRES_PASSWORD: '${EVM_PG_PASSWORD:-umbra}'
+      POSTGRES_DB: '${EVM_PG_DB:-umbra}'
+    volumes:
+      - evm-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -U/-d matter: bare `pg_isready` probes the `postgres` role/db, which this image does not
+      # create when POSTGRES_USER is overridden, and reports healthy while the real db is absent.
+      test: ['CMD-SHELL', 'pg_isready -U ${EVM_PG_USER:-umbra} -d ${EVM_PG_DB:-umbra} -q']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # ── evm-migrate (one-shot) ─────────────────────────────────────────────────
+  # T3.4: `serve-all.ts` does NOT apply migrations — it goes straight to backfill/ingest/getLogs,
+  # all of which read `evm_rpc.logs`. Upstream, the only caller of `bootstrapEvmRpcSchema` is
+  # wallet-monitor, so without this step the two services race for the schema and evm-rpc dies on
+  # a missing relation whenever it wins. Idempotent: the lineage is tracked per file in
+  # `evm_rpc._migrations`, so it re-runs on every bring-up as a no-op.
+  evm-migrate:
+    image: '${EVM_IMAGE:-midnight-2-offers/umbra-evm:local}'
+    build: &umbra-build
+      context: ../images/umbra-evm
+      args:
+        UMBRA_REPO: '${UMBRA_REPO:-https://github.com/acedward/UmbraDB.git}'
+        UMBRA_REF: '${UMBRA_REF:-feat/00006-json-rpc-review}'
+    command: ['npx', 'tsx', 'tools/migrate.ts']
+    environment: &pg_env
+      PG_URL: 'postgres://${EVM_PG_USER:-umbra}:${EVM_PG_PASSWORD:-umbra}@evm-postgres:5432/${EVM_PG_DB:-umbra}'
+      # EVM_RPC_SCHEMA is intentionally not parameterized. `evm-rpc/db.ts`'s reader — the code
+      # behind eth_getBalance / eth_getTransactionCount / eth_getCode / eth_getTransactionByHash
+      # and the receipts' log join — hardcodes the literal `evm_rpc.` prefix in its SQL. Only the
+      # Part C paths honour the env var, so any other value silently splits the data across two
+      # schemas and returns zero balances with no error.
+      EVM_RPC_SCHEMA: 'evm_rpc'
+    depends_on:
+      evm-postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  # ── evm-rpc ────────────────────────────────────────────────────────────────
+  evm-rpc:
+    image: '${EVM_IMAGE:-midnight-2-offers/umbra-evm:local}'
+    build: *umbra-build
+    security_opt:
+      - 'no-new-privileges:true'
+    # npm forwards signals to the tsx child, but it is not PID 1 material; tini reaps and
+    # forwards, so SIGTERM reaches serve-all.ts's own shutdown handler and the process does not
+    # take the full 10s kill grace on every ./down.sh.
+    init: true
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${EVM_RPC_HOST_PORT:-8545}:8545'
+      - '${BIND_ADDR:-127.0.0.1}:${EVM_WS_HOST_PORT:-10021}:10021'
+    volumes:
+      # Contracts to ingest events from. `[]` for this demo: it is a read-only façade and no
+      # contract is deployed, so there is nothing to watch. Duplicate addresses in this file are
+      # REJECTED at startup (two subscriptions would race on one log_cursors row), and a
+      # malformed entry fails the container immediately rather than later.
+      - ../config/watch.json:/config/watch.json:ro
+    environment:
+      <<: *pg_env
+      CHAIN_ID: '${EVM_CHAIN_ID:-2400}'
+      # Container ports, never host ports: these are what the process binds INSIDE the container.
+      EVM_RPC_HOST: '0.0.0.0'
+      EVM_RPC_PORT: '8545'
+      EVM_RPC_WS_PORT: '10021'
+      # Compose-internal indexer. v4 is the version this surface is written against
+      # (evm-rpc/logs/schema-v4.snapshot.graphql); the WS endpoint is the same path + /ws.
+      INDEXER_URL: 'http://indexer:8088/api/v4/graphql'
+      INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
+      WATCH_CONTRACTS_FILE: '/config/watch.json'
+      # RELAY_URL: deliberately ABSENT — see the header. Setting it would register
+      # eth_sendRawTransaction and turn this into a write path.
+      #
+      # DEMO_TOKEN_AS_NIGHT is deliberately left OFF. It makes eth_getBalance ADD an address's
+      # ERC20-Transfer-folded token balance to its native NIGHT balance so MetaMask displays
+      # minted tokens as the account balance. That conflates native and token value, and with an
+      # empty watch.json it could only ever add zero. Set it to 1 only in a demo that deploys a
+      # token and wants MetaMask's account number to show it.
+    depends_on:
+      evm-postgres:
+        condition: service_healthy
+      evm-migrate:
+        condition: service_completed_successfully
+      indexer:
+        condition: service_healthy
+    healthcheck:
+      # A real JSON-RPC round trip, not a port probe: the process listens before the registry is
+      # fully wired, and a chainId answer proves the request path works end to end. The image has
+      # no curl/wget (node:24-bookworm-slim), but node has global fetch.
+      test:
+        - 'CMD'
+        - 'node'
+        - '-e'
+        - >
+          fetch("http://127.0.0.1:8545", { method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId" }) })
+          .then((r) => r.json())
+          .then((j) => { if (typeof j.result !== "string") process.exit(1); })
+          .catch(() => process.exit(1));
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 10s
+    restart: 'unless-stopped'
+
+  # ── wallet-monitor ─────────────────────────────────────────────────────────
+  # Subscribes to the indexer's `unshieldedTransactions` for each watched wallet and folds the
+  # created/spent UTXOs into evm_rpc.{address_map,utxos,balances,tx_index}. This — not the node
+  # and not the indexer — is what makes eth_getBalance non-zero, so an address nobody monitors
+  # reads as 0 rather than as an error.
+  wallet-monitor:
+    image: '${EVM_IMAGE:-midnight-2-offers/umbra-evm:local}'
+    build: *umbra-build
+    security_opt:
+      - 'no-new-privileges:true'
+    init: true
+    command: ['npm', 'run', 'monitor:wallet']
+    environment:
+      <<: *pg_env
+      # NOT a typo and NOT interchangeable with PG_URL: wallet-monitor/monitor.ts reads
+      # ARCHIVE_PG, while evm-rpc reads PG_URL. Same database, two different variable names —
+      # setting only the one the plan named would leave the monitor dead on startup.
+      ARCHIVE_PG: 'postgres://${EVM_PG_USER:-umbra}:${EVM_PG_PASSWORD:-umbra}@evm-postgres:5432/${EVM_PG_DB:-umbra}'
+      INDEXER_URL: 'http://indexer:8088/api/v4/graphql'
+      INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
+      NET: '${EVM_NETWORK_ID:-undeployed}'
+      # T3.3 — the wallets whose balances the eth_* surface can answer for.
+      #
+      # WATCH_SEEDS takes 32-byte (64 hex char) seeds and derives the unshielded address itself.
+      # WATCH_ADDRESSES takes bech32 mn_addr values verbatim, and is how the Lace test wallet gets
+      # monitored: its seed is 64 BYTES, which the monitor's own derivation rejects outright.
+      # Defaults cover every wallets/wallets.json entry — the three dev genesis seeds, the Lace
+      # test wallet (by address) and the three script-funded demo wallets.
+      WATCH_SEEDS: '${EVM_WATCH_SEEDS:-0000000000000000000000000000000000000000000000000000000000000001,0000000000000000000000000000000000000000000000000000000000000002,0000000000000000000000000000000000000000000000000000000000000003,de110000000000000000000000000000000000000000000000000000000a11ce,de110000000000000000000000000000000000000000000000000000000b0b00,de110000000000000000000000000000000000000000000000000000000ca201}'
+      WATCH_ADDRESSES: '${EVM_WATCH_ADDRESSES:-mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m}'
+    depends_on:
+      evm-postgres:
+        condition: service_healthy
+      evm-migrate:
+        condition: service_completed_successfully
+      indexer:
+        condition: service_healthy
+    # No healthcheck is possible: the monitor listens on nothing and the image has no probe
+    # target. It has its own reconnecting subscription loop, so `restart` is the backstop for a
+    # crash only; verify.sh asserts the container is running and that it has actually written
+    # address_map rows.
+    healthcheck:
+      disable: true
+    restart: 'unless-stopped'
+
+volumes:
+  # MUST be declared here rather than created ad hoc: only a compose-created volume carries the
+  # com.docker.compose.project label that `down.sh -v` filters on, so a volume made any other way
+  # survives teardown and silently feeds stale state to the next bring-up. This one holds indexed
+  # state for one specific chain genesis, so it must die with the node/indexer volumes.
+  evm-postgres-data:
