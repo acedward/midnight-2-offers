@@ -18,6 +18,7 @@ source "$REPO_ROOT/scripts/lib/evm.sh"
 PROFILES=""
 DO_PULL=0
 DO_BUILD=0
+WANT_ALL=0
 
 usage() {
   cat <<'EOF'
@@ -28,13 +29,19 @@ three are serving. Reads .env for image tags and host ports (see .env.example).
 
 Options:
   --with <profile>   also bring up an optional profile; repeatable. A profile is a compose
-                     fragment in compose/, named after the profile.
-                     Available: evm (read-only Ethereum JSON-RPC).
-                     Planned:   offerfiles (Phase 4), frontend (Phase 5).
-  --all              bring up every profile that exists in compose/.
+                     fragment in compose/, named after the profile. An unknown name is an
+                     error, not a no-op — see below.
+                     Available now: evm (read-only Ethereum JSON-RPC).
+  --all              bring up every profile that has a fragment in compose/. Profiles that
+                     are documented but not built yet are named and skipped, not an error.
   --pull             docker compose pull before starting.
   --build            docker compose build before starting (for the locally-built images).
   -h, --help         this text.
+
+Profiles not built yet: offerfiles (offer-files kernel + Celestia) and frontend (zswap-da
+SPA). Their host ports are reserved in .env.example and their fragments arrive with the
+Effectstream ledger-v9 migration (project 00016). `--all` reports them; `--with` rejects
+them, because a silently-ignored `--with` is worse than a failed one.
 
 Environment:
   ENV_FILE=<path>    use a different env file than ./.env — this is how two stacks run
@@ -48,16 +55,28 @@ Examples:
 EOF
 }
 
+# A `--with` name that has no fragment must FAIL. It used to be accepted and then quietly
+# dropped by compose_files(), so `./up.sh --with umbra-evm` (the fragment is evm.yml) came
+# up as a bare core stack and only failed later, as `no such service: evm-rpc`.
+add_profile() {
+  local p="$1" pend
+  if [[ ! -f "$REPO_ROOT/compose/$p.yml" ]]; then
+    err "unknown profile: $p"
+    info "available now: $(available_profiles | tr '\n' ' ')"
+    pend="$(pending_profiles | tr '\n' ' ')"
+    [[ -n "${pend// /}" ]] && info "not built yet, coming with ${FUTURE_PROFILES_BLOCKER}: ${pend}"
+    exit 2
+  fi
+  PROFILES="$PROFILES $p"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --with)   PROFILES="$PROFILES ${2:?--with needs a profile name}"; shift 2 ;;
-    --with=*) PROFILES="$PROFILES ${1#*=}"; shift ;;
+    --with)   add_profile "${2:?--with needs a profile name}"; shift 2 ;;
+    --with=*) add_profile "${1#*=}"; shift ;;
     --all)
-      for f in "$REPO_ROOT"/compose/*.yml; do
-        b="$(basename "$f" .yml)"
-        [[ "$b" == "core" ]] && continue
-        PROFILES="$PROFILES $b"
-      done
+      while IFS= read -r p; do PROFILES="$PROFILES $p"; done < <(available_profiles)
+      WANT_ALL=1
       shift ;;
     --pull)  DO_PULL=1; shift ;;
     --build) DO_BUILD=1; shift ;;
@@ -74,6 +93,14 @@ log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
 info "images   node=${NODE_TAG}  indexer=${INDEXER_TAG} (${INDEXER_PLATFORM})  proof=${PROOF_TAG}"
 info "ports    node=${HOST_ADDR}:${NODE_HOST_PORT}  indexer=${HOST_ADDR}:${INDEXER_HOST_PORT}  proof=${HOST_ADDR}:${PROOF_HOST_PORT}"
 [[ -n "${PROFILES// /}" ]] && info "profiles core${PROFILES// /, }"
+if (( WANT_ALL )); then
+  # `--all` means "every fragment there is", which today is not the whole demo. Say so, so
+  # nobody concludes the offer-files half is broken when it was simply never started.
+  PENDING="$(pending_profiles | tr '\n' ' ')"
+  if [[ -n "${PENDING// /}" ]]; then
+    info "not built yet, so --all skipped them (coming with ${FUTURE_PROFILES_BLOCKER}): ${PENDING}"
+  fi
+fi
 
 # Pre-create the toolkit cache directory that compose bind-mounts into the `fund` service.
 # Letting docker create a missing bind-mount source races with the first container that

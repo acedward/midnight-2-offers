@@ -31,7 +31,9 @@ new genesis.
 
 Options:
   -v, --volumes   also remove all volumes of this compose project (FULL RESET)
-  --all           include every optional profile's services in the teardown
+  --all           accepted for symmetry with up.sh, but it changes nothing: down.sh ALWAYS
+                  passes every fragment in compose/, so a profile brought up earlier can
+                  never be orphaned by forgetting to name it here
   -h, --help      this text
 
 Environment:
@@ -44,13 +46,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v|--volumes) WIPE=1; shift ;;
-    --all)
-      for f in "$REPO_ROOT"/compose/*.yml; do
-        b="$(basename "$f" .yml)"
-        [[ "$b" == "core" ]] && continue
-        PROFILES="$PROFILES $b"
-      done
-      shift ;;
+    --all) shift ;;   # no-op: the loop below already includes every fragment
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -58,12 +54,11 @@ done
 
 # Always tear down every profile whose fragment exists: `docker compose down` only removes
 # what the given -f files declare, so a narrower file list would orphan the containers of a
-# profile that was brought up earlier.
-for f in "$REPO_ROOT"/compose/*.yml; do
-  b="$(basename "$f" .yml)"
-  [[ "$b" == "core" ]] && continue
-  [[ " $PROFILES " == *" $b "* ]] || PROFILES="$PROFILES $b"
-done
+# profile that was brought up earlier. This is why `--all` is redundant here — and why it is
+# still accepted, rather than being an error someone has to discover mid-teardown.
+while IFS= read -r p; do
+  [[ " $PROFILES " == *" $p "* ]] || PROFILES="$PROFILES $p"
+done < <(available_profiles)
 export PROFILES
 
 require_docker

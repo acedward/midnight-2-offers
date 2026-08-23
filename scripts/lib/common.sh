@@ -85,6 +85,42 @@ load_env() {
   export NODE_RPC_URL INDEXER_GQL_URL
 }
 
+# ── profiles ─────────────────────────────────────────────────────────────────
+#
+# A profile IS the basename of a compose fragment: `--with evm` adds compose/evm.yml.
+# No compose `profiles:` key is involved — `up.sh` never passes `--profile`, so a service
+# carrying one would never start. (compose/core.yml's `fund` service has one on purpose:
+# it must NOT start with `up -d`.)
+#
+# KNOWN_FUTURE_PROFILES are profiles this stack reserves ports and documentation for but
+# has not built yet. Listing them is not cosmetic: without it `--with offerfiles` reads as
+# a typo, and `--all` looks like it brought up the whole four-component demo when it
+# brought up half of it.
+KNOWN_FUTURE_PROFILES="offerfiles frontend"
+FUTURE_PROFILES_BLOCKER="the Effectstream ledger-v9 migration (project 00016)"
+
+# available_profiles — every profile that has a fragment today, one per line.
+# `core` is excluded: it is unconditional, not opt-in.
+available_profiles() {
+  local f b
+  for f in "$REPO_ROOT"/compose/*.yml; do
+    [[ -e "$f" ]] || continue
+    b="$(basename "$f" .yml)"
+    [[ "$b" == "core" ]] && continue
+    printf '%s\n' "$b"
+  done
+}
+
+# pending_profiles — the known-but-unbuilt ones, i.e. KNOWN_FUTURE_PROFILES minus any
+# that have since gained a fragment. Prints nothing once they all land, so the "coming
+# later" messages disappear on their own rather than having to be hunted down.
+pending_profiles() {
+  local p
+  for p in $KNOWN_FUTURE_PROFILES; do
+    [[ -f "$REPO_ROOT/compose/$p.yml" ]] || printf '%s\n' "$p"
+  done
+}
+
 # ── compose ──────────────────────────────────────────────────────────────────
 # The compose fragments for the requested profiles. `core` is unconditional.
 # PROFILES is a space-separated list set by the caller (up.sh --with evm …).
