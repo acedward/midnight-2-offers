@@ -467,6 +467,10 @@ packaging, so this is it. Three services share the one image: `evm-rpc`
 (`npm run evm-rpc:all`), `wallet-monitor` (`npm run monitor:wallet`) and the one-shot
 `evm-migrate` (`npx tsx tools/migrate.ts`).
 
+- **The first bring-up prints `pull access denied` three times, and that is normal.** The image
+  tag is local-only, so compose tries a registry pull for each of the three services before
+  falling back to building it. The build then runs and the stack comes up; there is nothing to
+  fix and nothing to log in to.
 - **`evm-migrate` is not optional.** `serve-all.ts` does not apply its own migrations — upstream,
   only `wallet-monitor` does — so without an explicit init step the two services race for the
   schema and `evm-rpc` dies on a missing relation whenever it wins. Both depend on it with
