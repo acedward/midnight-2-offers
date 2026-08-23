@@ -27,8 +27,10 @@ Brings up the core Midnight stack (node + indexer + proof-server) and waits unti
 three are serving. Reads .env for image tags and host ports (see .env.example).
 
 Options:
-  --with <profile>   also bring up an optional profile; repeatable.
-                     Profiles: evm (Phase 3), offerfiles (Phase 4), frontend (Phase 5).
+  --with <profile>   also bring up an optional profile; repeatable. A profile is a compose
+                     fragment in compose/, named after the profile.
+                     Available: evm (read-only Ethereum JSON-RPC).
+                     Planned:   offerfiles (Phase 4), frontend (Phase 5).
   --all              bring up every profile that exists in compose/.
   --pull             docker compose pull before starting.
   --build            docker compose build before starting (for the locally-built images).
