@@ -1,0 +1,166 @@
+# offer-files — the ZSwap offer-files stack.  Profile: `offerfiles`
+#
+#   ./up.sh --with offerfiles     (up.sh/down.sh pick this fragment up by filename)
+#
+# ─── THIS FRAGMENT IS PARTIAL, ON PURPOSE ────────────────────────────────────────────────────
+# Today it contains ONE service: the local Celestia devnet (plan T4.4). The offer-files kernel
+# (sync node :9999) and the batcher (:3334) join it in P4b — see the marked block at the bottom.
+#
+# Celestia was built first because it is the only part of the offer-files stack that does not
+# touch the Midnight SDK: it is two Go binaries and a chain of its own. The kernel and batcher
+# are blocked on the `@effectstream/*` ledger-v9 migration (project Effectstream/00016) and
+# Celestia is not, so building it now means P4b is wiring rather than wiring *plus* a devnet.
+# A consequence worth stating: `--with offerfiles` brings up a working DA layer with nothing
+# publishing to it. That is a useful thing to have (verify.sh proves the round trip the kernel
+# will do) but it is not the offer-files demo.
+#
+# `profiles:` is deliberately NOT used here — this repo's notion of a profile is the FRAGMENT
+# FILENAME, and up.sh never passes `--profile`, so a service carrying a compose profile key
+# would silently never start.
+
+services:
+  # ── celestia ───────────────────────────────────────────────────────────────
+  # A single-node Celestia devnet: consensus node (celestia-appd 6.4.10) + bridge node
+  # (celestia-node 0.28.4) in one container, with a funded bridge wallet and the DA JSON-RPC on
+  # :26658. Both versions are exactly what `@effectstream/celestia@0.103.1` vendors for the
+  # kernel's `bun run dev`, so this is the devnet the kernel was developed against.
+  #
+  # ONE CONTAINER FOR TWO PROCESSES, deliberately. The bridge dials the consensus node's gRPC on
+  # 127.0.0.1:9090 and needs its genesis block hash to even initialise (`CELESTIA_CUSTOM=
+  # <chain>:<hash>`), so splitting them costs a service-discovery dance and a chicken-and-egg
+  # ordering problem in exchange for nothing: they share a lifecycle either way. The entrypoint
+  # exits if either process dies, so compose never sees half a devnet reported as running.
+  celestia:
+    image: '${CELESTIA_IMAGE:-midnight-2-offers/celestia:local}'
+    build:
+      context: ../images/celestia
+      args:
+        CELESTIA_APP_VERSION: '${CELESTIA_APP_VERSION:-6.4.10}'
+        CELESTIA_NODE_VERSION: '${CELESTIA_NODE_VERSION:-0.28.4}'
+    # No `platform:` pin, unlike the indexer. The binaries come from celestiaorg's own releases,
+    # which publish Linux_arm64 as well as Linux_x86_64 — so this builds and runs native on both
+    # Apple Silicon and x86. (The npm package the kernel uses mirrors only linux-amd64, which
+    # would have forced QEMU on a block-a-second consensus node. The mirrored tarballs are
+    # byte-identical to upstream's; see images/celestia/Dockerfile.)
+    security_opt:
+      - 'no-new-privileges:true'
+    # The entrypoint is a bash supervisor of two long-lived children; without an init, a killed
+    # child is reparented to PID 1 and `docker stop` waits out the full kill grace on every
+    # teardown.
+    init: true
+    ports:
+      # ONLY the DA RPC. The consensus RPC (26657) and gRPC (9090) stay inside: the bridge
+      # reaches them over container-loopback, and every published port is one more collision on
+      # a shared machine. Reach them with
+      #   docker compose ... exec celestia curl -s localhost:26657/status
+      - '${BIND_ADDR:-127.0.0.1}:${CELESTIA_HOST_PORT:-26658}:26658'
+    environment:
+      # The namespace blobs are written to and read from. 10 bytes, hex, right-aligned into the
+      # 28-byte namespace id by the sync layer (`0x00` version byte ‖ 18 zero bytes ‖ these 10) —
+      # the same expansion the kernel's `mip6NamespaceBytes()` does.
+      #
+      # NOTE, and P4b MUST keep these two in step: `000000000000deadbeef` is the value the
+      # kernel's own `.env.preview.example` uses, but the kernel's CODE default is the MIP-0006
+      # shared namespace `6d6e2d737761702d7631` ("mn-swap-v1"). They are different namespaces,
+      # and a mismatch is silent — the batcher publishes and the sync node reads an empty stream.
+      # So the kernel/batcher services below must take CELESTIA_NAMESPACE from this same
+      # variable, never from their own default. See the plan's T4.4 finding and question Q11.
+      CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-000000000000deadbeef}'
+      # Chain id of the devnet, and also celestia-node's network name. `test` is what
+      # @effectstream/celestia uses; changing it invalidates the data volume.
+      CELESTIA_CHAIN_ID: '${CELESTIA_CHAIN_ID:-test}'
+      # A label only — the kernel uses CELESTIA_NETWORK to choose poll intervals (devnet → 6s).
+      CELESTIA_NETWORK: '${CELESTIA_NETWORK:-devnet}'
+      # Container port, never the host port: this is what the bridge binds INSIDE the container.
+      CELESTIA_RPC_PORT: '26658'
+      # `true` reverts to the kernel dev orchestrator's `--rpc.skip-auth`, i.e. an unauthenticated
+      # DA RPC and no token to thread anywhere. Kept as an escape hatch; the default is auth ON so
+      # that the kernel's CELESTIA_AUTH_TOKEN path is exercised locally instead of only against
+      # the hosted preview endpoint.
+      CELESTIA_SKIP_AUTH: '${CELESTIA_SKIP_AUTH:-false}'
+    volumes:
+      # The chain: the validator keyring + genesis + consensus data, and the bridge node's store.
+      - celestia-data:/var/lib/celestia
+      # The handoff: /celestia/auth/{token,celestia.env}. A separate, tiny volume so that the
+      # kernel and batcher can mount JUST this, read-only, and get the token without also getting
+      # read access to the validator's keyring.
+      - celestia-auth:/celestia/auth
+    healthcheck:
+      # Not a port probe — an authenticated JSON-RPC round trip plus the bridge wallet's balance.
+      # See images/celestia/healthcheck.sh for why each of the three assertions is there.
+      test: ['CMD', '/usr/local/bin/celestia-health']
+      interval: 5s
+      timeout: 10s
+      # The bootstrap is genesis → first block → bridge init → 6s pause → bridge start → fund →
+      # wait for inclusion. start_period covers it without counting the attempts as failures.
+      retries: 12
+      start_period: 90s
+    restart: 'unless-stopped'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # P4b GOES HERE — the offer-files kernel (T4.2, T4.3, T4.5) and the batcher.
+  #
+  # Everything below is a note for that runner, not configuration. It is written down here
+  # because this is where it will be needed and because each line was established by building
+  # and verifying the Celestia half (see the plan's T4.4 findings).
+  #
+  #   kernel:                                  # sync node, container :9999
+  #     image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+  #     build: { context: ../images/offerfiles-kernel }
+  #     ports: ['${BIND_ADDR:-127.0.0.1}:${KERNEL_HOST_PORT:-9999}:9999']
+  #     volumes: ['celestia-auth:/celestia/auth:ro']      # <- the token handoff, READ-ONLY
+  #     environment:
+  #       CELESTIA_RPC_URL:  'http://celestia:26658'      # container port, not CELESTIA_HOST_PORT
+  #       CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-000000000000deadbeef}'   # SAME var as above
+  #       CELESTIA_NETWORK:  '${CELESTIA_NETWORK:-devnet}'
+  #       CELESTIA_START_HEIGHT: '1'                      # a devnet's history is not worth skipping
+  #       MIDNIGHT_NODE_HTTP: 'http://node:9944'
+  #       MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v3/graphql'   # v3 aliases v4 (verified)
+  #       MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
+  #     depends_on:
+  #       celestia: { condition: service_healthy }        # guarantees a valid token on the volume
+  #       node:     { condition: service_healthy }
+  #       indexer:  { condition: service_healthy }
+  #
+  # 1. THE AUTH TOKEN. It cannot be a compose `environment:`/`env_file:` value: it does not exist
+  #    until the bridge store is initialised, which happens inside the celestia container long
+  #    after compose has finished evaluating those on the host. Mount `celestia-auth` read-only
+  #    and have the kernel's entrypoint source the handoff file as its first act:
+  #
+  #        set -a; . /celestia/auth/celestia.env; set +a
+  #        exec bun run …
+  #
+  #    That file sets CELESTIA_RPC_URL, CELESTIA_AUTH_TOKEN, CELESTIA_NAMESPACE, CELESTIA_NETWORK
+  #    and CELESTIA_CHAIN_ID — the exact names `packages/node/env.ts` reads — so the kernel needs
+  #    no new configuration surface. Anything already in the environment can win by exporting it
+  #    after the source, if a service ever needs to override one.
+  #    `condition: service_healthy` is what makes the file's presence a guarantee rather than a
+  #    race: the healthcheck reads the token and makes an authenticated call with it, so a healthy
+  #    celestia container means "the file exists and the token in it works".
+  #    Alternative if a shim is unwanted: set CELESTIA_SKIP_AUTH=true and drop the mount. That is
+  #    what the kernel's own dev orchestrator does (`--rpc.skip-auth`), at the cost of never
+  #    exercising the token path locally.
+  #
+  # 2. START HEIGHT. The kernel defaults CELESTIA_START_HEIGHT to unset and preview sets it to
+  #    10,620,000 (a Mocha height). Against this devnet it must be 1 or unset — a start height
+  #    above the devnet's head means the sync node waits forever and reports nothing wrong.
+  #
+  # 3. FEES. The bridge wallet is funded with 1e8 utia at bootstrap, which is a few thousand
+  #    blob submissions at devnet prices. It is the BRIDGE that pays (it signs its own
+  #    submissions), so the batcher needs no TIA of its own — only the Midnight side needs a
+  #    funded wallet (and that one needs 1e7 NIGHT; see the plan's DUST-accrual finding).
+  #
+  # 4. THE MIDNIGHT SIDE OF THE BATCHER still needs `wait_finalized_height >= 1` before it
+  #    transacts (the OnlyGenesisFinalized finding) — up.sh already gates on that for the whole
+  #    stack, so nothing extra is needed here, but do not "optimise" that wait away.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+volumes:
+  # BOTH must be declared here rather than created ad hoc: only a compose-created volume carries
+  # the com.docker.compose.project label that `down.sh -v` filters on, so a volume made any other
+  # way survives teardown and silently feeds stale state to the next bring-up (the mistake the
+  # toolkit cache made in P1/P2). And these two MUST die with the Midnight volumes: an offer
+  # spans both chains, so a Celestia history describing offers against a Midnight genesis that no
+  # longer exists is worse than no history at all.
+  celestia-data:
+  celestia-auth:

@@ -93,11 +93,29 @@ load_env() {
 # it must NOT start with `up -d`.)
 #
 # KNOWN_FUTURE_PROFILES are profiles this stack reserves ports and documentation for but
-# has not built yet. Listing them is not cosmetic: without it `--with offerfiles` reads as
+# has not built yet. Listing them is not cosmetic: without it `--with frontend` reads as
 # a typo, and `--all` looks like it brought up the whole four-component demo when it
-# brought up half of it.
-KNOWN_FUTURE_PROFILES="offerfiles frontend"
+# brought up part of it.
+#
+# `offerfiles` left this list when compose/offerfiles.yml landed — pending_profiles() would have
+# dropped it on its own (it subtracts anything with a fragment), but leaving a built profile in
+# the registry turns it into a lie waiting for a reader.
+KNOWN_FUTURE_PROFILES="frontend"
 FUTURE_PROFILES_BLOCKER="the Effectstream ledger-v9 migration (project 00016)"
+
+# PARTIAL_PROFILES have a fragment — so `--with` accepts them and `--all` includes them — but do
+# not yet contain every service the finished profile will. `offerfiles` ships its Celestia devnet
+# and not (yet) the kernel or the batcher, because Celestia is the one part of that stack which
+# touches no Midnight SDK and is therefore not blocked on the migration above. Saying so out loud
+# is the difference between "this is half-built on purpose" and "the offer-files demo is broken".
+# When P4b lands the kernel + batcher, delete the profile from this list and its note below.
+PARTIAL_PROFILES="offerfiles"
+partial_profile_note() {
+  case "$1" in
+    offerfiles) printf '%s\n' "Celestia DA devnet only — the offer-files kernel (:9999) and batcher (:3334) join this profile with ${FUTURE_PROFILES_BLOCKER}" ;;
+    *) return 1 ;;
+  esac
+}
 
 # available_profiles — every profile that has a fragment today, one per line.
 # `core` is excluded: it is unconditional, not opt-in.
@@ -119,6 +137,21 @@ pending_profiles() {
   for p in $KNOWN_FUTURE_PROFILES; do
     [[ -f "$REPO_ROOT/compose/$p.yml" ]] || printf '%s\n' "$p"
   done
+}
+
+# use_all_profiles — set PROFILES to every profile that has a fragment.
+#
+# For a script that only needs to reach ONE service. `dc` passes exactly the fragments named in
+# PROFILES, and compose calls any container it has no definition for an ORPHAN — so a script that
+# names only its own profile prints "Found orphan containers (…)" on every `run`/`exec` as soon as
+# a second profile exists. Naming every fragment (which is what down.sh already does, for the
+# stronger reason that a narrower list would orphan them for real) removes the warning and keeps
+# these scripts correct as more profiles land.
+use_all_profiles() {
+  local p
+  PROFILES=""
+  while IFS= read -r p; do PROFILES="$PROFILES $p"; done < <(available_profiles)
+  export PROFILES
 }
 
 # ── compose ──────────────────────────────────────────────────────────────────

@@ -14,6 +14,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 # shellcheck source=scripts/lib/evm.sh
 source "$REPO_ROOT/scripts/lib/evm.sh"
+# shellcheck source=scripts/lib/celestia.sh
+source "$REPO_ROOT/scripts/lib/celestia.sh"
 
 PROFILES=""
 DO_PULL=0
@@ -31,17 +33,26 @@ Options:
   --with <profile>   also bring up an optional profile; repeatable. A profile is a compose
                      fragment in compose/, named after the profile. An unknown name is an
                      error, not a no-op — see below.
-                     Available now: evm (read-only Ethereum JSON-RPC).
+                     Available now: evm        (read-only Ethereum JSON-RPC)
+                                    offerfiles (Celestia DA devnet; kernel + batcher pending)
   --all              bring up every profile that has a fragment in compose/. Profiles that
                      are documented but not built yet are named and skipped, not an error.
   --pull             docker compose pull before starting.
   --build            docker compose build before starting (for the locally-built images).
   -h, --help         this text.
 
-Profiles not built yet: offerfiles (offer-files kernel + Celestia) and frontend (zswap-da
-SPA). Their host ports are reserved in .env.example and their fragments arrive with the
-Effectstream ledger-v9 migration (project 00016). `--all` reports them; `--with` rejects
-them, because a silently-ignored `--with` is worse than a failed one.
+`--with` names the COMPLETE set of optional profiles for this bring-up, not an addition to
+whatever is already running: compose is given only core + the named fragments and passes
+--remove-orphans, so a profile that is up but not named this time is STOPPED. To add a second
+profile to a running stack, name both (`--with evm --with offerfiles`) or use `--all`.
+
+`offerfiles` is PARTIAL: it brings up the local Celestia devnet (a DA layer the kernel will
+publish offers to), but not yet the offer-files kernel (:9999) or the batcher (:3334) — those
+need the Effectstream ledger-v9 migration (project 00016). up.sh says so on every bring-up.
+
+Profile not built yet: frontend (the zswap-da SPA), which follows the kernel. Its host port is
+reserved in .env.example. `--all` reports it; `--with` rejects it, because a silently-ignored
+`--with` is worse than a failed one.
 
 Environment:
   ENV_FILE=<path>    use a different env file than ./.env — this is how two stacks run
@@ -93,6 +104,14 @@ log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
 info "images   node=${NODE_TAG}  indexer=${INDEXER_TAG} (${INDEXER_PLATFORM})  proof=${PROOF_TAG}"
 info "ports    node=${HOST_ADDR}:${NODE_HOST_PORT}  indexer=${HOST_ADDR}:${INDEXER_HOST_PORT}  proof=${HOST_ADDR}:${PROOF_HOST_PORT}"
 [[ -n "${PROFILES// /}" ]] && info "profiles core${PROFILES// /, }"
+# Name what a partial profile does and does not include, every time. Left unsaid, `--with
+# offerfiles` coming up with no kernel on :9999 reads as a broken build rather than as the
+# half that was deliberately built first.
+for p in ${PROFILES:-}; do
+  if note="$(partial_profile_note "$p" 2>/dev/null)"; then
+    info "note     ${p} is PARTIAL: ${note}"
+  fi
+done
 if (( WANT_ALL )); then
   # `--all` means "every fragment there is", which today is not the whole demo. Say so, so
   # nobody concludes the offer-files half is broken when it was simply never started.
@@ -168,6 +187,18 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" evm "* ]]; then
   fi
 fi
 
+if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
+  celestia_defaults
+  # The container healthcheck is already a real authenticated JSON-RPC call plus a wallet-balance
+  # assertion (images/celestia/healthcheck.sh), so `healthy` here genuinely means "a blob can be
+  # submitted". It is still not enough on its own: it proves the RPC works on container-localhost,
+  # and says nothing about the PUBLISHED port — which is where P3's loopback-bind defect lived.
+  wait_compose_healthy celestia "$CELESTIA_WAIT_TIMEOUT" || FAILED=1
+  if (( ! FAILED )); then
+    wait_celestia_rpc 120 || FAILED=1
+  fi
+fi
+
 if (( FAILED )); then
   echo
   err "stack did not come up. Last 40 log lines per service:"
@@ -186,6 +217,12 @@ info "proof server      http://${HOST_ADDR}:${PROOF_HOST_PORT}"
 if [[ " $PROFILES " == *" evm "* ]]; then
   info "evm JSON-RPC      ${EVM_RPC_URL}   (chainId ${EVM_CHAIN_ID}, READ-ONLY)"
   info "evm WS            ws://${HOST_ADDR}:${EVM_WS_HOST_PORT}"
+fi
+if [[ " $PROFILES " == *" offerfiles "* ]]; then
+  info "celestia DA RPC   ${CELESTIA_DA_URL}   (namespace ${CELESTIA_NAMESPACE})"
+  if [[ "$CELESTIA_SKIP_AUTH" != "true" && "$CELESTIA_SKIP_AUTH" != "1" ]]; then
+    info "celestia token    ./scripts/celestia-token.sh    (or: exec celestia celestia-token)"
+  fi
 fi
 echo
 info "next: ./verify.sh    (health + prefunded wallet assertions)"

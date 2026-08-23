@@ -41,9 +41,9 @@ done
 
 require_docker
 load_env
-# The evm fragment must be in the compose file list for `dc run` to know these services.
-PROFILES="${PROFILES:-} evm"
-export PROFILES
+# Every fragment, not just evm: the evm one is what `dc run` needs to know these services, and the
+# rest keep compose from calling another profile's containers orphans on every `run`.
+use_all_profiles
 evm_defaults
 
 FAILURES=0

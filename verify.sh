@@ -7,6 +7,8 @@
 #            proof-server accepting connections
 #   wallets  every wallets.json entry marked funding=genesis holds NIGHT and spendable DUST
 #   evm      the umbra-evm read-only JSON-RPC surface (skipped unless the profile is up)
+#   celestia the offerfiles profile's DA devnet: producing blocks, and a blob round trip
+#            through the shared namespace (skipped unless the profile is up)
 #
 # Later phases append their own sections (kernel config endpoint, frontend HTTP).
 #
@@ -18,6 +20,7 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 
 SKIP_WALLETS=0
 EVM_MODE=auto
+CELESTIA_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -26,13 +29,16 @@ Usage: ./verify.sh [options]
 Options:
   --core-only    only the node/indexer/proof-server checks; skip the wallet assertions
                  (they each spawn a toolkit container and take ~10s per wallet) and the
-                 umbra-evm section
+                 optional-profile sections
   --evm          require the umbra-evm section (fail if the profile is not up)
   --no-evm       skip the umbra-evm section even if the profile is up
+  --celestia     require the celestia section (fail if the profile is not up)
+  --no-celestia  skip the celestia section even if the profile is up
   -h, --help     this text
 
-By default the umbra-evm section runs if and only if the profile's containers exist for this
-compose project, so ./verify.sh works unchanged whether or not `./up.sh --with evm` was used.
+By default each optional section runs if and only if that profile's containers exist for this
+compose project, so ./verify.sh works unchanged whether or not `./up.sh --with evm
+--with offerfiles` was used.
 
 Environment:
   ENV_FILE=<path>  verify a different stack instance (see .env.example)
@@ -41,9 +47,11 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; EVM_MODE=off; shift ;;
+    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; shift ;;
     --evm)       EVM_MODE=on; shift ;;
     --no-evm)    EVM_MODE=off; shift ;;
+    --celestia)    CELESTIA_MODE=on; shift ;;
+    --no-celestia) CELESTIA_MODE=off; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -142,6 +150,40 @@ case "$EVM_MODE" in
     else
       echo
       dim "evm profile not up — skipping (./up.sh --with evm to include it)"
+    fi
+    ;;
+esac
+
+# ── celestia (the offerfiles profile's DA devnet) ────────────────────────────
+# Same presence-detection rule as the evm section: read it off the containers, so no argument is
+# needed to do the right thing.
+CELESTIA_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=celestia" 2>/dev/null)" ]]; then
+  CELESTIA_PRESENT=1
+fi
+
+case "$CELESTIA_MODE" in
+  off) ;;
+  on|auto)
+    if (( CELESTIA_PRESENT )); then
+      echo
+      log "celestia"
+      if "$REPO_ROOT/scripts/verify-celestia.sh"; then
+        ok "celestia assertions passed"
+      else
+        err "celestia assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$CELESTIA_MODE" == "on" ]]; then
+      echo
+      err "--celestia was requested but no celestia container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with offerfiles"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "offerfiles profile not up — skipping celestia (./up.sh --with offerfiles to include it)"
     fi
     ;;
 esac

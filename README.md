@@ -7,7 +7,8 @@ A single Docker Compose project that brings up a complete local Midnight 2.x dem
 | Midnight node + indexer + proof-server | `core` (always) | **shipped** | `midnight-node:2.0.0-rc.4` / `indexer-standalone:4.4.0-rc.1` / `proof-server:9.0.0-rc.5` on `CFG_PRESET=dev` (network id `undeployed`) |
 | Wallet funding tooling | `core` | **shipped** | Genesis-prefunded NIGHT+DUST dev wallets, three Lace-importable mnemonic wallets, and a CLI to fund arbitrary extra ones |
 | umbra-evm | `evm` | **shipped** | Ethereum JSON-RPC **read-only** façade over Midnight (chainId 2400): HTTP `:8545` + WS `:10021`, backed by Postgres |
-| offer-files kernel + Celestia | `offerfiles` | not built yet | zswap offer-files sync node + batcher + local Celestia devnet |
+| Celestia DA devnet | `offerfiles` | **shipped** | Local single-node Celestia (consensus + bridge), DA JSON-RPC `:26658`, funded bridge wallet, blob round trip verified |
+| offer-files kernel + batcher | `offerfiles` | not built yet | zswap offer-files sync node `:9999` + batcher `:3334` — they join the profile Celestia is already in |
 | zswap-da frontend | `frontend` | not built yet | React/Vite make→take swap SPA |
 
 **Everything here is dev-only.** Every seed and mnemonic in this repo is public: the genesis
@@ -19,22 +20,27 @@ chain. Never reuse any of them anywhere else.
 ## What is and is not in this release
 
 **In**: the Midnight 2.x core stack, the wallet story (genesis-prefunded wallets, a funding
-CLI, and mnemonics you can type into Lace), and the read-only Ethereum JSON-RPC façade.
-`./up.sh --all && ./verify.sh` exercises all of it.
+CLI, and mnemonics you can type into Lace), the read-only Ethereum JSON-RPC façade, and the
+local Celestia DA devnet. `./up.sh --all && ./verify.sh` exercises all of it.
 
-**Not in**: the offer-files halves — the `offerfiles` and `frontend` profiles, and with them
-the browser make→take swap demo. They are not a to-do that was skipped: the offer-files kernel
-and the zswap-da template are pinned to ledger-v8 / wallet-SDK v1, and every `@effectstream/*`
-package they depend on pins `@midnight-ntwrk/ledger-v8` as an exact dependency. Running them
-against a ledger-v9 chain (which node 2.x is: it reports `protocolVersion 2000000`) needs those
-packages migrated and published first — measured at roughly 4,600 lines across five packages,
-which is its own project. Their host ports are already reserved in `.env.example`, `up.sh --all`
-names them as pending, and the fragments drop in as `compose/offerfiles.yml` and
-`compose/frontend.yml` when that lands.
+**Not in**: the offer-files kernel and batcher, the `frontend` profile, and therefore the browser
+make→take swap demo. They are not a to-do that was skipped: the offer-files kernel and the
+zswap-da template are pinned to ledger-v8 / wallet-SDK v1, and every `@effectstream/*` package
+they depend on pins `@midnight-ntwrk/ledger-v8` as an exact dependency. Running them against a
+ledger-v9 chain (which node 2.x is: it reports `protocolVersion 2000000`) needs those packages
+migrated and published first — measured at roughly 4,600 lines across five packages, which is its
+own project. Their host ports are already reserved in `.env.example`, and they drop into the
+existing `compose/offerfiles.yml` (plus a new `compose/frontend.yml`) when that lands.
 
-So `--all` today means "core + evm", and that is deliberate rather than accidental: `up.sh`
-tells you which profiles it skipped, and `--with offerfiles` fails with that explanation instead
-of quietly bringing up half a stack.
+**`offerfiles` is therefore a PARTIAL profile**, and `up.sh` says so on every bring-up: it gives
+you the Celestia DA layer the kernel will publish offers to, with nothing publishing to it yet.
+Celestia was built first precisely because it is the one piece of that stack that touches no
+Midnight SDK — two Go binaries and a chain of its own — so it could be finished and verified
+(including the blob round trip the kernel will perform) while the migration is under way.
+
+So `--all` today means "core + evm + Celestia", deliberately rather than accidentally: `up.sh`
+names what is partial and what it skipped, and `--with frontend` fails with an explanation
+instead of quietly bringing up part of a stack.
 
 ## Quickstart
 
@@ -84,6 +90,7 @@ Default URLs, all overridable in `.env`:
 | proof server | `http://127.0.0.1:6300` | `core` |
 | **eth JSON-RPC** | `http://127.0.0.1:8545` (chainId 2400 = `0x960`) | `evm` |
 | **eth WS (`eth_subscribe`)** | `ws://127.0.0.1:10021` | `evm` |
+| **Celestia DA JSON-RPC** | `http://127.0.0.1:26658` (bearer token required) | `offerfiles` |
 
 `/api/v3/graphql` on the indexer aliases v4, so a client pinned to the v3 path still works.
 
@@ -102,9 +109,11 @@ stacks on one machine possible.
 | — (not published) | — | 5432 | `evm-postgres` | `evm-rpc`, `wallet-monitor` | `evm` |
 | `EVM_RPC_HOST_PORT` | 8545 | 8545 | `evm-rpc` | MetaMask, `cast`, `viem` | `evm` |
 | `EVM_WS_HOST_PORT` | 10021 | 10021 | `evm-rpc` | `eth_subscribe` clients | `evm` |
+| `CELESTIA_HOST_PORT` | 26658 | 26658 | `celestia` (bridge node) | the kernel's DA reads/writes, `verify.sh` | `offerfiles` |
+| — (not published) | — | 26657 | `celestia` (consensus RPC) | the bridge, over container-loopback | `offerfiles` |
+| — (not published) | — | 9090 | `celestia` (consensus gRPC) | the bridge, over container-loopback | `offerfiles` |
 | `KERNEL_HOST_PORT` | 9999 | 9999 | *reserved* | the frontend's order book | `offerfiles` (later) |
 | `BATCHER_HOST_PORT` | 3334 | 3334 | *reserved* | the frontend's `send-input` | `offerfiles` (later) |
-| `CELESTIA_HOST_PORT` | 26658 | 26658 | *reserved* | the kernel's DA writes | `offerfiles` (later) |
 | `FRONTEND_HOST_PORT` | 10600 | 80 | *reserved* | your browser | `frontend` (later) |
 
 `BIND_ADDR` (default `127.0.0.1`) is the interface every published port binds to. Leave it as
@@ -491,20 +500,126 @@ packaging, so this is it. Three services share the one image: `evm-rpc`
      carrying a *watched contract log* — i.e. nothing at all with an empty `watch.json`. The patch
      injects a source polling the same indexer head that answers `eth_blockNumber`.
 
+## Celestia DA devnet (profile `offerfiles`)
+
+```bash
+./up.sh --with offerfiles           # core stack + a local single-node Celestia
+./scripts/celestia-token.sh         # the DA RPC's auth token
+./scripts/celestia-token.sh --curl  # a ready-to-paste authenticated curl
+./scripts/verify-celestia.sh        # block production + a blob submitted and read back
+```
+
+One container runs two processes: a **consensus node** (`celestia-appd` 6.4.10) producing a block
+a second, and a **bridge node** (`celestia-node` 0.28.4) serving the **DA JSON-RPC on `:26658`**
+with a funded wallet. Both versions are exactly what `@effectstream/celestia@0.103.1` vendors for
+the offer-files kernel's `bun run dev`, so this is the devnet the kernel was developed against.
+
+They share a container on purpose: the bridge dials the consensus node's gRPC over
+container-loopback and cannot even *initialise* without its genesis block hash
+(`CELESTIA_CUSTOM=<chain>:<hash>`), so splitting them buys a service-discovery dance and a
+chicken-and-egg ordering problem in exchange for nothing. The entrypoint exits if either process
+dies, so compose never reports half a devnet as running.
+
+### The namespace
+
+Blobs live in a namespace, and `CELESTIA_NAMESPACE` carries the 10-byte hex suffix of one
+(default `000000000000deadbeef`, the value the kernel's own `.env.preview.example` uses). The wire
+form is 29 bytes — a `0x00` version byte, 18 zero bytes, then those 10 — and
+`celestia-namespace --base64` in the image does that expansion, the same one the kernel's
+`mip6NamespaceBytes()` does:
+
+```bash
+docker run --rm -e CELESTIA_NAMESPACE=000000000000deadbeef \
+  midnight-2-offers/celestia:local celestia-namespace --base64
+# AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN6tvu8=
+```
+
+⚠️ **The kernel's *code* default is a different namespace**: the MIP-0006 *shared* namespace
+`6d6e2d737761702d7631` (ASCII `mn-swap-v1`). A mismatch between publisher and reader is
+completely silent — blobs land, nothing reads them, the order book is just always empty. So every
+offer-files service must take its namespace from this one `.env` variable. Both values work
+against this devnet; which one the demo should use is an open question for the offer-files work.
+
+### The auth token, and how a container gets it
+
+The DA RPC requires `Authorization: Bearer <jwt>`. That token is signed with a secret inside the
+bridge node's store, so it does not exist until the container has bootstrapped — which is *after*
+compose has finished evaluating `environment:` and `env_file:` on the host. It therefore cannot be
+a compose variable, and is handed over as a file on a small dedicated volume instead:
+
+| Path (volume `celestia-auth`) | Contents |
+|---|---|
+| `/celestia/auth/token` | the raw JWT, one line |
+| `/celestia/auth/celestia.env` | `CELESTIA_RPC_URL`, `CELESTIA_AUTH_TOKEN`, `CELESTIA_NAMESPACE`, `CELESTIA_NETWORK`, `CELESTIA_CHAIN_ID` as `KEY=value` |
+
+A consumer mounts that volume **read-only** and sources the file as its first act — one line in an
+entrypoint, and the variable names are already the ones the kernel's `packages/node/env.ts` reads:
+
+```dockerfile
+# in the future kernel/batcher entrypoint
+set -a; . /celestia/auth/celestia.env; set +a
+exec bun run …
+```
+
+`depends_on: {celestia: {condition: service_healthy}}` makes the file's presence a guarantee
+rather than a race, because **the healthcheck itself reads that token and makes an authenticated
+call with it** — so "healthy" means "the file is there and the token in it works". The volume is
+separate from the chain data volume so a consumer gets the token and *not* read access to the
+validator keyring. From the host, `./scripts/celestia-token.sh` does the same thing through
+`docker compose exec`.
+
+Setting `CELESTIA_SKIP_AUTH=true` reverts to an **open** DA RPC with no token to thread anywhere,
+which is what the kernel's own dev orchestrator does (`--rpc.skip-auth`). The default here is
+auth-on so that the token path is exercised locally instead of only against the hosted preview
+endpoint — the one place where a mistake in it costs money.
+
+### What verify.sh proves
+
+`./scripts/verify-celestia.sh` asserts, all over the **published host port**: the token is
+readable and accepted; the handoff file carries every variable and the right namespace; the
+network head **advances** (a bridge that has lost its consensus node keeps answering with the last
+height it saw, forever); the bridge wallet holds utia (it signs and pays for every blob, so an
+empty wallet fails every submit *with a message about gas*); a blob **submitted** to the namespace
+is **read back by height and namespace** with matching bytes; the same blob is **not** visible in
+a different namespace at that height; and an unauthenticated call is rejected.
+
+The round trip is the point: it is exactly what the kernel does — batcher `blob.Submit`, sync node
+fetch-by-height — so it is verified before the kernel exists rather than during its bring-up.
+
+### Notes worth knowing
+
+- **The image is ~1.1 GB and built from upstream release binaries**, native on both `arm64` and
+  `amd64` (no `platform:` pin, unlike the indexer). The npm package the kernel uses mirrors only
+  `linux-amd64`, which would have meant QEMU-emulating a block-a-second consensus node on Apple
+  Silicon; those mirrored tarballs are byte-identical to celestiaorg's own release assets, which
+  *do* include `Linux_arm64`, so this fetches from upstream at the same pinned versions.
+- **The first bring-up prints `pull access denied`** for the local-only image tag, exactly as the
+  umbra-evm one does, then builds.
+- **State survives `./down.sh` and dies with `./down.sh -v`**, like the node and indexer volumes.
+  A restart reuses the same genesis, the same bridge wallet and the same funding — it does not
+  re-bootstrap. (The kernel's dev orchestrator wipes Celestia's home on every run; this does not.)
+- **Bootstrap takes ~25 s**: genesis → first block → bridge init → a 6 s pause → bridge start →
+  fund the bridge wallet → wait for that transaction to land. `up.sh` blocks until the DA RPC
+  answers over the host port.
+- **`utia` here is monopoly money.** The validator holds 10¹⁵ and the bridge is funded 10⁸ at
+  bootstrap, which is a few thousand blob submissions.
+
 ## Verifying and tearing down
 
 ```bash
-./verify.sh              # node finality + indexer GraphQL + proof-server + wallets (+ evm if up)
-./verify.sh --core-only  # skip the wallet checks (each spawns a toolkit container) and evm
+./verify.sh              # node finality + indexer GraphQL + proof-server + wallets (+ evm, celestia if up)
+./verify.sh --core-only  # skip the wallet checks (each spawns a toolkit container) and both profiles
 ./verify.sh --evm        # require the evm section — fail if the profile is not up
 ./verify.sh --no-evm     # skip the evm section even when it is up
+./verify.sh --celestia   # require the celestia section — fail if the profile is not up
+./verify.sh --no-celestia # skip the celestia section even when it is up
 ./down.sh                # stop, keep the chain — ./up.sh resumes it
-./down.sh -v             # FULL RESET: wipes node, indexer, evm-postgres and toolkit-cache volumes
+./down.sh -v             # FULL RESET: wipes node, indexer, evm-postgres, celestia and cache volumes
 ```
 
-The `evm` section runs automatically when the profile's containers exist, so `./verify.sh` needs
-no argument either way. `./scripts/verify-evm.sh` runs it alone (`--quick` skips the `newHeads`
-check, which waits for a block).
+Each optional section runs automatically when that profile's containers exist, so `./verify.sh`
+needs no argument either way. `./scripts/verify-evm.sh` and `./scripts/verify-celestia.sh` run
+them alone (`--quick` skips the slow check in each: `newHeads` delivery, and the blob round trip).
 
 `down.sh -v` wipes the node volume and the indexer volume **together**, and that is a
 correctness requirement rather than tidiness: a ledger v8→v9 chain cannot be upgraded in
@@ -533,14 +648,17 @@ What it removes, and what each piece of state is keyed to:
 | chain data | volume `<project>_node-data` | the genesis it was created with |
 | indexed blocks | volume `<project>_indexer-data` | that same genesis |
 | eth balances, logs, cursors | volume `<project>_evm-postgres-data` | that same genesis |
-| toolkit fetch/ledger cache | host directory `.cache/<project>/` | that same genesis |
+| Celestia chain + validator keyring + bridge store | volume `<project>_celestia-data` | its own Celestia genesis |
+| the DA auth token + handoff file | volume `<project>_celestia-auth` | the bridge store above |
+| toolkit fetch/ledger cache | host directory `.cache/<project>/` | that same Midnight genesis |
 
 They must go together. A fresh node genesis beside a surviving indexer database gives you an
 indexer serving a chain that no longer exists; a surviving toolkit cache makes the next funding
-run fail in a way that looks nothing like "stale cache". The cache is the one piece compose
-cannot remove for you (it is a host directory, not a volume, because a `docker run` volume
-carries no project label and therefore escapes `docker compose down -v` entirely) — `down.sh`
-deletes it explicitly.
+run fail in a way that looks nothing like "stale cache"; and an offer spans **both** chains, so a
+Celestia history describing offers against a Midnight genesis that no longer exists is worse than
+no history at all. The cache is the one piece compose cannot remove for you (it is a host
+directory, not a volume, because a `docker run` volume carries no project label and therefore
+escapes `docker compose down -v` entirely) — `down.sh` deletes it explicitly.
 
 Nothing survives a reset except the things derived from `seed + networkId`: every address in
 `wallets/wallets.json` stays valid, and `lace-test` is funded again at the new genesis. So a
@@ -567,7 +685,7 @@ ENV_FILE=.env.test ./down.sh -v       # leaves the other stack untouched
 
 ```bash
 ./scripts/ci-check.sh                 # the whole chain, on ports nothing else is using
-./scripts/ci-check.sh --core-only     # skip the evm profile (no image build)
+./scripts/ci-check.sh --core-only     # skip the evm and offerfiles profiles (no image builds)
 ./scripts/ci-check.sh --no-fund       # genesis wallets only
 ./scripts/ci-check.sh --keep          # on failure, leave the stack up for inspection
 ```
@@ -592,17 +710,23 @@ your own harness:
 
 ## Known limitations
 
-- **The offer-files halves are not in this release.** No `offerfiles` profile (kernel + batcher +
-  Celestia), no `frontend` profile, and therefore no browser make→take swap. The blocker is not
-  packaging: the kernel and the zswap-da template pin ledger-v8 / midnight-js 4 / wallet-SDK v1,
-  and the `@effectstream/*` packages under them pin `@midnight-ntwrk/ledger-v8` as **exact
-  dependencies**, so nothing can be redirected at this repo's level. Node 2.x is a ledger-v9 chain
-  (`protocolVersion 2000000`) and the v8 SDK cannot even deserialize its state. That migration is
-  ~4,600 lines across five published packages and is tracked as its own project (the Effectstream
-  ledger-v9 migration, 00016). Until it publishes prereleases: host ports stay reserved in
-  `.env.example`, `up.sh --all` names the missing profiles, and `--with offerfiles` fails with
-  that explanation. The kernel's in-memory PGLite behaviour and the browser-reachability
-  requirement for the proof-server URL will be documented with those profiles, not before.
+- **The offer-files kernel and batcher are not in this release, and `offerfiles` is therefore a
+  PARTIAL profile** — it brings up the Celestia DA devnet with nothing publishing to it, and
+  `up.sh` says so on every bring-up. There is no `frontend` profile and no browser make→take swap.
+  The blocker is not packaging: the kernel and the zswap-da template pin ledger-v8 / midnight-js 4
+  / wallet-SDK v1, and the `@effectstream/*` packages under them pin `@midnight-ntwrk/ledger-v8` as
+  **exact dependencies**, so nothing can be redirected at this repo's level. Node 2.x is a
+  ledger-v9 chain (`protocolVersion 2000000`) and the v8 SDK cannot even deserialize its state.
+  That migration is ~4,600 lines across five published packages and is tracked as its own project
+  (the Effectstream ledger-v9 migration, 00016). Until it publishes prereleases the kernel and
+  batcher host ports stay reserved in `.env.example` and `--with frontend` fails with that
+  explanation. The kernel's in-memory PGLite behaviour and the browser-reachability requirement
+  for the proof-server URL will be documented with those services, not before.
+- **`up.sh --with` names the complete set of optional profiles for a bring-up, not an addition to
+  what is already running.** Compose is given core + the named fragments and `--remove-orphans`,
+  so `./up.sh --with offerfiles` on a stack where `evm` is up **stops** the evm services. Name
+  both, or use `--all`. (`down.sh` is the opposite by design: it always passes every fragment, so
+  nothing can be orphaned by forgetting to name it.)
 - **EVM write path is out of scope.** umbra-evm is exposed read-only: no relayer, no `RELAY_URL`,
   no `eth_sendRawTransaction`. **These endpoints are reserved for a future EVM-wallet / Compact
   signing project** that will connect an EVM wallet through them to sign messages consumed by a
@@ -630,7 +754,18 @@ your own harness:
   devDependencies, and the repo is run as TypeScript rather than built. The upside is that the
   repo's own offline test suites can be run inside the image.
 - **Ledger v8 → v9 chains cannot be upgraded in place.** Wiping the node volume means wiping the
-  indexer (and kernel / umbra-evm) state in the same breath — `./down.sh -v` does exactly that.
+  indexer, umbra-evm and Celestia state in the same breath — `./down.sh -v` does exactly that.
+- **The Celestia devnet has no peers and says so, loudly.** Its log carries
+  `error advertising … failed to find any peer in table` and `Host is not reachable from the
+  public network!` on repeat. Both are correct and harmless: it is a one-node network with nothing
+  to discover. Ignore them.
+- **The Celestia binaries need glibc ≥ 2.38**, so `images/celestia` is built on `debian:trixie`
+  rather than the `bookworm-slim` the umbra-evm image uses. On bookworm every invocation dies with
+  `libc.so.6: version 'GLIBC_2.38' not found` before `main()`, which reads like a corrupt download.
+- **The DA RPC's auth token cannot be a compose variable** — it is minted inside the container
+  during bootstrap, long after compose evaluates `environment:`/`env_file:` on the host. It is
+  handed over as a file on the `celestia-auth` volume; see
+  [the auth token section](#the-auth-token-and-how-a-container-gets-it).
 - **The proof-server tag `9.0.0-rc.5` is the zkir-v2 build.** Circuits compiled to zkir-v3
   (per-primitive native crypto gates) need the `9.0.0-rc.5_experimental` variant instead; set
   `PROOF_TAG` in `.env` if you hit that.
