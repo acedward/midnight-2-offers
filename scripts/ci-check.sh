@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+#
+# One command that proves this stack works end to end, on ports that cannot collide with
+# anything else on the machine, and leaves nothing behind afterwards.
+#
+#   ./scripts/ci-check.sh              # every profile that exists, funded and verified
+#   ./scripts/ci-check.sh --core-only  # core stack only: no image build, ~2 min
+#   ./scripts/ci-check.sh --no-fund    # skip funding; verify then covers genesis wallets only
+#
+# The steps, in order:
+#   1. pick-ports   a random free host-port block >= 10100 and a unique compose project name
+#   2. up           the requested profiles, blocking until each is genuinely usable
+#   3. fund         fund-wallet.sh --all-demo (the demo-* and mnemonic-* wallets)
+#   4. verify       verify.sh, then verify-wallets.sh --include-script-funded
+#   5. down -v      full teardown, then ASSERT that nothing survived
+#
+# Three properties this has that a hand-run sequence does not:
+#
+#   * It never touches ./.env or the default ports. Everything runs against a generated env
+#     file, so a CI run cannot disturb (or be disturbed by) a stack somebody left up.
+#   * It tears down on every exit path — failure, Ctrl-C, or SIGTERM — because up.sh
+#     deliberately leaves a failed stack running for inspection, which is right for a human
+#     and wrong for CI.
+#   * The teardown is ASSERTED, not assumed. Containers, networks and volumes are counted by
+#     compose-project label AND by name prefix: a volume created outside compose carries no
+#     project label at all, so a label-only count once reported a clean teardown while the
+#     toolkit cache survived (see the plan's volume-labels finding).
+#
+set -uo pipefail   # deliberately NOT -e: every step's failure is handled and reported
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/common.sh
+source "$REPO_ROOT/scripts/lib/common.sh"
+
+PROFILE_MODE=all      # all | core | list
+WITH_LIST=()
+DO_FUND=1
+KEEP=0
+CI_ENV_FILE=""
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/ci-check.sh [options]
+
+Runs pick-ports -> up -> fund -> verify -> down -v on a random free port block above
+10100, and fails if anything is left behind. Exit 0 means the whole chain passed and the
+machine is clean.
+
+Options:
+  --core-only        core profile only (skips the umbra-evm image build)
+  --with <profile>   bring up specific profiles instead of --all; repeatable
+  --no-fund          skip the funding step
+  --keep             on failure, leave the stack up for inspection (still cleaned on success)
+  --env-file <path>  write the generated env file here and keep it (default: a temp file in
+                     the repo, removed on exit)
+  -h, --help         this text
+
+Exit codes: 0 pass, 1 a step failed or something survived teardown, 2 bad usage.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --core-only) PROFILE_MODE=core; shift ;;
+    --with)      PROFILE_MODE=list; WITH_LIST+=(--with "${2:?--with needs a profile name}"); shift 2 ;;
+    --no-fund)   DO_FUND=0; shift ;;
+    --keep)      KEEP=1; shift ;;
+    --env-file)  CI_ENV_FILE="${2:?--env-file needs a path}"; shift 2 ;;
+    -h|--help)   usage; exit 0 ;;
+    *) err "unknown option: $1"; echo; usage; exit 2 ;;
+  esac
+done
+
+PROFILE_ARGS=()
+case "$PROFILE_MODE" in
+  all)  PROFILE_ARGS=(--all) ;;
+  core) PROFILE_ARGS=() ;;
+  list) PROFILE_ARGS=("${WITH_LIST[@]}") ;;
+esac
+
+require_docker
+
+# ── the disposable stack ─────────────────────────────────────────────────────
+KEEP_ENV_FILE=1
+if [[ -z "$CI_ENV_FILE" ]]; then
+  # Inside the repo, not /tmp: ENV_FILE is also read by the compose --env-file flag, and a
+  # repo-relative path keeps the whole run reproducible from the log. `.env.*` is gitignored.
+  CI_ENV_FILE="$REPO_ROOT/.env.ci.$$"
+  KEEP_ENV_FILE=0
+fi
+
+log "generating a collision-free stack definition"
+if ! PROJECT_PREFIX=demo-infra-ci "$REPO_ROOT/scripts/pick-ports.sh" > "$CI_ENV_FILE"; then
+  err "pick-ports.sh could not find a free port block"
+  rm -f "$CI_ENV_FILE"
+  exit 1
+fi
+export ENV_FILE="$CI_ENV_FILE"
+load_env
+info "project ${COMPOSE_PROJECT_NAME}"
+info "ports   node=${NODE_HOST_PORT} indexer=${INDEXER_HOST_PORT} proof=${PROOF_HOST_PORT} evm=${EVM_RPC_HOST_PORT:-?}/${EVM_WS_HOST_PORT:-?}"
+info "env     ${CI_ENV_FILE}"
+
+# ── teardown, asserted ───────────────────────────────────────────────────────
+TORE_DOWN=0
+FAILED=0
+FAILED_STEP=""
+
+# leak_count — prints "<containers> <volumes> <networks> <unlabelled-volumes>" for this project.
+# The fourth number is the one that matters most: `docker volume create` (or a `docker run -v`)
+# makes a volume with NO compose labels, so it is invisible to the first three counts.
+leak_count() {
+  local c v n u
+  c=$(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" | wc -l | tr -d ' ')
+  v=$(docker volume ls -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" | wc -l | tr -d ' ')
+  n=$(docker network ls -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" | wc -l | tr -d ' ')
+  u=$(docker volume ls -q | grep -cE "^${COMPOSE_PROJECT_NAME}[-_]" || true)
+  printf '%s %s %s %s\n' "$c" "$v" "$n" "$u"
+}
+
+teardown() {
+  local rc=$?
+  (( TORE_DOWN )) && return 0
+  TORE_DOWN=1
+
+  if (( KEEP && FAILED )); then
+    echo
+    warn "--keep: leaving project '${COMPOSE_PROJECT_NAME}' up for inspection"
+    warn "clean it with: ENV_FILE=${CI_ENV_FILE} ./down.sh -v"
+    return 0
+  fi
+
+  echo
+  log "step 5/5: down -v (always runs, on every exit path)"
+  if ! "$REPO_ROOT/down.sh" -v; then
+    err "down.sh -v reported a problem"
+    FAILED=1; FAILED_STEP="${FAILED_STEP:-down}"
+  fi
+
+  # Assert, rather than trust the exit code above.
+  read -r C V N U <<<"$(leak_count)"
+  local cache="$REPO_ROOT/.cache/${COMPOSE_PROJECT_NAME}"
+  local cachestate="none"
+  [[ -d "$cache" ]] && cachestate="PRESENT"
+  info "after teardown: containers=${C} volumes=${V} networks=${N} unlabelled-volumes=${U} toolkit-cache=${cachestate}"
+  if (( C != 0 || V != 0 || N != 0 || U != 0 )) || [[ "$cachestate" != "none" ]]; then
+    err "something survived the teardown — this stack is not disposable"
+    (( C )) && docker ps -a --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}"
+    (( V + U )) && docker volume ls | grep -E "${COMPOSE_PROJECT_NAME}" || true
+    FAILED=1; FAILED_STEP="${FAILED_STEP:-teardown-leak}"
+  else
+    ok "nothing left behind"
+  fi
+
+  if (( ! KEEP_ENV_FILE )); then
+    rm -f "$CI_ENV_FILE"
+    info "removed ${CI_ENV_FILE}"
+  fi
+
+  # Report the real outcome even when the trap fired from a signal.
+  echo
+  if (( FAILED )); then
+    err "ci-check: FAILED at '${FAILED_STEP:-unknown}'"
+    exit 1
+  fi
+  ok "ci-check: PASSED"
+  exit "$rc"
+}
+trap teardown EXIT
+trap 'echo; warn "interrupted"; FAILED=1; FAILED_STEP="interrupted"; exit 130' INT TERM
+
+step() {  # step <n> <label> <command...>
+  local n="$1" label="$2"; shift 2
+  local t0=$SECONDS
+  echo
+  log "step ${n}/5: ${label}"
+  if "$@"; then
+    ok "step ${n} passed in $(( SECONDS - t0 ))s"
+    return 0
+  fi
+  err "step ${n} FAILED after $(( SECONDS - t0 ))s: ${label}"
+  FAILED=1
+  FAILED_STEP="${FAILED_STEP:-$label}"
+  return 1
+}
+
+# ── the run ──────────────────────────────────────────────────────────────────
+# Steps are chained so a failure short-circuits to the teardown rather than piling up
+# secondary errors that hide the first one.
+if step 2 "up ${PROFILE_ARGS[*]:-(core only)}" \
+     "$REPO_ROOT/up.sh" "${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"}"; then
+
+  RUN_FUND=1
+  (( DO_FUND )) || RUN_FUND=0
+  if (( RUN_FUND )); then
+    step 3 "fund the demo and mnemonic wallets" \
+      "$REPO_ROOT/scripts/fund-wallet.sh" --all-demo || true
+  else
+    echo
+    dim "step 3/5: funding skipped (--no-fund)"
+  fi
+
+  if (( ! FAILED )); then
+    step 4a "verify.sh (core + genesis wallets + evm)" "$REPO_ROOT/verify.sh" || true
+  fi
+  # The script-funded wallets are only asserted by an explicit flag, so verify.sh alone
+  # would never prove that funding worked — it checks the genesis wallets, which are funded
+  # whether or not step 3 ran at all.
+  if (( ! FAILED && RUN_FUND )); then
+    step 4b "verify-wallets.sh --include-script-funded" \
+      "$REPO_ROOT/scripts/verify-wallets.sh" --include-script-funded || true
+  fi
+fi
+
+# The EXIT trap performs step 5 and decides the exit code.
+exit 0
