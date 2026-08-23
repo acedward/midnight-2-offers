@@ -1,0 +1,19 @@
+{
+  "name": "mnemonic-wallets",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Derive Midnight addresses from a BIP-39 mnemonic using the same wallet-SDK HD derivation Lace uses.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "derive": "node derive.mjs",
+    "check": "node derive.mjs --check ../../wallets/wallets.json"
+  },
+  "dependencies": {
+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
+    "@midnightntwrk/wallet-sdk": "2.0.0-beta.2",
+    "@scure/bip39": "2.3.0"
+  }
+}

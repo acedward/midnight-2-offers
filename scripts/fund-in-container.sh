@@ -101,8 +101,10 @@ fi
 
 [[ -f "$WALLETS_JSON" ]] || { echo "not found: $WALLETS_JSON" >&2; exit 1; }
 
-mapfile -t SEEDS < <(jq -r '.wallets[] | select(.funding == "fund-script") | .seed' "$WALLETS_JSON")
-(( ${#SEEDS[@]} )) || { say "no wallets with funding=fund-script — nothing to do"; exit 0; }
+# funding=mnemonic wallets are funded exactly like funding=fund-script ones: their seed is the
+# BIP-39 master seed of a mnemonic, which the toolkit accepts as an ordinary 128-hex seed.
+mapfile -t SEEDS < <(jq -r '.wallets[] | select(.funding == "fund-script" or .funding == "mnemonic") | .seed' "$WALLETS_JSON")
+(( ${#SEEDS[@]} )) || { say "no wallets with funding=fund-script or funding=mnemonic — nothing to do"; exit 0; }
 
 say "funding ${#SEEDS[@]} wallet(s) with ${AMOUNT} stars each from ${FROM_SEED:0:8}…"
 

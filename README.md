@@ -10,10 +10,11 @@ A single Docker Compose project that brings up a complete local Midnight 2.x dem
 | offer-files kernel + Celestia | `offerfiles` | zswap offer-files sync node + batcher + local Celestia devnet — *Phase 4, not yet implemented* |
 | zswap-da frontend | `frontend` | React/Vite swap demo SPA — *Phase 5, not yet implemented* |
 
-**Everything here is dev-only.** Every seed in this repo is public: the genesis ones are the
-well-known Midnight `CFG_PRESET=dev` seeds, and the `demo-*` ones are obvious placeholders
-invented here. They control value only on a throwaway local `undeployed` chain. Never reuse any
-of them anywhere else.
+**Everything here is dev-only.** Every seed and mnemonic in this repo is public: the genesis
+ones are the well-known Midnight `CFG_PRESET=dev` seeds, the `demo-*` ones are obvious
+placeholders invented here, and the mnemonics (see [Import into Lace](#import-into-lace)) are
+repeated-word BIP-39 test phrases. They control value only on a throwaway local `undeployed`
+chain. Never reuse any of them anywhere else.
 
 ## Status
 
@@ -33,7 +34,7 @@ This repo is being built in phases (see the plan in the organizer workspace). Im
 cp .env.example .env                  # then edit ports/tags if needed
 ./up.sh                               # bring up the core stack; blocks until it is usable
 ./up.sh --with evm                    # …plus the read-only Ethereum JSON-RPC façade
-./scripts/fund-wallet.sh --all-demo   # optional: fund the demo-* wallets
+./scripts/fund-wallet.sh --all-demo   # optional: fund the demo-* and mnemonic-* wallets
 ./verify.sh                           # assert health + prefunded wallets (+ evm, if it is up)
 ./down.sh -v                          # tear down, wiping all state
 ```
@@ -70,6 +71,7 @@ compose/    docker compose fragments, one per profile
 images/     Dockerfiles for the components that ship no Docker packaging upstream
 scripts/    funding + verification + wait helpers
 wallets/    wallets.json — the dev wallets this stack knows about
+tools/      standalone helpers (mnemonic-wallets/ — mnemonic → Lace address derivation)
 config/     files mounted into containers (e.g. umbra-evm watch.json)
 .env.example  every host port and image tag, with the Midnight-standard defaults
 ```
@@ -127,7 +129,7 @@ UTXOs, DUST balance 1.25 × 10²⁴ specks.
 | `genesis-1` | `0x…0001` (32 bytes) | faucet — the default funding source for `fund-wallet.sh` |
 | `genesis-2` | `0x…0002` (32 bytes) | reserved as the offer-files batcher wallet (Phase 4) |
 | `genesis-3` | `0x…0003` (32 bytes) | spare prefunded wallet / second demo actor |
-| `lace-test` | `a51c86de…0593ec9` (64 bytes, 128 hex chars) | the wallet Lace uses for its own testing — import this one to drive the demo from Lace |
+| `lace-test` | `a51c86de…0593ec9` (64 bytes, 128 hex chars) | Midnight's own canonical test wallet — **importable into Lace from a mnemonic, see below** |
 
 Two things that are easy to get wrong here:
 
@@ -136,7 +138,9 @@ Two things that are easy to get wrong here:
   `CFG_PRESET=dev` genesis that wallet is empty (0 UTXOs, 0 DUST). Only 01/02/03 and the
   Lace seed are funded.
 - **The Lace seed is 128 hex characters**, not 64. It is a 64-byte seed and the toolkit
-  accepts it as-is wherever a `--seed` is taken.
+  accepts it as-is wherever a `--seed` is taken. It is 64 bytes because it is a **BIP-39
+  master seed**, not an arbitrary secret — which is exactly what makes it importable into
+  Lace (see [Import into Lace](#import-into-lace)).
 
 ### Funding more wallets
 
@@ -144,7 +148,8 @@ Two things that are easy to get wrong here:
 # fund one wallet: NIGHT + DUST registration + wait until fees are payable
 ./scripts/fund-wallet.sh <seed-or-address>
 
-# fund every wallets.json entry marked funding="fund-script" (demo-alice/bob/carol)
+# fund every wallets.json entry marked funding="fund-script" (demo-alice/bob/carol) or
+# funding="mnemonic" (the Lace-importable ones)
 ./scripts/fund-wallet.sh --all-demo
 
 # same thing as a one-shot compose service instead of a host script
@@ -168,6 +173,78 @@ gets its DUST UTXO immediately but still fails a transfer with
 need roughly 45 minutes of accrual to clear a single fee. Funded with **10,000,000 NIGHT** the
 same wallet pays its fees as soon as the DUST UTXO appears. Lower `--amount` only if you are
 prepared to wait.
+
+## Import into Lace
+
+Lace imports a wallet from a **mnemonic**, never from a raw hex seed, so the wallets below are
+addressed by phrase. All three are one word repeated 23 times plus a checksum word, which
+means they can be typed into Lace's import screen in well under a minute.
+
+Point Lace at this stack first: its `undeployed` preset expects **node 9944, indexer 8088,
+proof-server 6300**, which is what `.env.example` defaults to. If you moved the ports (or ran
+`scripts/pick-ports.sh`), Lace will not find the stack.
+
+| Wallet | Mnemonic | Funded by | Receive address (unshielded) |
+|---|---|---|---|
+| `lace-test` | `abandon` ×23 + `diesel` | **genesis — nothing to run** | `mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m` |
+| `mnemonic-abandon-art` | `abandon` ×23 + `art` | `fund-wallet.sh --all-demo` | `mn_addr_undeployed19kxg8sxrsty37elmm6yd68tuy7prryjst2r48eapf2fdtd8z4gpqauuvtx` |
+| `mnemonic-zoo-vote` | `zoo` ×23 + `vote` | `fund-wallet.sh --all-demo` | `mn_addr_undeployed1z7k7swt4cwxaq3px2gemzpqhtcjm5dvg9a5vmr2h3kc24n66u4tqsnwyn0` |
+
+"`abandon` ×23 + `diesel`" means the word `abandon` typed 23 times followed by `diesel` — 24
+words total. `wallets/wallets.json` holds each phrase in full, along with the shielded, dust
+and `userAddress` forms and the BIP-39 master seed.
+
+**Start with `lace-test`.** It is prefunded at genesis with 250,000,000 NIGHT and its DUST
+address is registered from block zero, so it can pay fees immediately and survives a
+`./down.sh -v` reset with no funding step. It is not a phrase we invented either: it is
+Midnight's own canonical test wallet — `@midnight-ntwrk/testkit-js` defines exactly this
+mnemonic as `TEST_MNEMONIC`, and midnight-node's Earthfile funds its seed at genesis with the
+comment *"wallet-seed-3 is the wallet Lace uses for testing"*.
+
+The other two are empty until you fund them, which is one command on a running stack:
+
+```bash
+./scripts/fund-wallet.sh --all-demo                    # 10,000,000 NIGHT + DUST each
+./scripts/verify-wallets.sh --include-script-funded    # assert they can pay a fee
+```
+
+They exist so a two-party demo (make an offer with one wallet, take it with another) needs two
+imports and no seed juggling.
+
+### If Lace shows a different address
+
+**Then the derivation differs, and that is a finding worth recording** — not something to work
+around. Please note the address Lace shows, next to the one in the table, in the project's
+findings log (`00001-demo-infra`, task T2.6) so the mismatch can be chased rather than
+rediscovered. A wallet at a different address is simply unfunded, and an unfunded wallet in a
+demo reads as "the stack is broken".
+
+Before concluding that, rule out the three things that legitimately change the address:
+
+- **A BIP-39 passphrase.** These wallets have none. Leave any passphrase field empty.
+- **A different HD account or address index.** The table is account 0, address index 0 — what
+  Lace shows immediately after an import. Switching accounts gives different, empty addresses.
+- **A different network.** The addresses are `undeployed`; a Lace pointed at testnet or
+  mainnet derives different prefixes from the same phrase.
+
+What has already been checked, so it is not the likely culprit: the two independent
+implementations this repo relies on agree exactly. `tools/mnemonic-wallets/` derives these
+addresses with the **wallet SDK's** HD derivation (`@midnightntwrk/wallet-sdk@2.0.0-beta.2`,
+BIP-39 → BIP-32 `m/44'/2400'/0'/<role>'/0'`), and `midnight-node-toolkit show-address` derives
+them from the same master seed; every address form matches, for all three phrases, and
+`lace-test`'s match the genesis wallet the chain actually funds. Re-run the proof any time,
+offline and with the stack down:
+
+```bash
+./tools/mnemonic-wallets/derive.sh                          # show all three, in full
+./tools/mnemonic-wallets/derive.sh --check wallets/wallets.json
+./tools/mnemonic-wallets/cross-check.sh                     # wallet SDK vs toolkit
+```
+
+**Not yet confirmed against the Lace UI itself.** Nobody has typed these phrases into Lace and
+compared what it displays — that step needs a human with the extension installed. Everything
+up to Lace's own screen is verified; the last hop is not. See `tools/mnemonic-wallets/README.md`
+for the derivation, its sources, and how to add more phrases.
 
 ## Token model gotchas
 

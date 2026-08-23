@@ -58,7 +58,8 @@ Options:
   --no-dust                   skip DUST registration (and the readiness wait).
   --dust-wait <secs>          how long to wait for a spendable DUST UTXO. Default ${DUST_WAIT}.
   --all-demo                  fund every wallet in wallets/wallets.json whose funding field
-                              is "fund-script".
+                              is "fund-script" or "mnemonic". (The "mnemonic" ones are the
+                              Lace-importable wallets — see tools/mnemonic-wallets/.)
   -h, --help                  this text.
 
 Environment:
@@ -95,10 +96,12 @@ is_address() { [[ "$1" == mn_addr_* || "$1" == mn_shield-addr_* ]]; }
 
 if (( ALL_DEMO )); then
   [[ -f "$REPO_ROOT/wallets/wallets.json" ]] || die "wallets/wallets.json not found"
+  # Both kinds need the identical treatment — a `mnemonic` wallet's seed is just the BIP-39
+  # master seed of its phrase, and the toolkit takes it like any other 128-hex seed.
   while IFS= read -r s; do
     [[ -n "$s" ]] && TARGETS+=("$s")
-  done < <(jqf '.wallets[] | select(.funding == "fund-script") | .seed' < "$REPO_ROOT/wallets/wallets.json")
-  info "wallets.json: ${#TARGETS[@]} wallet(s) marked funding=fund-script"
+  done < <(jqf '.wallets[] | select(.funding == "fund-script" or .funding == "mnemonic") | .seed' < "$REPO_ROOT/wallets/wallets.json")
+  info "wallets.json: ${#TARGETS[@]} wallet(s) marked funding=fund-script or funding=mnemonic"
 fi
 
 (( ${#TARGETS[@]} )) || { err "no target given"; echo; usage; exit 2; }

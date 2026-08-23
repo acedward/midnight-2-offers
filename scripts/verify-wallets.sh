@@ -33,10 +33,15 @@ Checks every wallet in wallets/wallets.json with funding="genesis":
 Also runs the toolkit-vs-node version guard.
 
 Options:
-  --include-script-funded   also check wallets with funding="fund-script". They are empty
-                            until ./scripts/fund-wallet.sh has been run, so this only makes
-                            sense after funding them.
+  --include-script-funded   also check wallets with funding="fund-script" or
+                            funding="mnemonic". Both are empty until ./scripts/fund-wallet.sh
+                            has been run, so this only makes sense after funding them.
   -h, --help                this text.
+
+The funding="mnemonic" wallets are the Lace-importable ones. This script checks them on-chain;
+to check that their recorded ADDRESSES still match their mnemonics (offline, no stack needed):
+  ./tools/mnemonic-wallets/derive.sh --check wallets/wallets.json
+  ./tools/mnemonic-wallets/cross-check.sh
 EOF
 }
 
@@ -66,7 +71,7 @@ log "toolkit version guard"
 check_toolkit_version || true   # a mismatch is a warning, not a hard failure
 
 SELECTOR='.funding == "genesis"'
-(( CHECK_FUNDED_TOO )) && SELECTOR='(.funding == "genesis" or .funding == "fund-script")'
+(( CHECK_FUNDED_TOO )) && SELECTOR='(.funding == "genesis" or .funding == "fund-script" or .funding == "mnemonic")'
 
 # name<TAB>seed<TAB>expected_total(or "")   — one line per wallet to check
 WALLET_LINES=$(jqf "[.wallets[] | select(${SELECTOR})] | .[] | [.name, .seed, ((.expect.unshieldedTotalStars // \"\") | tostring)] | @tsv" < "$WALLETS_JSON")

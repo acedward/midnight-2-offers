@@ -14,7 +14,17 @@
     "                           registers its DUST address. Nothing to run. Asserted by",
     "                           scripts/verify-wallets.sh.",
     "funding = 'fund-script'  : empty until scripts/fund-wallet.sh (or the `fund` compose",
-    "                           service) is run for it."
+    "                           service) is run for it.",
+    "funding = 'mnemonic'     : same as 'fund-script' (empty until funded), but the wallet is",
+    "                           reachable from a BIP-39 mnemonic, so it can be imported into",
+    "                           Lace by hand. See the 'mnemonic' and 'derivation' fields and",
+    "                           tools/mnemonic-wallets/.",
+    "",
+    "Wallets that carry a 'mnemonic' field have a 128-hex 'seed' that is NOT an arbitrary",
+    "secret: it is the BIP-39 master seed of that mnemonic (empty passphrase). That is what",
+    "makes the toolkit and Lace agree on the same wallet — verified both ways by",
+    "tools/mnemonic-wallets/cross-check.sh. Re-derive and assert with:",
+    "    ./tools/mnemonic-wallets/derive.sh --check wallets/wallets.json"
   ],
   "networkId": "undeployed",
   "toolkitImage": "midnightntwrk/midnight-node-toolkit",
@@ -78,8 +88,27 @@
     },
     {
       "name": "lace-test",
-      "role": "the wallet Lace uses for its own testing — import this one to drive the demo from Lace",
-      "$comment": "64-byte (128 hex char) seed, from midnight-node's Earthfile genesis-seeds block where it is labelled 'wallet-seed-3 is the wallet Lace uses for testing'. Verified prefunded on CFG_PRESET=dev.",
+      "role": "THE wallet to import into Lace — prefunded at genesis, so nothing has to be run for it",
+      "$comment": [
+        "Midnight's own canonical test wallet, reachable from three directions that all agree:",
+        "  * midnight-node's Earthfile genesis-seeds block lists this 64-byte seed as",
+        "    'wallet-seed-3' with the comment 'wallet-seed-3 is the wallet Lace uses for testing';",
+        "  * @midnight-ntwrk/testkit-js@5.0.0-beta.6 defines TEST_MNEMONIC as exactly the",
+        "    mnemonic below (23x 'abandon' + 'diesel') and WalletSeeds.testWallet() builds from it;",
+        "  * the BIP-39 master seed of that mnemonic (empty passphrase) IS this seed, byte for byte.",
+        "So the seed is a BIP-39 master seed, which is why it is 64 bytes rather than 32.",
+        "Verified prefunded on CFG_PRESET=dev: 250,000,000 NIGHT + DUST registered at genesis."
+      ],
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon diesel",
+      "derivation": {
+        "kind": "bip39+bip32",
+        "passphrase": "",
+        "path": "m/44'/2400'/0'/<role>'/0'",
+        "account": 0,
+        "index": 0,
+        "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 },
+        "$comment": "Derived and cross-checked by tools/mnemonic-wallets/ — the wallet SDK and midnight-node-toolkit produce identical addresses for this seed."
+      },
       "seed": "a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9",
       "seedBytes": 64,
       "funding": "genesis",
@@ -130,6 +159,52 @@
         "unshielded": "mn_addr_undeployed125wz4e8aflcc7p8wjcp00gj9msdu3uglt5q8jru4lhmg8xvhvgmsfdp4rm",
         "shielded": "mn_shield-addr_undeployed1fxlyvl3wljtzvh2uuwkf2lg3g30244rl8r26cvh7t9fwjmmg2j09amj34nevpavg6u8c45hkc4deme9ulhc947hfwjs7ckhrk8qqhqghwz0tj",
         "dust": "mn_dust_undeployed1w028z3slvktfnz3ng0qk053pxgk46k4exkrlvq7v548v8mtwtt05jfwhdws"
+      }
+    },
+    {
+      "name": "mnemonic-abandon-art",
+      "role": "Lace-importable demo actor — one repeated word, so it types in seconds",
+      "$comment": "Precedent: this exact phrase is 'Alice' in $HOME/midnight-ref-ai/midnight-local-dev/accounts.example.json. 'art' is one of the 8 final words that make 23x 'abandon' a valid BIP-39 mnemonic (see tools/mnemonic-wallets/derive.sh --list-repeated abandon).",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "derivation": {
+        "kind": "bip39+bip32",
+        "passphrase": "",
+        "path": "m/44'/2400'/0'/<role>'/0'",
+        "account": 0,
+        "index": 0,
+        "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 }
+      },
+      "seed": "408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840",
+      "seedBytes": 64,
+      "funding": "mnemonic",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed19kxg8sxrsty37elmm6yd68tuy7prryjst2r48eapf2fdtd8z4gpqauuvtx",
+        "shielded": "mn_shield-addr_undeployed1jsy2ala7ahrtndz7r0xxy8g6yulmvlmhmclkt0amrq2dsnutv5j08tnsd0egept2gpmfpdrgpqd87ksj8efr2qdknapet27d0cvsx2czvqdfx",
+        "dust": "mn_dust_undeployed1wwd54rhuw4nqajtn34qjslfk0hdc6jlspdkqvvlmmjrsuckpzurpwkns5qg",
+        "userAddress": "2d8c83c0c382c91f67fbde88dd1d7c27823192505a8753e7a14a92d5b4e2aa02"
+      }
+    },
+    {
+      "name": "mnemonic-zoo-vote",
+      "role": "Lace-importable demo actor — a second one, so a make/take demo needs two imports only",
+      "$comment": "Precedent: this exact phrase is 'Bob' in $HOME/midnight-ref-ai/midnight-local-dev/accounts.example.json. 'vote' is one of the 8 valid final words for 23x 'zoo'.",
+      "mnemonic": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
+      "derivation": {
+        "kind": "bip39+bip32",
+        "passphrase": "",
+        "path": "m/44'/2400'/0'/<role>'/0'",
+        "account": 0,
+        "index": 0,
+        "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 }
+      },
+      "seed": "e28a37058c7f5112ec9e16a3437cf363a2572d70b6ceb3b6965447623d620f14d06bb321a26b33ec15fcd84a3b5ddfd5520e230c924c87aaa0d559749e044fef",
+      "seedBytes": 64,
+      "funding": "mnemonic",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1z7k7swt4cwxaq3px2gemzpqhtcjm5dvg9a5vmr2h3kc24n66u4tqsnwyn0",
+        "shielded": "mn_shield-addr_undeployed1w9xhdrll36rm8ud8w59elrad05y6hu4gtkxftvztyeqxees3kz5yzj2u4m24f7facjn95axtg60qxrpayh5cykv62sy6zkt77juut3cm8q9t9",
+        "dust": "mn_dust_undeployed1wv366gqlcfy9p2fstxl95h98zxjlf8a3qmj28qwxwt88rjumzh4qyj66lrt",
+        "userAddress": "17ade83975c38dd044265233b104175e25ba35882f68cd8d578db0aacf5ae556"
       }
     }
   ]

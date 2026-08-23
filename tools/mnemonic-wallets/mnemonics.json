@@ -1,0 +1,31 @@
+{
+  "$comment": [
+    "The mnemonics this demo stack hands out for a manual Lace import. DEV ONLY — every one",
+    "of them is a public, well-known test phrase and controls value only on a throwaway local",
+    "`undeployed` chain. Never use any of them anywhere real.",
+    "",
+    "They are all 'one word repeated + one checksum word' so they can be typed into Lace's",
+    "import UI in seconds. Only a handful of final words make a repeated-word mnemonic pass",
+    "the BIP-39 checksum; run `derive.mjs --list-repeated abandon` to see the whole set.",
+    "",
+    "The derived addresses live in ../../wallets/wallets.json; `derive.mjs --check` asserts",
+    "the two agree."
+  ],
+  "mnemonics": [
+    {
+      "name": "lace-test",
+      "role": "Midnight's own canonical TEST_MNEMONIC — prefunded at genesis, nothing to run",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon diesel"
+    },
+    {
+      "name": "mnemonic-abandon-art",
+      "role": "demo actor — funded by scripts/fund-wallet.sh --all-demo",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+    },
+    {
+      "name": "mnemonic-zoo-vote",
+      "role": "demo actor — funded by scripts/fund-wallet.sh --all-demo",
+      "mnemonic": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote"
+    }
+  ]
+}
