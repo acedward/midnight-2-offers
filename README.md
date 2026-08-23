@@ -2,13 +2,13 @@
 
 A single Docker Compose project that brings up a complete local Midnight 2.x demo environment:
 
-| Component | Profile | What it is |
-|---|---|---|
-| Midnight node + indexer + proof-server | `core` (always) | `midnight-node:2.0.0-rc.4` / `indexer-standalone:4.4.0-rc.1` / `proof-server:9.0.0-rc.5` on `CFG_PRESET=dev` (network id `undeployed`) |
-| Wallet funding tooling | `core` | Genesis-prefunded NIGHT+DUST dev wallets + a CLI to fund arbitrary extra wallets |
-| umbra-evm | `evm` | Ethereum JSON-RPC **read-only** façade over Midnight (chainId 2400): HTTP `:8545` + WS `:10021`, backed by Postgres |
-| offer-files kernel + Celestia | `offerfiles` | zswap offer-files sync node + batcher + local Celestia devnet — *Phase 4, not yet implemented* |
-| zswap-da frontend | `frontend` | React/Vite swap demo SPA — *Phase 5, not yet implemented* |
+| Component | Profile | State | What it is |
+|---|---|---|---|
+| Midnight node + indexer + proof-server | `core` (always) | **shipped** | `midnight-node:2.0.0-rc.4` / `indexer-standalone:4.4.0-rc.1` / `proof-server:9.0.0-rc.5` on `CFG_PRESET=dev` (network id `undeployed`) |
+| Wallet funding tooling | `core` | **shipped** | Genesis-prefunded NIGHT+DUST dev wallets, three Lace-importable mnemonic wallets, and a CLI to fund arbitrary extra ones |
+| umbra-evm | `evm` | **shipped** | Ethereum JSON-RPC **read-only** façade over Midnight (chainId 2400): HTTP `:8545` + WS `:10021`, backed by Postgres |
+| offer-files kernel + Celestia | `offerfiles` | not built yet | zswap offer-files sync node + batcher + local Celestia devnet |
+| zswap-da frontend | `frontend` | not built yet | React/Vite make→take swap SPA |
 
 **Everything here is dev-only.** Every seed and mnemonic in this repo is public: the genesis
 ones are the well-known Midnight `CFG_PRESET=dev` seeds, the `demo-*` ones are obvious
@@ -16,17 +16,25 @@ placeholders invented here, and the mnemonics (see [Import into Lace](#import-in
 repeated-word BIP-39 test phrases. They control value only on a throwaway local `undeployed`
 chain. Never reuse any of them anywhere else.
 
-## Status
+## What is and is not in this release
 
-This repo is being built in phases (see the plan in the organizer workspace). Implemented so far:
+**In**: the Midnight 2.x core stack, the wallet story (genesis-prefunded wallets, a funding
+CLI, and mnemonics you can type into Lace), and the read-only Ethereum JSON-RPC façade.
+`./up.sh --all && ./verify.sh` exercises all of it.
 
-- [x] Phase 0 — repo scaffold
-- [x] Phase 1 — Midnight core stack (node + indexer + proof-server)
-- [x] Phase 2 — wallet funding tooling (NIGHT + DUST)
-- [x] Phase 3 — umbra-evm (read-only JSON-RPC)
-- [ ] Phase 4 — offer-files kernel + Celestia
-- [ ] Phase 5 — zswap-da frontend
-- [ ] Phase 6 — integration, e2e, docs
+**Not in**: the offer-files halves — the `offerfiles` and `frontend` profiles, and with them
+the browser make→take swap demo. They are not a to-do that was skipped: the offer-files kernel
+and the zswap-da template are pinned to ledger-v8 / wallet-SDK v1, and every `@effectstream/*`
+package they depend on pins `@midnight-ntwrk/ledger-v8` as an exact dependency. Running them
+against a ledger-v9 chain (which node 2.x is: it reports `protocolVersion 2000000`) needs those
+packages migrated and published first — measured at roughly 4,600 lines across five packages,
+which is its own project. Their host ports are already reserved in `.env.example`, `up.sh --all`
+names them as pending, and the fragments drop in as `compose/offerfiles.yml` and
+`compose/frontend.yml` when that lands.
+
+So `--all` today means "core + evm", and that is deliberate rather than accidental: `up.sh`
+tells you which profiles it skipped, and `--with offerfiles` fails with that explanation instead
+of quietly bringing up half a stack.
 
 ## Quickstart
 
@@ -34,13 +42,24 @@ This repo is being built in phases (see the plan in the organizer workspace). Im
 cp .env.example .env                  # then edit ports/tags if needed
 ./up.sh                               # bring up the core stack; blocks until it is usable
 ./up.sh --with evm                    # …plus the read-only Ethereum JSON-RPC façade
+./up.sh --all                         # …every profile that exists (today: core + evm)
 ./scripts/fund-wallet.sh --all-demo   # optional: fund the demo-* and mnemonic-* wallets
 ./verify.sh                           # assert health + prefunded wallets (+ evm, if it is up)
 ./down.sh -v                          # tear down, wiping all state
 ```
 
+Or the whole chain in one command, on ports that cannot collide with anything else on the
+machine — this is what CI runs, and it is the fastest way to check a change:
+
+```bash
+./scripts/ci-check.sh                 # pick free ports → up --all → fund → verify → down -v
+```
+
 A **profile** is a compose fragment in `compose/`, named after the profile: `--with evm` adds
-`compose/evm.yml`, `--all` adds every fragment there is. `down.sh` always tears down every
+`compose/evm.yml`, `--all` adds every fragment there is. There is no compose `profiles:` key
+involved, so the fragment's filename *is* the profile name — and a `--with` name with no
+fragment behind it is an **error**, not a no-op, because a silently-ignored `--with` gives you a
+bare core stack that fails much later with `no such service`. `down.sh` always tears down every
 fragment that exists, so a profile brought up earlier can never be orphaned.
 
 `up.sh` returns only when the stack is genuinely usable, which is stricter than "docker says
@@ -53,23 +72,64 @@ healthy":
 | proof-server | the port accepts a TCP connection | The image has no curl/wget, and its bash sits behind a per-tag `/nix/store/<hash>…` path |
 | evm-rpc (`--with evm`) | `eth_chainId` answers over HTTP, **and** the WS port completes a `101 Switching Protocols` handshake | A TCP probe of a *published* port proves nothing: docker's port proxy accepts the connection before it dials the container, so `nc -z` reports a working endpoint that refuses every client |
 
-Default endpoints (all overridable in `.env`):
+## Endpoints
+
+Default URLs, all overridable in `.env`:
 
 | Endpoint | URL | Profile |
 |---|---|---|
-| node RPC | `http://127.0.0.1:9944` | `core` |
-| indexer GraphQL | `http://127.0.0.1:8088/api/v4/graphql` | `core` |
+| node RPC (HTTP + WS) | `http://127.0.0.1:9944` | `core` |
+| indexer GraphQL v4 | `http://127.0.0.1:8088/api/v4/graphql` | `core` |
 | indexer GraphQL WS | `ws://127.0.0.1:8088/api/v4/graphql/ws` | `core` |
 | proof server | `http://127.0.0.1:6300` | `core` |
 | **eth JSON-RPC** | `http://127.0.0.1:8545` (chainId 2400 = `0x960`) | `evm` |
 | **eth WS (`eth_subscribe`)** | `ws://127.0.0.1:10021` | `evm` |
+
+`/api/v3/graphql` on the indexer aliases v4, so a client pinned to the v3 path still works.
+
+## Port map
+
+Two things this table settles: which host ports you need free, and the fact that **no service
+addresses another by a host port**. Containers talk over the compose network on fixed container
+ports, so remapping the host side cannot break the stack's internals — which is what makes two
+stacks on one machine possible.
+
+| Host port (`.env` var) | Default | Container | Service | Who dials it | Profile |
+|---|---|---|---|---|---|
+| `NODE_HOST_PORT` | 9944 | 9944 | `node` | you, Lace, the toolkit, kernel (later) | `core` |
+| `INDEXER_HOST_PORT` | 8088 | 8088 | `indexer` | you, Lace, `evm-rpc` (via `indexer:8088`) | `core` |
+| `PROOF_HOST_PORT` | 6300 | 6300 | `proof-server` | you, the **host browser** when proving | `core` |
+| — (not published) | — | 5432 | `evm-postgres` | `evm-rpc`, `wallet-monitor` | `evm` |
+| `EVM_RPC_HOST_PORT` | 8545 | 8545 | `evm-rpc` | MetaMask, `cast`, `viem` | `evm` |
+| `EVM_WS_HOST_PORT` | 10021 | 10021 | `evm-rpc` | `eth_subscribe` clients | `evm` |
+| `KERNEL_HOST_PORT` | 9999 | 9999 | *reserved* | the frontend's order book | `offerfiles` (later) |
+| `BATCHER_HOST_PORT` | 3334 | 3334 | *reserved* | the frontend's `send-input` | `offerfiles` (later) |
+| `CELESTIA_HOST_PORT` | 26658 | 26658 | *reserved* | the kernel's DA writes | `offerfiles` (later) |
+| `FRONTEND_HOST_PORT` | 10600 | 80 | *reserved* | your browser | `frontend` (later) |
+
+`BIND_ADDR` (default `127.0.0.1`) is the interface every published port binds to. Leave it as
+loopback on a shared machine; set it to `0.0.0.0` only when a browser on another host has to
+reach the stack.
+
+**The defaults are the Midnight-standard ports on purpose.** Lace's `undeployed` preset
+hardcodes 9944 / 8088 / 6300, so a Lace demo has to keep them. On a shared machine, generate a
+block above 10100 instead:
+
+```bash
+./scripts/pick-ports.sh > .env.test    # random project name + a free 16-port block
+ENV_FILE=.env.test ./up.sh --all
+```
+
+That block is laid out at fixed offsets from its base, which is worth knowing when reading a CI
+log: base+0 node, +1 indexer, +2 proof-server, +3 evm RPC, +4 evm WS, +5 kernel, +6 batcher,
++7 Celestia, +8 frontend.
 
 ## Layout
 
 ```
 compose/    docker compose fragments, one per profile
 images/     Dockerfiles for the components that ship no Docker packaging upstream
-scripts/    funding + verification + wait helpers
+scripts/    funding, verification, port-picking, and the ci-check entrypoint
 wallets/    wallets.json — the dev wallets this stack knows about
 tools/      standalone helpers (mnemonic-wallets/ — mnemonic → Lace address derivation)
 config/     files mounted into containers (e.g. umbra-evm watch.json)
@@ -88,7 +148,7 @@ The research basis for this stack lives in the `midnight-ref-ai` reference check
 | `versions/v2.0.0-rc.4.json` | The pinned triple: node `2.0.0-rc.4` / indexer `4.4.0-rc.1` / proof-server `9.0.0-rc.5`, plus the matching SDK line (midnight-js 5.0.0-beta.6, compact-runtime 0.18.0-rc.1, `@midnightntwrk/ledger-v9` 1.0.0-rc.3, compactc 0.33.0-rc.2, wallet-sdk 2.0.0-beta.2) |
 | `midnight-canary/envs/docker-compose-dynamic.yml` | The compose base this stack's `compose/core.yml` derives from (healthcheck shapes, indexer env, capability drops) |
 | `matrix/compose/v2.0.0-rc.4.yml` | The port-override pattern for running several stacks side by side |
-| `matrix/run-slot.sh` | The model for the health-wait helpers in `scripts/lib/wait.sh` (`wait_node_rpc`, `wait_tcp`, `wait_docker_healthy`) |
+| `matrix/run-slot.sh` | The model for the health-wait helpers in `scripts/lib/common.sh` (`wait_node_rpc`, `wait_tcp`, `wait_compose_healthy`) |
 | `passport/demo/mn-passport-foundations/infra/docker-compose.{yml,macos.yml}` | macOS bridge-networking override pattern; documents the indexer SPO-node gotcha |
 | `v2.0.0-rc.4/midnight-node/scripts/tests/lib/wait-for-node.sh` | `chain_getFinalizedHead` / `chain_getHeader` polling used by `verify.sh` to assert finality advances |
 
@@ -102,7 +162,7 @@ The research basis for this stack lives in the `midnight-ref-ai` reference check
 | `NIGHT-shielded-vs-unshielded-FINDINGS.md` | The token-model gotchas reproduced in [Token model](#token-model-gotchas): `nativeToken()` is *unshielded*, fees are DUST-only, shielded NIGHT cannot pay fees or be registered |
 | `midnight-local-dev/src/{funding,wallet}.ts` | The TypeScript equivalent of the funding flow, if a JS tool is ever preferred over the toolkit container |
 
-### Application components (Phases 3–5)
+### Application components
 
 | Source | Why it matters |
 |---|---|
@@ -127,7 +187,7 @@ UTXOs, DUST balance 1.25 × 10²⁴ specks.
 | Name | Seed | Role |
 |---|---|---|
 | `genesis-1` | `0x…0001` (32 bytes) | faucet — the default funding source for `fund-wallet.sh` |
-| `genesis-2` | `0x…0002` (32 bytes) | reserved as the offer-files batcher wallet (Phase 4) |
+| `genesis-2` | `0x…0002` (32 bytes) | reserved as the offer-files batcher wallet, for when that profile lands |
 | `genesis-3` | `0x…0003` (32 bytes) | spare prefunded wallet / second demo actor |
 | `lace-test` | `a51c86de…0593ec9` (64 bytes, 128 hex chars) | Midnight's own canonical test wallet — **importable into Lace from a mnemonic, see below** |
 
@@ -141,6 +201,25 @@ Two things that are easy to get wrong here:
   accepts it as-is wherever a `--seed` is taken. It is 64 bytes because it is a **BIP-39
   master seed**, not an arbitrary secret — which is exactly what makes it importable into
   Lace (see [Import into Lace](#import-into-lace)).
+
+### Funded by one command, not by genesis
+
+The other five entries start empty and are brought to 10,000,000 NIGHT + spendable DUST by
+`./scripts/fund-wallet.sh --all-demo`. They exist so a demo can move value between named
+actors without touching the faucet wallet.
+
+| Name | Seed | `funding` | Purpose |
+|---|---|---|---|
+| `demo-alice` | `de11…a11ce` (32 bytes) | `fund-script` | first demo actor |
+| `demo-bob` | `de11…b0b00` (32 bytes) | `fund-script` | second demo actor |
+| `demo-carol` | `de11…ca201` (32 bytes) | `fund-script` | third demo actor |
+| `mnemonic-abandon-art` | `408b285c…` (BIP-39 master seed) | `mnemonic` | Lace-importable, see below |
+| `mnemonic-zoo-vote` | `e28a3705…` (BIP-39 master seed) | `mnemonic` | Lace-importable, see below |
+
+Nine wallets in total, then: four funded at genesis and five funded on demand. The
+`funding` field is what drives the tooling — `fund-wallet.sh --all-demo` funds everything
+that is not `genesis`, and `verify-wallets.sh` asserts the genesis ones by default and all
+nine with `--include-script-funded`.
 
 ### Funding more wallets
 
@@ -351,16 +430,20 @@ NIGHT reads as `0xcecb8f27f4200f3a000000` (2.5 × 10²⁶).
 
 ### Which wallets are monitored
 
-All seven `wallets/wallets.json` entries, out of the box, via two env vars:
+All nine `wallets/wallets.json` entries, out of the box, via two env vars:
 
 | Variable | Takes | Why both |
 |---|---|---|
-| `EVM_WATCH_SEEDS` | comma-separated **32-byte** seeds; the monitor derives the address itself | Short, already in `.env`, and self-checking — the monitor's HD derivation was verified identical to `midnight-node-toolkit show-address` for all six seeds |
-| `EVM_WATCH_ADDRESSES` | comma-separated `mn_addr` values, verbatim | The **Lace test wallet's seed is 64 bytes**, which the monitor's derivation rejects outright. Address is the only way to watch it |
+| `EVM_WATCH_SEEDS` | comma-separated **32-byte** seeds; the monitor derives the address itself | Short, already in `.env`, and self-checking — the monitor's HD derivation was verified identical to `midnight-node-toolkit show-address` for all six 32-byte seeds |
+| `EVM_WATCH_ADDRESSES` | comma-separated `mn_addr` values, verbatim | **Every mnemonic-derived wallet must be watched by address.** A BIP-39 master seed is 64 bytes and the monitor's derivation accepts 32 only, so `lace-test`, `mnemonic-abandon-art` and `mnemonic-zoo-vote` can go nowhere else |
+
+That split is the one thing to get right when adding a wallet. An address nobody watches is
+not an error anywhere in the stack — it simply reads `0x0`, which looks exactly like a funding
+run that failed.
 
 The four genesis wallets report a non-zero balance within a second or two of bring-up with **no
 funding step**: the indexer replays their genesis UTXOs as ordinary unshielded transactions.
-Running `./scripts/fund-wallet.sh --all-demo` then brings the three `demo-*` wallets to
+Running `./scripts/fund-wallet.sh --all-demo` then brings the five non-genesis wallets to
 `0x84595161401484a000000` (10,000,000 NIGHT) and drops the faucet's balance by the same amount —
 which is a nice way to watch the whole node → indexer → monitor → Postgres → RPC path work.
 
@@ -430,6 +513,39 @@ torn down even if you do not name it now. Every volume is declared in a fragment
 reason: only a compose-created volume carries the project label that the "nothing left behind"
 count filters on.
 
+### Full reset
+
+`./down.sh -v` **is** the full reset — there is no second cleanup step to remember, and no state
+outside what it removes:
+
+```bash
+./down.sh -v && ./up.sh --all        # brand-new genesis, brand-new everything
+```
+
+What it removes, and what each piece of state is keyed to:
+
+| State | Where it lives | Keyed to |
+|---|---|---|
+| chain data | volume `<project>_node-data` | the genesis it was created with |
+| indexed blocks | volume `<project>_indexer-data` | that same genesis |
+| eth balances, logs, cursors | volume `<project>_evm-postgres-data` | that same genesis |
+| toolkit fetch/ledger cache | host directory `.cache/<project>/` | that same genesis |
+
+They must go together. A fresh node genesis beside a surviving indexer database gives you an
+indexer serving a chain that no longer exists; a surviving toolkit cache makes the next funding
+run fail in a way that looks nothing like "stale cache". The cache is the one piece compose
+cannot remove for you (it is a host directory, not a volume, because a `docker run` volume
+carries no project label and therefore escapes `docker compose down -v` entirely) — `down.sh`
+deletes it explicitly.
+
+Nothing survives a reset except the things derived from `seed + networkId`: every address in
+`wallets/wallets.json` stays valid, and `lace-test` is funded again at the new genesis. So a
+reset costs you a `fund-wallet.sh --all-demo`, nothing more.
+
+If a teardown ever reports leftovers, `./down.sh -v` printed the exact filter to inspect them
+with; the same assertion (plus a name-prefix sweep for unlabelled volumes) is what
+`scripts/ci-check.sh` fails on.
+
 ## Running two stacks at once
 
 Every host port and the compose project name come from the env file, and no service addresses
@@ -443,8 +559,46 @@ ENV_FILE=.env.test ./verify.sh
 ENV_FILE=.env.test ./down.sh -v       # leaves the other stack untouched
 ```
 
+## One-command check (CI)
+
+```bash
+./scripts/ci-check.sh                 # the whole chain, on ports nothing else is using
+./scripts/ci-check.sh --core-only     # skip the evm profile (no image build)
+./scripts/ci-check.sh --no-fund       # genesis wallets only
+./scripts/ci-check.sh --keep          # on failure, leave the stack up for inspection
+```
+
+It generates its own env file (so it never touches your `.env` or the default ports), brings up
+the profiles, funds the five non-genesis wallets, runs `verify.sh` **and**
+`verify-wallets.sh --include-script-funded`, then tears everything down and asserts that nothing
+survived. Exit 0 means both halves of that: the stack worked, and the machine is clean.
+
+Three details that make it safe to run on a shared box, and that are worth copying if you write
+your own harness:
+
+- **It tears down on every exit path** — failure, `Ctrl-C`, `SIGTERM`. `up.sh` deliberately
+  leaves a failed stack running so a human can look at it; that is the wrong default for CI, so
+  the teardown lives in an `EXIT` trap.
+- **The teardown is asserted, not assumed.** Containers, networks and volumes are counted by
+  compose-project label *and* by name prefix. A volume created outside compose has no project
+  label at all, so a label-only count once reported a clean teardown while state survived.
+- **`verify.sh` alone would not prove the funding worked.** Its wallet section checks the
+  *genesis* wallets, which are funded whether or not anything ran. Asserting the script-funded
+  ones needs the explicit `--include-script-funded`, which is why `ci-check.sh` runs both.
+
 ## Known limitations
 
+- **The offer-files halves are not in this release.** No `offerfiles` profile (kernel + batcher +
+  Celestia), no `frontend` profile, and therefore no browser make→take swap. The blocker is not
+  packaging: the kernel and the zswap-da template pin ledger-v8 / midnight-js 4 / wallet-SDK v1,
+  and the `@effectstream/*` packages under them pin `@midnight-ntwrk/ledger-v8` as **exact
+  dependencies**, so nothing can be redirected at this repo's level. Node 2.x is a ledger-v9 chain
+  (`protocolVersion 2000000`) and the v8 SDK cannot even deserialize its state. That migration is
+  ~4,600 lines across five published packages and is tracked as its own project (the Effectstream
+  ledger-v9 migration, 00016). Until it publishes prereleases: host ports stay reserved in
+  `.env.example`, `up.sh --all` names the missing profiles, and `--with offerfiles` fails with
+  that explanation. The kernel's in-memory PGLite behaviour and the browser-reachability
+  requirement for the proof-server URL will be documented with those profiles, not before.
 - **EVM write path is out of scope.** umbra-evm is exposed read-only: no relayer, no `RELAY_URL`,
   no `eth_sendRawTransaction`. **These endpoints are reserved for a future EVM-wallet / Compact
   signing project** that will connect an EVM wallet through them to sign messages consumed by a
