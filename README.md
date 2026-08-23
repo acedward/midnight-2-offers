@@ -588,7 +588,7 @@ fetch-by-height — so it is verified before the kernel exists rather than durin
 
 ### Notes worth knowing
 
-- **The image is ~1.1 GB and built from upstream release binaries**, native on both `arm64` and
+- **The image is ~860 MB and built from upstream release binaries**, native on both `arm64` and
   `amd64` (no `platform:` pin, unlike the indexer). The npm package the kernel uses mirrors only
   `linux-amd64`, which would have meant QEMU-emulating a block-a-second consensus node on Apple
   Silicon; those mirrored tarballs are byte-identical to celestiaorg's own release assets, which
@@ -749,6 +749,8 @@ your own harness:
   WS server's container-loopback bind, and `newHeads` having no chain-head source) — if upstream
   moves those lines, the build **fails loudly** and the patch anchors need re-deriving; see
   `images/umbra-evm/patches/apply.mjs`.
+- **Both locally-built images are large**: `celestia` ~860 MB (two Go binaries, 285 MB and 190 MB
+  unpacked — there is nothing to trim), `umbra-evm` ~990 MB.
 - **The umbra-evm image is large (~1 GB).** It installs UmbraDB's full dev dependency tree because
   `tsx` and the `@midnightntwrk/wallet-sdk-*` packages the wallet monitor imports are all
   devDependencies, and the repo is run as TypeScript rather than built. The upside is that the
