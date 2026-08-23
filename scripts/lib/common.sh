@@ -139,6 +139,66 @@ pending_profiles() {
   done
 }
 
+# ── which profiles are ALREADY UP ────────────────────────────────────────────
+#
+# `up.sh --with <profile>` is ADDITIVE: it must not stop a profile that is already running
+# (question Q12 — `--remove-orphans` used to do exactly that, and it stopped the whole evm
+# stack during T4.4's testing). To be additive, up.sh has to answer "which profiles have
+# containers in this compose project right now", and that means mapping a container's compose
+# SERVICE label back to the fragment that declares it.
+#
+# The mapping is asked of compose itself rather than parsed out of the YAML, because a fragment
+# cannot be validated on its own — `docker compose -f compose/evm.yml config` fails with
+# `service "evm-rpc" depends on undefined service "indexer"`, since indexer lives in core.yml.
+# So each fragment is read TOGETHER with core.yml and core's own services are subtracted.
+
+_CORE_SERVICES_CACHE=""
+core_services() {
+  if [[ -z "$_CORE_SERVICES_CACHE" ]]; then
+    _CORE_SERVICES_CACHE="$(docker compose -f "$REPO_ROOT/compose/core.yml" config --services 2>/dev/null | sort)"
+  fi
+  printf '%s\n' "$_CORE_SERVICES_CACHE"
+}
+
+# profile_services <profile> — the services a fragment adds on top of core.yml, one per line.
+profile_services() {
+  local p="$1" all
+  [[ -f "$REPO_ROOT/compose/$p.yml" ]] || return 0
+  all="$(docker compose -f "$REPO_ROOT/compose/core.yml" -f "$REPO_ROOT/compose/$p.yml" \
+           config --services 2>/dev/null | sort)"
+  [[ -n "$all" ]] || return 0
+  comm -13 <(core_services) <(printf '%s\n' "$all")
+}
+
+# project_services — the compose service name of every container of this project, running or not.
+# Stopped ones count: `up` would restart them, so a profile that is merely paused is still "up"
+# as far as "do not silently remove it" is concerned.
+project_services() {
+  docker ps -a --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+    --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null | sort -u
+}
+
+# running_profiles — every profile that has at least one container in this compose project.
+#
+# A container whose service is declared by NO fragment (a service deleted from a fragment since
+# it was started) deliberately maps to nothing, so it stays an orphan and `--remove-orphans`
+# still cleans it up. That is the one job `--remove-orphans` was actually there for.
+running_profiles() {
+  local svcs p s
+  svcs="$(project_services)"
+  [[ -n "${svcs//[[:space:]]/}" ]] || return 0
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    while IFS= read -r s; do
+      [[ -n "$s" ]] || continue
+      if printf '%s\n' "$svcs" | grep -Fxq -- "$s"; then
+        printf '%s\n' "$p"
+        break
+      fi
+    done < <(profile_services "$p")
+  done < <(available_profiles)
+}
+
 # use_all_profiles — set PROFILES to every profile that has a fragment.
 #
 # For a script that only needs to reach ONE service. `dc` passes exactly the fragments named in

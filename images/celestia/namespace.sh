@@ -2,7 +2,7 @@
 #
 # Print the Celestia namespace the demo stack uses, in the form a caller asks for.
 #
-#   celestia-namespace            # the configured hex suffix, e.g. 000000000000deadbeef
+#   celestia-namespace            # the configured hex suffix, e.g. 6d6e2d737761702d7631
 #   celestia-namespace --hex      # same, with a 0x prefix (what the `celestia blob` CLI takes)
 #   celestia-namespace --base64   # the full 29 bytes, base64 (what the JSON-RPC API takes)
 #   celestia-namespace --full-hex # the full 29 bytes, hex (for eyeballing the layout)

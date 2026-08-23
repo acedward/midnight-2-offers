@@ -59,13 +59,15 @@ services:
       # 28-byte namespace id by the sync layer (`0x00` version byte ‖ 18 zero bytes ‖ these 10) —
       # the same expansion the kernel's `mip6NamespaceBytes()` does.
       #
-      # NOTE, and P4b MUST keep these two in step: `000000000000deadbeef` is the value the
-      # kernel's own `.env.preview.example` uses, but the kernel's CODE default is the MIP-0006
-      # shared namespace `6d6e2d737761702d7631` ("mn-swap-v1"). They are different namespaces,
-      # and a mismatch is silent — the batcher publishes and the sync node reads an empty stream.
-      # So the kernel/batcher services below must take CELESTIA_NAMESPACE from this same
-      # variable, never from their own default. See the plan's T4.4 finding and question Q11.
-      CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-000000000000deadbeef}'
+      # The default is the MIP-0006 SHARED namespace `6d6e2d737761702d7631` ("mn-swap-v1"), which
+      # is also the kernel's own code default — one namespace is one liquidity pool, and a
+      # per-deployment namespace re-silos the order book. `000000000000deadbeef`, the kernel's
+      # hosted-preview override, is documented in .env.example as the isolation example (Q11).
+      #
+      # P4b MUST take CELESTIA_NAMESPACE from THIS variable in every offer-files service, never
+      # from a service's own default: a publisher/reader mismatch is silent — the batcher's blobs
+      # land and the sync node reads an empty stream, with no error anywhere.
+      CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'
       # Chain id of the devnet, and also celestia-node's network name. `test` is what
       # @effectstream/celestia uses; changing it invalidates the data volume.
       CELESTIA_CHAIN_ID: '${CELESTIA_CHAIN_ID:-test}'
@@ -111,7 +113,7 @@ services:
   #     volumes: ['celestia-auth:/celestia/auth:ro']      # <- the token handoff, READ-ONLY
   #     environment:
   #       CELESTIA_RPC_URL:  'http://celestia:26658'      # container port, not CELESTIA_HOST_PORT
-  #       CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-000000000000deadbeef}'   # SAME var as above
+  #       CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'  # SAME var as above
   #       CELESTIA_NETWORK:  '${CELESTIA_NETWORK:-devnet}'
   #       CELESTIA_START_HEIGHT: '1'                      # a devnet's history is not worth skipping
   #       MIDNIGHT_NODE_HTTP: 'http://node:9944'

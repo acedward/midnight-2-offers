@@ -21,7 +21,10 @@
 
 celestia_defaults() {
   : "${CELESTIA_HOST_PORT:=26658}"
-  : "${CELESTIA_NAMESPACE:=000000000000deadbeef}"
+  # The MIP-0006 SHARED namespace (ASCII `mn-swap-v1`) — the kernel's own code default, and the
+  # one value every compliant publisher and reader is supposed to use. `000000000000deadbeef` is
+  # the kernel's hosted-preview override, kept as a documented example in .env.example. Q11.
+  : "${CELESTIA_NAMESPACE:=6d6e2d737761702d7631}"
   : "${CELESTIA_CHAIN_ID:=test}"
   : "${CELESTIA_NETWORK:=devnet}"
   : "${CELESTIA_IMAGE:=midnight-2-offers/celestia:local}"

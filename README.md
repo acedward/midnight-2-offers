@@ -48,7 +48,9 @@ instead of quietly bringing up part of a stack.
 cp .env.example .env                  # then edit ports/tags if needed
 ./up.sh                               # bring up the core stack; blocks until it is usable
 ./up.sh --with evm                    # …plus the read-only Ethereum JSON-RPC façade
-./up.sh --all                         # …every profile that exists (today: core + evm)
+./up.sh --with offerfiles             # …plus the Celestia DA devnet (evm keeps running)
+./up.sh --all                         # …every profile that exists (today: core + evm + offerfiles)
+./up.sh --converge                    # back to core only: stop the optional profiles
 ./scripts/fund-wallet.sh --all-demo   # optional: fund the demo-* and mnemonic-* wallets
 ./verify.sh                           # assert health + prefunded wallets (+ evm, if it is up)
 ./down.sh -v                          # tear down, wiping all state
@@ -67,6 +69,15 @@ involved, so the fragment's filename *is* the profile name — and a `--with` na
 fragment behind it is an **error**, not a no-op, because a silently-ignored `--with` gives you a
 bare core stack that fails much later with `no such service`. `down.sh` always tears down every
 fragment that exists, so a profile brought up earlier can never be orphaned.
+
+**`--with` is additive**: a profile that already has containers in this compose project is folded
+back into the bring-up, so adding one profile never stops another. `up.sh` names what it carried
+over on every run (`kept  already up, so left running: evm`). The explicit way to go the other
+direction is **`--converge`**, which brings up exactly core + the profiles you name and stops the
+rest — naming each one before it does it. So `./up.sh --converge --with evm` is "evm and nothing
+else", `./up.sh --converge` is "core alone", and `./down.sh` is still the way to stop everything.
+Orphan cleanup is untouched either way: a container whose service is no longer declared by any
+fragment is still removed.
 
 `up.sh` returns only when the stack is genuinely usable, which is stricter than "docker says
 healthy":
@@ -522,23 +533,33 @@ dies, so compose never reports half a devnet as running.
 
 ### The namespace
 
-Blobs live in a namespace, and `CELESTIA_NAMESPACE` carries the 10-byte hex suffix of one
-(default `000000000000deadbeef`, the value the kernel's own `.env.preview.example` uses). The wire
-form is 29 bytes — a `0x00` version byte, 18 zero bytes, then those 10 — and
+Blobs live in a namespace, and `CELESTIA_NAMESPACE` carries the 10-byte hex suffix of one. The
+default is the **MIP-0006 shared namespace `6d6e2d737761702d7631`** — ASCII `mn-swap-v1` — which is
+also the kernel's own code default (`MIP6_NAMESPACE_ID_SUFFIX_HEX`). That is the whole point of the
+standard: one namespace is one liquidity pool, so every compliant UI, indexer and bot reads the
+same offer stream, and a per-deployment namespace re-silos the order book.
+
+The wire form is 29 bytes — a `0x00` version byte, 18 zero bytes, then those 10 — and
 `celestia-namespace --base64` in the image does that expansion, the same one the kernel's
 `mip6NamespaceBytes()` does:
 
 ```bash
-docker run --rm -e CELESTIA_NAMESPACE=000000000000deadbeef \
+docker run --rm -e CELESTIA_NAMESPACE=6d6e2d737761702d7631 \
   midnight-2-offers/celestia:local celestia-namespace --base64
-# AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN6tvu8=
+# AAAAAAAAAAAAAAAAAAAAAAAAAG1uLXN3YXAtdjE=
 ```
 
-⚠️ **The kernel's *code* default is a different namespace**: the MIP-0006 *shared* namespace
-`6d6e2d737761702d7631` (ASCII `mn-swap-v1`). A mismatch between publisher and reader is
-completely silent — blobs land, nothing reads them, the order book is just always empty. So every
-offer-files service must take its namespace from this one `.env` variable. Both values work
-against this devnet; which one the demo should use is an open question for the offer-files work.
+Overriding it is sanctioned for an **isolated dev/e2e run** — the kernel's hosted preview does
+exactly that, so for preview parity set `CELESTIA_NAMESPACE=000000000000deadbeef` (wire form
+`AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN6tvu8=`). Both values work against this devnet; the devnet is
+isolated by its own genesis either way, which is why the default is the honest one rather than the
+fake-looking one.
+
+⚠️ Whichever you pick, **every offer-files service must take it from this one `.env` variable**,
+never from its own default. A mismatch between publisher and reader is completely silent — blobs
+land, nothing reads them, the order book is just always empty with no error anywhere.
+`verify.sh` asserts that the running container's handoff file carries the same value the stack is
+configured with, so publisher and reader cannot drift apart unnoticed.
 
 ### The auth token, and how a container gets it
 
@@ -722,11 +743,12 @@ your own harness:
   batcher host ports stay reserved in `.env.example` and `--with frontend` fails with that
   explanation. The kernel's in-memory PGLite behaviour and the browser-reachability requirement
   for the proof-server URL will be documented with those services, not before.
-- **`up.sh --with` names the complete set of optional profiles for a bring-up, not an addition to
-  what is already running.** Compose is given core + the named fragments and `--remove-orphans`,
-  so `./up.sh --with offerfiles` on a stack where `evm` is up **stops** the evm services. Name
-  both, or use `--all`. (`down.sh` is the opposite by design: it always passes every fragment, so
-  nothing can be orphaned by forgetting to name it.)
+- **`up.sh --with` is additive, and `--converge` is how you take a profile back down without a full
+  teardown.** Until 2026-08-23 `--with` named the *complete* set of optional profiles, so
+  `./up.sh --with offerfiles` on a stack where `evm` was up silently **stopped** the evm services;
+  it no longer does. If you have a script that relied on the old behaviour, add `--converge` to
+  it. (`down.sh` needs neither: it always passes every fragment, so nothing can be orphaned by
+  forgetting to name it.)
 - **EVM write path is out of scope.** umbra-evm is exposed read-only: no relayer, no `RELAY_URL`,
   no `eth_sendRawTransaction`. **These endpoints are reserved for a future EVM-wallet / Compact
   signing project** that will connect an EVM wallet through them to sign messages consumed by a

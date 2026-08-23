@@ -21,6 +21,7 @@ PROFILES=""
 DO_PULL=0
 DO_BUILD=0
 WANT_ALL=0
+CONVERGE=0
 
 usage() {
   cat <<'EOF'
@@ -30,21 +31,30 @@ Brings up the core Midnight stack (node + indexer + proof-server) and waits unti
 three are serving. Reads .env for image tags and host ports (see .env.example).
 
 Options:
-  --with <profile>   also bring up an optional profile; repeatable. A profile is a compose
-                     fragment in compose/, named after the profile. An unknown name is an
-                     error, not a no-op — see below.
+  --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
+                     A profile is a compose fragment in compose/, named after the profile. An
+                     unknown name is an error, not a no-op.
                      Available now: evm        (read-only Ethereum JSON-RPC)
                                     offerfiles (Celestia DA devnet; kernel + batcher pending)
   --all              bring up every profile that has a fragment in compose/. Profiles that
                      are documented but not built yet are named and skipped, not an error.
+  --converge         the opposite of additive: bring up EXACTLY core + the named profiles and
+                     STOP any other profile that is currently up. `./up.sh --converge` on its
+                     own therefore means "core alone". Every profile it is about to stop is
+                     named before it happens.
   --pull             docker compose pull before starting.
   --build            docker compose build before starting (for the locally-built images).
   -h, --help         this text.
 
-`--with` names the COMPLETE set of optional profiles for this bring-up, not an addition to
-whatever is already running: compose is given only core + the named fragments and passes
---remove-orphans, so a profile that is up but not named this time is STOPPED. To add a second
-profile to a running stack, name both (`--with evm --with offerfiles`) or use `--all`.
+`--with` is ADDITIVE: any profile that already has containers in this compose project is folded
+back into the bring-up, so `./up.sh --with offerfiles` on a stack where `evm` is running brings
+up Celestia and leaves the evm services alone (it used to stop them — that surprise is what
+--converge now exists for). The profiles carried over are named on every run.
+
+Orphan cleanup is unaffected: compose still runs with --remove-orphans, and a container whose
+service is no longer declared by ANY fragment is still removed. Only whole profiles that are
+genuinely up are protected. To take a profile down, use ./down.sh (everything) or --converge
+without it (that profile only).
 
 `offerfiles` is PARTIAL: it brings up the local Celestia devnet (a DA layer the kernel will
 publish offers to), but not yet the offer-files kernel (:9999) or the batcher (:3334) — those
@@ -60,8 +70,10 @@ Environment:
                         ENV_FILE=.env.test ./up.sh
 
 Examples:
-  ./up.sh                       # core stack only
-  ./up.sh --with evm            # core + umbra-evm
+  ./up.sh                       # core stack, plus whatever profiles are already up
+  ./up.sh --with evm            # …and umbra-evm
+  ./up.sh --with offerfiles     # …and the Celestia DA devnet, without stopping evm
+  ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
 EOF
 }
@@ -89,6 +101,7 @@ while [[ $# -gt 0 ]]; do
       while IFS= read -r p; do PROFILES="$PROFILES $p"; done < <(available_profiles)
       WANT_ALL=1
       shift ;;
+    --converge) CONVERGE=1; shift ;;
     --pull)  DO_PULL=1; shift ;;
     --build) DO_BUILD=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -100,10 +113,48 @@ export PROFILES
 require_docker
 load_env
 
+# ── `--with` is ADDITIVE (question Q12) ──────────────────────────────────────
+#
+# Everything already up in this compose project is folded back into PROFILES, so bringing up a
+# new profile cannot stop the ones that are running. Before this, compose was given only core +
+# the named fragments and `--remove-orphans` removed the rest: `./up.sh --with offerfiles` on a
+# full stack silently stopped evm-rpc, wallet-monitor, evm-postgres and evm-migrate, mid-command,
+# among compose's own output. `--with <newthing>` means "and also this" to every reader, and now
+# it means that to the script.
+#
+# `--remove-orphans` stays. With every live profile named, the only containers it can still
+# remove are those of a service no longer declared by any fragment — which is the job it was
+# there for. See running_profiles() in scripts/lib/common.sh for the service→profile mapping.
+#
+# It has to run after load_env: the lookup is by COMPOSE_PROJECT_NAME, which the env file sets.
+CARRIED=""
+STOPPING=""
+while IFS= read -r p; do
+  [[ -n "$p" ]] || continue
+  if (( CONVERGE )); then
+    [[ " $PROFILES " == *" $p "* ]] || STOPPING="$STOPPING $p"
+  else
+    [[ " $PROFILES " == *" $p "* ]] && continue
+    PROFILES="$PROFILES $p"
+    CARRIED="$CARRIED $p"
+  fi
+done < <(running_profiles)
+export PROFILES
+
 log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
 info "images   node=${NODE_TAG}  indexer=${INDEXER_TAG} (${INDEXER_PLATFORM})  proof=${PROOF_TAG}"
 info "ports    node=${HOST_ADDR}:${NODE_HOST_PORT}  indexer=${HOST_ADDR}:${INDEXER_HOST_PORT}  proof=${HOST_ADDR}:${PROOF_HOST_PORT}"
 [[ -n "${PROFILES// /}" ]] && info "profiles core${PROFILES// /, }"
+# Say what was carried over and what is about to be stopped. Both directions are named out loud:
+# the whole complaint behind Q12 was that a profile got stopped silently, mid-command.
+[[ -n "${CARRIED// /}" ]] && info "kept     already up, so left running:${CARRIED}"
+if (( CONVERGE )); then
+  if [[ -n "${STOPPING// /}" ]]; then
+    warn "--converge: STOPPING the profile(s) not named this time:${STOPPING}"
+  else
+    dim "--converge: no other profile is up, so nothing will be stopped"
+  fi
+fi
 # Name what a partial profile does and does not include, every time. Left unsaid, `--with
 # offerfiles` coming up with no kernel on :9999 reads as a broken build rather than as the
 # half that was deliberately built first.
