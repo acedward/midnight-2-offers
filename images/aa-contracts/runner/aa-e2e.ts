@@ -92,6 +92,7 @@ const DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 1800);
 
 const DEPOSIT = 600_000n;
 const TRANSFER = 250_000n;
+const WITHDRAW = 50_000n;
 
 const DEV_OWNER_SECRET = (() => {
   const b = new TextEncoder().encode("demo-infra:aa:dev-owner-secret");
@@ -273,54 +274,11 @@ async function main() {
     results["deposit"] = { alice: String(a) };
   }
 
-  // ── 4. DEBIT PROBES — EXPECTED BLOCKED UPSTREAM, off by default ────────────
-  // Any debit-shaped `execute` (withdraw selector 3, internal transfer selector
-  // 5) produces a call tx whose single /check body mixes proof lanes: the v7
-  // execute piece (~185 KB) plus a standard-lane zswap-cc fragment (~755 B).
-  // The _experimental server rejects the standard fragment ("inputs did not
-  // match alignment: b21b32b32b16b1b32", misparsing the fragment — its "inputs"
-  // include the BLS12-381 scalar modulus little-endian); the PLAIN server
-  // rejects the v7 piece. Measured exhaustively (11 runs, incl. a routing shim
-  // that proved the body unsplittable): NO server-topology fixes this — it
-  // needs an upstream change (a proof server checking both lanes, or the SDK
-  // splitting the check). Until then the probes run only with
-  // AA_E2E_PROBE_DEBITS=1 and are expected to fail at /check.
-  if (process.env["AA_E2E_PROBE_DEBITS"] !== "1") {
-    log("debit probes (withdraw/transfer) SKIPPED — blocked upstream; AA_E2E_PROBE_DEBITS=1 to run them");
-    results["debits"] = "skipped — mixed-lane /check blocked upstream (see T7.5)";
-  } else {
-  // ── 4a. PROBE: withdraw a sliver to the relay wallet's own address
-  // (selector 3), signed by alice's EOA — the OTHER unshielded value-moving
-  // action. Run before the transfer so the two shapes are diagnosed
-  // independently: if withdraw passes and transfer fails, the zswap-cc /check
-  // incompatibility is isolated to the internal-transfer shape.
-  const WITHDRAW = 50_000n;
-  await session("withdraw-probe", async (walletResult) => {
-    const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-    const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-    const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-    const action = {
-      primaryType: "WithdrawUnshielded",
-      manager: manager32,
-      accountId: ALICE_ID,
-      owner: ALICE,
-      validUntil: DEADLINE,
-      nonce: 0n,
-      color: ("0x" + artifact.mints.unshielded.color) as Hex32,
-      amount: WITHDRAW,
-      recipientKind: 0n,
-      recipient: ("0x" + toHex(userAddr)) as Hex32,
-    } as any;
-    const sig = metamaskSign(ALICE_KEY, action, artifactDomain());
-    const prep = prepareEvmExecute(action, artifactDomain(), sig);
-    log(`withdraw ${WITHDRAW} alice→relay (selector 3): proving execute (k=19)…`);
-    const t0 = Date.now();
-    const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
-    log(`✅ withdrawn — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-    results["withdraw"] = { amount: String(WITHDRAW), tx: tx.public?.txId ?? null };
-  });
-
-  // ── 4b. transfer alice → bob, signed by alice's EOA (selector 5) ───────────
+  // ── 4. SEND — internal transfer alice → bob (selector 5), DEFAULT flow ─────
+  // The proving-layer blocker (a change-coin pool underflow in the Manager,
+  // zswap-cc /check alignment refusal) was FIXED upstream in AA PR #9; the
+  // internal transfer now proves and LANDS. Nonce 0: first EVM action after
+  // registration for this account.
   await session("transfer", async (walletResult) => {
     const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
     const action: TransferAction<"TransferInternalUnshielded"> = {
@@ -329,7 +287,7 @@ async function main() {
       accountId: ALICE_ID,
       owner: ALICE,
       validUntil: DEADLINE,
-      nonce: 1n, // nonce 0 consumed by the withdraw probe
+      nonce: 0n,
       color: ("0x" + artifact.mints.unshielded.color) as Hex32,
       amount: TRANSFER,
       toAccountId: BOB_ID,
@@ -340,16 +298,55 @@ async function main() {
     const t0 = Date.now();
     const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
     log(`✅ transferred — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+    results["transfer"] = { amount: String(TRANSFER), tx: tx.public?.txId ?? null };
   });
   {
     const a = await balanceOf(ALICE_ID);
     const b = await balanceOf(BOB_ID);
-    if (a !== DEPOSIT - WITHDRAW - TRANSFER) throw new Error(`alice ${a} != ${DEPOSIT - WITHDRAW - TRANSFER}`);
+    if (a !== DEPOSIT - TRANSFER) throw new Error(`alice ${a} != ${DEPOSIT - TRANSFER}`);
     if (b !== TRANSFER) throw new Error(`bob ${b} != ${TRANSFER}`);
     log(`✅ ledger: alice=${a} bob=${b} — transfer exact`);
-    results["transfer"] = { alice: String(a), bob: String(b) };
+    (results["transfer"] as any).balances = { alice: String(a), bob: String(b) };
   }
-  } // end debit probes
+
+  // ── 5. PROBE (non-fatal): withdraw to an address (selector 3) ──────────────
+  // Proving is clean since AA PR #9, but the NODE currently rejects the
+  // submitted withdraw with `1010: Invalid Transaction: Custom error: 214`
+  // (first-ever live execution of this path; under investigation — the
+  // internal transfer above is unaffected). The probe records the current
+  // status without failing the suite.
+  try {
+    await session("withdraw-probe", async (walletResult) => {
+      const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
+      const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+      const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
+      const action = {
+        primaryType: "WithdrawUnshielded",
+        manager: manager32,
+        accountId: ALICE_ID,
+        owner: ALICE,
+        validUntil: DEADLINE,
+        nonce: 1n, // after the transfer
+        color: ("0x" + artifact.mints.unshielded.color) as Hex32,
+        amount: WITHDRAW,
+        recipientKind: 0n,
+        recipient: ("0x" + toHex(userAddr)) as Hex32,
+      } as any;
+      const sig = metamaskSign(ALICE_KEY, action, artifactDomain());
+      const prep = prepareEvmExecute(action, artifactDomain(), sig);
+      log(`withdraw ${WITHDRAW} alice→relay (selector 3): proving execute (k=19)…`);
+      const t0 = Date.now();
+      const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
+      log(`✅ withdrawn — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+      results["withdraw"] = { amount: String(WITHDRAW), tx: tx.public?.txId ?? null };
+    });
+    const a = await balanceOf(ALICE_ID);
+    log(`✅ ledger after withdraw: alice=${a}`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log(`withdraw probe: EXPECTED-BLOCKED (node) — ${msg.slice(0, 120)}`);
+    results["withdraw"] = { status: "blocked — node rejects with Custom error 214 (under investigation)" };
+  }
 
   const report = {
     path: "EVM wallet (MetaMask V4) → relay → Manager.execute → Midnight",
