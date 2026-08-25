@@ -127,45 +127,55 @@
     },
     {
       "name": "demo-alice",
-      "role": "demo actor — funded by scripts/fund-wallet.sh, not by genesis",
-      "seed": "de110000000000000000000000000000000000000000000000000000000a11ce",
-      "seedBytes": 32,
-      "funding": "fund-script",
+      "role": "Lace-importable demo actor — funded by scripts/fund-wallet.sh, not by genesis",
+      "$comment": "One repeated word plus a checksum word that shares its initial, so the phrase says whose wallet it is and still types into Lace in seconds. 'avoid' is one of the 8 final words that make 23x 'alpha' a valid BIP-39 mnemonic (see tools/mnemonic-wallets/derive.sh --list-repeated alpha).",
+      "mnemonic": "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha avoid",
+      "derivation": {
+        "kind": "bip39+bip32",
+        "passphrase": "",
+        "path": "m/44'/2400'/0'/<role>'/0'",
+        "account": 0,
+        "index": 0,
+        "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 }
+      },
+      "seed": "0a4f358d27c85cc3063c73fe002e9f933722aad5bc009799805946cc5a9e7272f249189587fe0254c6d18b5bc1a24f60617bc62f07c5b57343b0fddf8e680d96",
+      "seedBytes": 64,
+      "funding": "mnemonic",
       "addresses": {
-        "unshielded": "mn_addr_undeployed1r85td6495c2tgezq527p3mlau3qsqzavlqk6g9ckpqql63arczrs6gr5hc",
-        "shielded": "mn_shield-addr_undeployed16kle3uv9y6uzr9tjk3x25ufhan2gj3qcx07ufrrcr370ut338968p2xv6p7s74kxz8xcee3ult57jmek5kc9t5nyc9r9p4dfxdukysc8evarf",
-        "dust": "mn_dust_undeployed1wdrlg9ggmcuj7jwj7jccz2c282ps6fm6afwpuc5nz2z4gqryvl05kzultzx"
+        "unshielded": "mn_addr_undeployed14tjhxluvt773ry7hta5ysvhymjk6usyhlgauzt4al9t8lpe4gtzqvnj8gs",
+        "shielded": "mn_shield-addr_undeployed1gxt99y46yj9rm8xumumkdc7njpj9n29urqesv0hwv8z00vaawzczsvsymgs0klqpwpyveaajug6f7rymltv2zk0vgs02kahhcdn28pqnh7dfh",
+        "dust": "mn_dust_undeployed1wv344tl00je3wf4dawupzz4uxh67erx9x672qqvalxjqq2njq7e92sjduwn",
+        "userAddress": "aae5737f8c5fbd1193d75f684832e4dcadae4097fa3bc12ebdf9567f873542c4"
       }
     },
     {
       "name": "demo-bob",
-      "role": "demo actor — funded by scripts/fund-wallet.sh, not by genesis",
-      "seed": "de110000000000000000000000000000000000000000000000000000000b0b00",
-      "seedBytes": 32,
-      "funding": "fund-script",
+      "role": "Lace-importable demo actor — funded by scripts/fund-wallet.sh, not by genesis",
+      "$comment": "'burst' is one of the 8 valid final words for 23x 'boss'.",
+      "mnemonic": "boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss burst",
+      "derivation": {
+        "kind": "bip39+bip32",
+        "passphrase": "",
+        "path": "m/44'/2400'/0'/<role>'/0'",
+        "account": 0,
+        "index": 0,
+        "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 }
+      },
+      "seed": "1ce2d940e5a46775697fa7878627fbd689b5e6e73c7e32b82ed01468b07534288f9b74cbcd116b75a3f854315accdf39f87d075bd74a23eaf4910d95e7629095",
+      "seedBytes": 64,
+      "funding": "mnemonic",
       "addresses": {
-        "unshielded": "mn_addr_undeployed1vddp8d3lnewudg0fnk83hkmf9qqq3d3e5nend5sldysr50therjqff4m4x",
-        "shielded": "mn_shield-addr_undeployed1h0vfzafs09zkw9famz8z5m8z998k28fwejw96v35fcgczvscqkqvkvmzw962nfjprhyamtenhzmylyxwn4jveafffja4yus9228x7ssqn9496",
-        "dust": "mn_dust_undeployed1wv2x9ash93dp7uueu6yfqaeapwejnz5tuw85sac43lz34a4aden9qxxn77e"
+        "unshielded": "mn_addr_undeployed1va25tg7d43rcftqeafs6dn3mvycut9zffq989my7p6c8kr0djl5shn25qj",
+        "shielded": "mn_shield-addr_undeployed1txfzggnef5gsc503xfnhml9jrlvsl6zv2lh7zrqjjy26hfj6cx69sffdea0r2lpewhcmt476xtt9va46gxyu94gu3354ljwygaazxccga3rse",
+        "dust": "mn_dust_undeployed1wdmlalk7ptrhfcmzeh5ukmer2pu29mhxdhhd4qn0xqk0xq52tjmrg2uccw5",
+        "userAddress": "675545a3cdac4784ac19ea61a6ce3b6131c59449480a72ec9e0eb07b0ded97e9"
       }
     },
     {
       "name": "demo-carol",
-      "role": "demo actor — funded by scripts/fund-wallet.sh, not by genesis",
-      "seed": "de110000000000000000000000000000000000000000000000000000000ca201",
-      "seedBytes": 32,
-      "funding": "fund-script",
-      "addresses": {
-        "unshielded": "mn_addr_undeployed125wz4e8aflcc7p8wjcp00gj9msdu3uglt5q8jru4lhmg8xvhvgmsfdp4rm",
-        "shielded": "mn_shield-addr_undeployed1fxlyvl3wljtzvh2uuwkf2lg3g30244rl8r26cvh7t9fwjmmg2j09amj34nevpavg6u8c45hkc4deme9ulhc947hfwjs7ckhrk8qqhqghwz0tj",
-        "dust": "mn_dust_undeployed1w028z3slvktfnz3ng0qk053pxgk46k4exkrlvq7v548v8mtwtt05jfwhdws"
-      }
-    },
-    {
-      "name": "mnemonic-abandon-art",
-      "role": "Lace-importable demo actor — one repeated word, so it types in seconds",
-      "$comment": "Precedent: this exact phrase is 'Alice' in $HOME/midnight-ref-ai/midnight-local-dev/accounts.example.json. 'art' is one of the 8 final words that make 23x 'abandon' a valid BIP-39 mnemonic (see tools/mnemonic-wallets/derive.sh --list-repeated abandon).",
-      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "role": "Lace-importable demo actor — funded by scripts/fund-wallet.sh, not by genesis",
+      "$comment": "'cherry' is one of the 8 valid final words for 23x 'cactus'.",
+      "mnemonic": "cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cherry",
       "derivation": {
         "kind": "bip39+bip32",
         "passphrase": "",
@@ -174,37 +184,14 @@
         "index": 0,
         "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 }
       },
-      "seed": "408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840",
+      "seed": "fc14ae819b1a9ace2304c5cf960596741fccd13522eda7718a2c82c61ab409c2c520ccabc898725c565d25b8b2d84f7117869c36391b1f68a54ea0d89a201090",
       "seedBytes": 64,
       "funding": "mnemonic",
       "addresses": {
-        "unshielded": "mn_addr_undeployed19kxg8sxrsty37elmm6yd68tuy7prryjst2r48eapf2fdtd8z4gpqauuvtx",
-        "shielded": "mn_shield-addr_undeployed1jsy2ala7ahrtndz7r0xxy8g6yulmvlmhmclkt0amrq2dsnutv5j08tnsd0egept2gpmfpdrgpqd87ksj8efr2qdknapet27d0cvsx2czvqdfx",
-        "dust": "mn_dust_undeployed1wwd54rhuw4nqajtn34qjslfk0hdc6jlspdkqvvlmmjrsuckpzurpwkns5qg",
-        "userAddress": "2d8c83c0c382c91f67fbde88dd1d7c27823192505a8753e7a14a92d5b4e2aa02"
-      }
-    },
-    {
-      "name": "mnemonic-zoo-vote",
-      "role": "Lace-importable demo actor — a second one, so a make/take demo needs two imports only",
-      "$comment": "Precedent: this exact phrase is 'Bob' in $HOME/midnight-ref-ai/midnight-local-dev/accounts.example.json. 'vote' is one of the 8 valid final words for 23x 'zoo'.",
-      "mnemonic": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote",
-      "derivation": {
-        "kind": "bip39+bip32",
-        "passphrase": "",
-        "path": "m/44'/2400'/0'/<role>'/0'",
-        "account": 0,
-        "index": 0,
-        "roles": { "zswap": 3, "nightExternal": 0, "dust": 2 }
-      },
-      "seed": "e28a37058c7f5112ec9e16a3437cf363a2572d70b6ceb3b6965447623d620f14d06bb321a26b33ec15fcd84a3b5ddfd5520e230c924c87aaa0d559749e044fef",
-      "seedBytes": 64,
-      "funding": "mnemonic",
-      "addresses": {
-        "unshielded": "mn_addr_undeployed1z7k7swt4cwxaq3px2gemzpqhtcjm5dvg9a5vmr2h3kc24n66u4tqsnwyn0",
-        "shielded": "mn_shield-addr_undeployed1w9xhdrll36rm8ud8w59elrad05y6hu4gtkxftvztyeqxees3kz5yzj2u4m24f7facjn95axtg60qxrpayh5cykv62sy6zkt77juut3cm8q9t9",
-        "dust": "mn_dust_undeployed1wv366gqlcfy9p2fstxl95h98zxjlf8a3qmj28qwxwt88rjumzh4qyj66lrt",
-        "userAddress": "17ade83975c38dd044265233b104175e25ba35882f68cd8d578db0aacf5ae556"
+        "unshielded": "mn_addr_undeployed1ctfkn3nhju6f8p4t92ay0k30eswc4n9s60rjq2s3rkearf454tgqh6ckgy",
+        "shielded": "mn_shield-addr_undeployed1929p0kdd0wvkpzx6xwdquyhpgreptnapq83nvy7yca7x309m0knzjqcqf303r5jp5xtkz0cfaj7gkmh47gmqugfmz0hwt3v9cjrejjqc0xft6",
+        "dust": "mn_dust_undeployed1wdc3dlm6w96jpf6swwva2ymc4feceg9dtanng982m0r2gvc5d3ynu3xe92g",
+        "userAddress": "c2d369c67797349386ab2aba47da2fcc1d8accb0d3c7202a111db3d1a6b4aad0"
       }
     }
   ]

@@ -66,7 +66,7 @@ Environment:
   ENV_FILE=<path>             target a different stack instance (see .env.example).
 
 Examples:
-  ./scripts/fund-wallet.sh de110000000000000000000000000000000000000000000000000000000a11ce
+  ./scripts/fund-wallet.sh 0a4f358d…0d96   # demo-alice, by BIP-39 master seed
   ./scripts/fund-wallet.sh --all-demo
   ./scripts/fund-wallet.sh mn_addr_undeployed1… --amount 5000000 --no-dust
 EOF

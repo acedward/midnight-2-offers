@@ -162,14 +162,14 @@ services:
       # T3.3 — the wallets whose balances the eth_* surface can answer for.
       #
       # WATCH_SEEDS takes 32-byte (64 hex char) seeds and derives the unshielded address itself.
-      # WATCH_ADDRESSES takes bech32 mn_addr values verbatim, and is how the Lace test wallet gets
-      # monitored: its seed is 64 BYTES, which the monitor's own derivation rejects outright.
-      # Defaults cover every wallets/wallets.json entry: the three dev genesis seeds and the
-      # three script-funded demo wallets by seed, plus the three 64-BYTE mnemonic wallets
-      # (lace-test and the two `funding: mnemonic` ones) by address — a BIP-39 master seed is
-      # 64 bytes, so those three CANNOT go in WATCH_SEEDS.
-      WATCH_SEEDS: '${EVM_WATCH_SEEDS:-0000000000000000000000000000000000000000000000000000000000000001,0000000000000000000000000000000000000000000000000000000000000002,0000000000000000000000000000000000000000000000000000000000000003,de110000000000000000000000000000000000000000000000000000000a11ce,de110000000000000000000000000000000000000000000000000000000b0b00,de110000000000000000000000000000000000000000000000000000000ca201}'
-      WATCH_ADDRESSES: '${EVM_WATCH_ADDRESSES:-mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m,mn_addr_undeployed19kxg8sxrsty37elmm6yd68tuy7prryjst2r48eapf2fdtd8z4gpqauuvtx,mn_addr_undeployed1z7k7swt4cwxaq3px2gemzpqhtcjm5dvg9a5vmr2h3kc24n66u4tqsnwyn0}'
+      # WATCH_ADDRESSES takes bech32 mn_addr values verbatim, and is how EVERY mnemonic-derived
+      # wallet gets monitored: a BIP-39 master seed is 64 BYTES, which the monitor's own
+      # derivation rejects outright.
+      # Defaults cover every wallets/wallets.json entry: the three dev genesis seeds by seed,
+      # and the four 64-BYTE mnemonic wallets (lace-test + demo-alice/bob/carol) by address.
+      # The demo actors are mnemonic-based, so WATCH_SEEDS now holds the genesis three only.
+      WATCH_SEEDS: '${EVM_WATCH_SEEDS:-0000000000000000000000000000000000000000000000000000000000000001,0000000000000000000000000000000000000000000000000000000000000002,0000000000000000000000000000000000000000000000000000000000000003}'
+      WATCH_ADDRESSES: '${EVM_WATCH_ADDRESSES:-mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m,mn_addr_undeployed14tjhxluvt773ry7hta5ysvhymjk6usyhlgauzt4al9t8lpe4gtzqvnj8gs,mn_addr_undeployed1va25tg7d43rcftqeafs6dn3mvycut9zffq989my7p6c8kr0djl5shn25qj,mn_addr_undeployed1ctfkn3nhju6f8p4t92ay0k30eswc4n9s60rjq2s3rkearf454tgqh6ckgy}'
     depends_on:
       evm-postgres:
         condition: service_healthy

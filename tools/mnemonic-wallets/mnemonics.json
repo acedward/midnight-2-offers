@@ -18,14 +18,19 @@
       "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon diesel"
     },
     {
-      "name": "mnemonic-abandon-art",
+      "name": "demo-alice",
       "role": "demo actor — funded by scripts/fund-wallet.sh --all-demo",
-      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
+      "mnemonic": "alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha avoid"
     },
     {
-      "name": "mnemonic-zoo-vote",
+      "name": "demo-bob",
       "role": "demo actor — funded by scripts/fund-wallet.sh --all-demo",
-      "mnemonic": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote"
+      "mnemonic": "boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss boss burst"
+    },
+    {
+      "name": "demo-carol",
+      "role": "demo actor — funded by scripts/fund-wallet.sh --all-demo",
+      "mnemonic": "cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cactus cherry"
     }
   ]
 }
