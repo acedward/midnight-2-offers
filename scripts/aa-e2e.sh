@@ -45,4 +45,9 @@ log "funding the e2e relay wallet (unshielded NIGHT + DUST, no shielded)…"
 
 log "running the E2E (register ×2 → mint → deposit; k=19 proofs — takes a while)…"
 log "(debit probes — withdraw/transfer — are blocked upstream; AA_E2E_PROBE_DEBITS=1 runs them anyway)"
-AA_IMAGE="$E2E_IMAGE" "${COMPOSE[@]}" run --rm -e AA_E2E_SEED="$E2E_SEED" --entrypoint bun aa-deploy /aa/runner/aa-e2e.ts
+# AA_E2E_PROBE_DEBITS must be forwarded explicitly — `docker compose run` does
+# not inherit ambient host env (found by the 00015 investigation, P0-A).
+AA_IMAGE="$E2E_IMAGE" "${COMPOSE[@]}" run --rm \
+  -e AA_E2E_SEED="$E2E_SEED" \
+  -e AA_E2E_PROBE_DEBITS="${AA_E2E_PROBE_DEBITS:-}" \
+  --entrypoint bun aa-deploy /aa/runner/aa-e2e.ts
