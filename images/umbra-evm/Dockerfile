@@ -1,6 +1,7 @@
 # umbra-evm — the read-only Ethereum JSON-RPC façade over the Midnight demo stack.
 #
-# Source: acedward/UmbraDB, branch `feat/00006-json-rpc-review` (PR #7, base `evm-compat`).
+# Source: acedward/UmbraDB, branch `evm-compat` (PR #7 and the demo's WS-fixes PR #8 are both
+# MERGED into it as of 2026-08-25; the branch rides toward `main` as PR #5).
 # That repo ships NO Docker packaging, so this file IS the packaging. It is deliberately built
 # from a REMOTE clone rather than a vendored copy so `git clone <this repo> && ./up.sh --with evm`
 # works with nothing else checked out.
@@ -26,9 +27,9 @@
 ARG UMBRA_REPO=https://github.com/acedward/UmbraDB.git
 # A branch name, a tag, or a commit sha — `git fetch <ref>` accepts all three (GitHub allows
 # fetching any commit reachable from a ref).
-ARG UMBRA_REF=feat/00006-json-rpc-review
+ARG UMBRA_REF=evm-compat
 
-# ── stage 1: fetch the source and apply the demo-stack patches ───────────────────────────────
+# ── stage 1: fetch the source ────────────────────────────────────────────────────────────────
 FROM node:24-bookworm-slim AS source
 
 RUN apt-get update \
@@ -46,11 +47,11 @@ RUN git init -q . \
  && git rev-parse HEAD > /umbra-commit \
  && rm -rf .git
 
-# The patches are exact-anchor rewrites that FAIL THE BUILD if the upstream text moved, rather
-# than silently producing a half-patched tree. See patches/apply.mjs for what each one does and
-# why it is needed.
-COPY patches/ /patches/
-RUN node /patches/apply.mjs /src
+# HISTORY: this stage used to apply two exact-anchor build-time patches (the WS host bind and
+# the newHeads indexer-head source). Both are MERGED upstream (PR #8 → #7 → `evm-compat`,
+# 2026-08-25), so the patches are gone — their anchors were the BROKEN text, and applying them
+# against the fixed source would fail the build by design. `git log evm-rpc/logs/indexer-head-source.ts`
+# upstream is the surviving record.
 
 # Demo-stack tooling that is ours, not upstream's: the migration runner, the address mapper and
 # the newHeads probe. Kept in a directory upstream does not use, so it can never collide.
