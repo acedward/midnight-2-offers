@@ -36,6 +36,14 @@ services:
       disable: true
     restart: 'unless-stopped'
 
+  # NOTE: runner/proof-router.ts in the aa image is a RETIRED diagnostic — a
+  # routing shim built while diagnosing why debit-shaped `execute` txs fail.
+  # Verdict (T7.5, 12 runs): a debit tx's single /check body mixes a v7 execute
+  # piece with a standard-lane zswap-cc fragment; the experimental server
+  # rejects the fragment, the plain server rejects the v7 piece, and the body
+  # is unsplittable — blocked UPSTREAM, no server topology helps. The file
+  # stays as the reproduction harness for that report.
+
   aa-deploy:
     image: '${AA_IMAGE:-midnight-2-offers/aa-contracts:local}'
     build:

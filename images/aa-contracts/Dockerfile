@@ -25,6 +25,10 @@
 ARG AA_REPO=https://github.com/acedward/AA-midnight-evm-experiment-v3.git
 ARG AA_REF=main
 ARG COMPACT_VERSION=0.33.0-rc.2
+# 1 (default): prune the Manager's .prover files — deploys need only verifier keys.
+# 0: keep them — required by the E2E, which CALLS execute (scripts/aa-e2e.sh builds
+# that variant as the :e2e tag; expect ~1.2 GB extra in the image).
+ARG AA_PRUNE_MANAGER_PROVERS=1
 
 # ── stage 1: fetch the AA sources ────────────────────────────────────────────
 FROM debian:stable-slim AS source
@@ -73,12 +77,15 @@ COPY --from=source /src/contracts /contracts
 # Keys need the universal SRS from srs.midnight.network (a build-time network
 # fetch, like the git clone). Layout matches what deployMidnightContract expects:
 # <contract-name>/src/managed/. Manager prover keys pruned — see header.
+ARG AA_PRUNE_MANAGER_PROVERS
 RUN set -eux; \
     export HOME=/tmp XDG_CACHE_HOME=/tmp/zk-cache; \
     mkdir -p /aa/contract-manager/src /aa/contract-minter/src; \
     /opt/compactc/compactc --feature-zkir-v3 /contracts/manager.compact /aa/contract-manager/src/managed/; \
     /opt/compactc/compactc --feature-zkir-v3 /contracts/test-support/minter.compact /aa/contract-minter/src/managed/; \
-    find /aa/contract-manager/src/managed/keys -name '*.prover' -print -delete; \
+    if [ "${AA_PRUNE_MANAGER_PROVERS:-1}" = "1" ]; then \
+      find /aa/contract-manager/src/managed/keys -name '*.prover' -print -delete; \
+    fi; \
     ls /aa/contract-manager/src/managed/keys /aa/contract-minter/src/managed/keys
 
 # ── stage 3: the deploy+mint runner ──────────────────────────────────────────
@@ -88,6 +95,10 @@ FROM oven/bun:1.3.11
 WORKDIR /aa
 COPY --from=compact /aa /aa
 COPY --from=source /aa-commit /aa/.aa-commit
+# The AA repo's OWN test library — EIP-712 codec, MetaMask V4 signing, execute
+# payload builders. Imported verbatim by the E2E so the digest scheme is never
+# reimplemented (golden vectors and frozen hashes included).
+COPY --from=source /src/tests/lib /aa/aalib/
 COPY runner/ /aa/runner/
 
 # Install at /aa, not /aa/runner: the compactc-generated contract modules live at

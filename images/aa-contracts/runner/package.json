@@ -4,7 +4,7 @@
   "type": "module",
   "//": [
     "The exact pin set the rest of this stack runs on (kernel branch 00001-ledger-v9 /",
-    "@effectstream/*@0.200.1). The override collapses ledger-v9 to ONE wasm copy —",
+    "@effectstream/*@0.200.1). The override collapses ledger-v9 to ONE wasm copy \u2014",
     "two copies in one process fail instanceof checks (the documented trap)."
   ],
   "dependencies": {
@@ -17,7 +17,12 @@
     "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
     "@midnightntwrk/wallet-sdk-abstractions": "3.0.0-beta.0",
     "@midnightntwrk/wallet-sdk-address-format": "4.0.0-beta.2",
-    "rxjs": "7.8.2"
+    "rxjs": "7.8.2",
+    "@metamask/eth-sig-util": "8.2.0",
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0",
+    "@midnight-ntwrk/midnight-js-types": "5.0.0-beta.6",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "5.0.0-beta.6"
   },
   "overrides": {
     "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
