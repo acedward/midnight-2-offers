@@ -8,8 +8,8 @@ A single Docker Compose project that brings up a complete local Midnight 2.x dem
 | Wallet funding tooling | `core` | **shipped** | Genesis-prefunded NIGHT+DUST dev wallets, three Lace-importable mnemonic wallets, and a CLI to fund arbitrary extra ones |
 | umbra-evm | `evm` | **shipped** | Ethereum JSON-RPC **read-only** façade over Midnight (chainId 2400): HTTP `:8545` + WS `:10021`, backed by Postgres |
 | Celestia DA devnet | `offerfiles` | **shipped** | Local single-node Celestia (consensus + bridge), DA JSON-RPC `:26658`, funded bridge wallet, blob round trip verified |
-| offer-files kernel + batcher | `offerfiles` | not built yet | zswap offer-files sync node `:9999` + batcher `:3334` — they join the profile Celestia is already in |
-| zswap-da frontend | `frontend` | not built yet | React/Vite make→take swap SPA |
+| offer-files kernel + batcher | `offerfiles` | **shipped** | zswap offer-files sync node `:9999` + balancing batcher `:3334`, contract deployed at bring-up |
+| zswap-da frontend | `frontend` | **shipped** (needs the local template checkout) | React/Vite make→take swap SPA `:10600` |
 
 **Everything here is dev-only.** Every seed and mnemonic in this repo is public: the genesis
 ones are the well-known Midnight `CFG_PRESET=dev` seeds, the `demo-*` ones are obvious
@@ -23,24 +23,25 @@ chain. Never reuse any of them anywhere else.
 CLI, and mnemonics you can type into Lace), the read-only Ethereum JSON-RPC façade, and the
 local Celestia DA devnet. `./up.sh --all && ./verify.sh` exercises all of it.
 
-**Not in**: the offer-files kernel and batcher, the `frontend` profile, and therefore the browser
-make→take swap demo. They are not a to-do that was skipped: the offer-files kernel and the
-zswap-da template are pinned to ledger-v8 / wallet-SDK v1, and every `@effectstream/*` package
-they depend on pins `@midnight-ntwrk/ledger-v8` as an exact dependency. Running them against a
-ledger-v9 chain (which node 2.x is: it reports `protocolVersion 2000000`) needs those packages
-migrated and published first — measured at roughly 4,600 lines across five packages, which is its
-own project. Their host ports are already reserved in `.env.example`, and they drop into the
-existing `compose/offerfiles.yml` (plus a new `compose/frontend.yml`) when that lands.
+**Also in, since the ledger-v9 migration shipped upstream (2026-08-25)**: the offer-files
+**kernel + batcher** (the rest of the `offerfiles` profile — sync node `:9999`, balancing
+batcher `:3334`, one-shot contract deploy + dev-token mint at bring-up) and the **`frontend`
+profile** (the zswap-da make→take swap SPA on `:10600`). They were previously blocked on the
+`@effectstream/*` ledger-v8 → ledger-v9 migration; that migration published as
+`@effectstream/*@0.200.1` + `@effectstream/mip-zswap-offer@0.4.0-v9.0`, and the kernel's own
+migration rides branch `00001-ledger-v9` of `effectstream/zswap-offerfiles-kernel`, which is
+what `images/offerfiles-kernel/Dockerfile` builds.
 
-**`offerfiles` is therefore a PARTIAL profile**, and `up.sh` says so on every bring-up: it gives
-you the Celestia DA layer the kernel will publish offers to, with nothing publishing to it yet.
-Celestia was built first precisely because it is the one piece of that stack that touches no
-Midnight SDK — two Go binaries and a chain of its own — so it could be finished and verified
-(including the blob round trip the kernel will perform) while the migration is under way.
+**One caveat — the frontend build needs a local checkout.** The zswap-da template's ledger-v9
+migration is not published anywhere (upstream `effectstream/effectstream@templates/zswap-da` is
+frozen on ledger-v8), so `images/zswap-da/Dockerfile` consumes it as a local build context —
+`ZSWAP_DA_TEMPLATE_DIR`, defaulting to a sibling checkout. Without it, `--with frontend` fails
+at build with a clear error while every other profile is unaffected.
 
-So `--all` today means "core + evm + Celestia", deliberately rather than accidentally: `up.sh`
-names what is partial and what it skipped, and `--with frontend` fails with an explanation
-instead of quietly bringing up part of a stack.
+**Offer history is in-memory (by design).** The kernel stores its offer book in PGLite inside
+the container: restarting or recreating the `kernel` container resets the indexed offers, while
+the chain keeps the settled state — the book is re-indexed from genesis on the next start. A
+demo edge case, not a bug.
 
 ## Quickstart
 
@@ -48,8 +49,9 @@ instead of quietly bringing up part of a stack.
 cp .env.example .env                  # then edit ports/tags if needed
 ./up.sh                               # bring up the core stack; blocks until it is usable
 ./up.sh --with evm                    # …plus the read-only Ethereum JSON-RPC façade
-./up.sh --with offerfiles             # …plus the Celestia DA devnet (evm keeps running)
-./up.sh --all                         # …every profile that exists (today: core + evm + offerfiles)
+./up.sh --with offerfiles             # …plus Celestia DA + the offer-files kernel & batcher
+./up.sh --with frontend               # …plus the swap UI (needs the local template checkout)
+./up.sh --all                         # …every profile: core + evm + offerfiles + frontend
 ./up.sh --converge                    # back to core only: stop the optional profiles
 ./scripts/fund-wallet.sh --all-demo   # optional: fund the demo-* and mnemonic-* wallets
 ./verify.sh                           # assert health + prefunded wallets (+ evm, if it is up)
@@ -123,9 +125,9 @@ stacks on one machine possible.
 | `CELESTIA_HOST_PORT` | 26658 | 26658 | `celestia` (bridge node) | the kernel's DA reads/writes, `verify.sh` | `offerfiles` |
 | — (not published) | — | 26657 | `celestia` (consensus RPC) | the bridge, over container-loopback | `offerfiles` |
 | — (not published) | — | 9090 | `celestia` (consensus gRPC) | the bridge, over container-loopback | `offerfiles` |
-| `KERNEL_HOST_PORT` | 9999 | 9999 | *reserved* | the frontend's order book | `offerfiles` (later) |
-| `BATCHER_HOST_PORT` | 3334 | 3334 | *reserved* | the frontend's `send-input` | `offerfiles` (later) |
-| `FRONTEND_HOST_PORT` | 10600 | 80 | *reserved* | your browser | `frontend` (later) |
+| `KERNEL_HOST_PORT` | 9999 | 9999 | `kernel` (sync node API) | the frontend's order book + ZK assets, `verify.sh` | `offerfiles` |
+| `BATCHER_HOST_PORT` | 3334 | 3334 | `kernel` (batcher) | the frontend's `send-input` | `offerfiles` |
+| `FRONTEND_HOST_PORT` | 10600 | 10600 | `frontend` (nginx) | your browser | `frontend` |
 
 `BIND_ADDR` (default `127.0.0.1`) is the interface every published port binds to. Leave it as
 loopback on a shared machine; set it to `0.0.0.0` only when a browser on another host has to
@@ -224,22 +226,32 @@ Two things that are easy to get wrong here:
 
 ### Funded by one command, not by genesis
 
-The other five entries start empty and are brought to 10,000,000 NIGHT + spendable DUST by
+The other three entries start empty and are brought to 10,000,000 NIGHT + spendable DUST by
 `./scripts/fund-wallet.sh --all-demo`. They exist so a demo can move value between named
-actors without touching the faucet wallet.
+actors without touching the faucet wallet, and **all three are Lace-importable**: each one is
+addressed by a BIP-39 mnemonic, so you can type it into a wallet GUI, while its 64-byte master
+seed is what you paste into the scripts.
 
-| Name | Seed | `funding` | Purpose |
-|---|---|---|---|
-| `demo-alice` | `de11…a11ce` (32 bytes) | `fund-script` | first demo actor |
-| `demo-bob` | `de11…b0b00` (32 bytes) | `fund-script` | second demo actor |
-| `demo-carol` | `de11…ca201` (32 bytes) | `fund-script` | third demo actor |
-| `mnemonic-abandon-art` | `408b285c…` (BIP-39 master seed) | `mnemonic` | Lace-importable, see below |
-| `mnemonic-zoo-vote` | `e28a3705…` (BIP-39 master seed) | `mnemonic` | Lace-importable, see below |
+| Name | Mnemonic | BIP-39 master seed (paste into scripts) |
+|---|---|---|
+| `demo-alice` | `alpha` ×23 + `avoid` | `0a4f358d27c85cc3063c73fe002e9f933722aad5bc009799805946cc5a9e7272f249189587fe0254c6d18b5bc1a24f60617bc62f07c5b57343b0fddf8e680d96` |
+| `demo-bob` | `boss` ×23 + `burst` | `1ce2d940e5a46775697fa7878627fbd689b5e6e73c7e32b82ed01468b07534288f9b74cbcd116b75a3f854315accdf39f87d075bd74a23eaf4910d95e7629095` |
+| `demo-carol` | `cactus` ×23 + `cherry` | `fc14ae819b1a9ace2304c5cf960596741fccd13522eda7718a2c82c61ab409c2c520ccabc898725c565d25b8b2d84f7117869c36391b1f68a54ea0d89a201090` |
 
-Nine wallets in total, then: four funded at genesis and five funded on demand. The
+The checksum word shares the actor's initial (a/b/c), so the phrase says whose wallet it is.
+All three carry `funding: mnemonic`, which the tooling treats exactly like `fund-script`.
+
+**Seed and phrase are the same wallet, in two formats.** Seeds get copy-pasted into scripts;
+mnemonics get typed by hand into a GUI. The seed above is not an arbitrary secret — it is the
+BIP-39 master seed of that phrase with an empty passphrase, which is what makes the toolkit
+and Lace resolve to the same wallet. `tools/mnemonic-wallets/cross-check.sh` asserts it both
+ways, and `./tools/mnemonic-wallets/derive.sh --check wallets/wallets.json` re-derives every
+phrase and fails on any mismatch.
+
+Seven wallets in total, then: four funded at genesis and three funded on demand. The
 `funding` field is what drives the tooling — `fund-wallet.sh --all-demo` funds everything
 that is not `genesis`, and `verify-wallets.sh` asserts the genesis ones by default and all
-nine with `--include-script-funded`.
+seven with `--include-script-funded`.
 
 ### Funding more wallets
 
@@ -247,8 +259,8 @@ nine with `--include-script-funded`.
 # fund one wallet: NIGHT + DUST registration + wait until fees are payable
 ./scripts/fund-wallet.sh <seed-or-address>
 
-# fund every wallets.json entry marked funding="fund-script" (demo-alice/bob/carol) or
-# funding="mnemonic" (the Lace-importable ones)
+# fund every wallets.json entry that is not genesis-funded (demo-alice/bob/carol,
+# all funding="mnemonic")
 ./scripts/fund-wallet.sh --all-demo
 
 # same thing as a one-shot compose service instead of a host script
@@ -276,7 +288,7 @@ prepared to wait.
 ## Import into Lace
 
 Lace imports a wallet from a **mnemonic**, never from a raw hex seed, so the wallets below are
-addressed by phrase. All three are one word repeated 23 times plus a checksum word, which
+addressed by phrase. All four are one word repeated 23 times plus a checksum word, which
 means they can be typed into Lace's import screen in well under a minute.
 
 Point Lace at this stack first: its `undeployed` preset expects **node 9944, indexer 8088,
@@ -286,12 +298,34 @@ proof-server 6300**, which is what `.env.example` defaults to. If you moved the 
 | Wallet | Mnemonic | Funded by | Receive address (unshielded) |
 |---|---|---|---|
 | `lace-test` | `abandon` ×23 + `diesel` | **genesis — nothing to run** | `mn_addr_undeployed1nqhdatus5d6tvye57q854kdrs6ur2ytsl8yaygzfsdy2e3tvtmesdcgp8m` |
-| `mnemonic-abandon-art` | `abandon` ×23 + `art` | `fund-wallet.sh --all-demo` | `mn_addr_undeployed19kxg8sxrsty37elmm6yd68tuy7prryjst2r48eapf2fdtd8z4gpqauuvtx` |
-| `mnemonic-zoo-vote` | `zoo` ×23 + `vote` | `fund-wallet.sh --all-demo` | `mn_addr_undeployed1z7k7swt4cwxaq3px2gemzpqhtcjm5dvg9a5vmr2h3kc24n66u4tqsnwyn0` |
+| `demo-alice` | `alpha` ×23 + `avoid` | `fund-wallet.sh --all-demo` | `mn_addr_undeployed14tjhxluvt773ry7hta5ysvhymjk6usyhlgauzt4al9t8lpe4gtzqvnj8gs` |
+| `demo-bob` | `boss` ×23 + `burst` | `fund-wallet.sh --all-demo` | `mn_addr_undeployed1va25tg7d43rcftqeafs6dn3mvycut9zffq989my7p6c8kr0djl5shn25qj` |
+| `demo-carol` | `cactus` ×23 + `cherry` | `fund-wallet.sh --all-demo` | `mn_addr_undeployed1ctfkn3nhju6f8p4t92ay0k30eswc4n9s60rjq2s3rkearf454tgqh6ckgy` |
 
 "`abandon` ×23 + `diesel`" means the word `abandon` typed 23 times followed by `diesel` — 24
 words total. `wallets/wallets.json` holds each phrase in full, along with the shielded, dust
 and `userAddress` forms and the BIP-39 master seed.
+
+### The same wallets as seeds
+
+Type the phrase into Lace; paste the seed into `fund-wallet.sh`, `verify-wallets.sh` or the
+toolkit. They address the identical wallet — the seed is the BIP-39 master seed of the phrase
+(empty passphrase), which is why the toolkit and Lace agree on every address.
+
+| Wallet | BIP-39 master seed (128 hex = 64 bytes) |
+|---|---|
+| `lace-test` | `a51c86de32d0791f7cffc3bdff1abd9bb54987f0ed5effc30c936dddbb9afd9d530c8db445e4f2d3ea42a321b260e022aadf05987c9a67ec7b6b6ca1d0593ec9` |
+| `demo-alice` | `0a4f358d27c85cc3063c73fe002e9f933722aad5bc009799805946cc5a9e7272f249189587fe0254c6d18b5bc1a24f60617bc62f07c5b57343b0fddf8e680d96` |
+| `demo-bob` | `1ce2d940e5a46775697fa7878627fbd689b5e6e73c7e32b82ed01468b07534288f9b74cbcd116b75a3f854315accdf39f87d075bd74a23eaf4910d95e7629095` |
+| `demo-carol` | `fc14ae819b1a9ace2304c5cf960596741fccd13522eda7718a2c82c61ab409c2c520ccabc898725c565d25b8b2d84f7117869c36391b1f68a54ea0d89a201090` |
+
+Re-derive any of them yourself — the phrase is the source of truth, the seed is cached in
+`wallets/wallets.json`:
+
+```bash
+./tools/mnemonic-wallets/derive.sh --mnemonic "alpha alpha … avoid"
+./tools/mnemonic-wallets/derive.sh --check wallets/wallets.json   # asserts all four
+```
 
 **Start with `lace-test`.** It is prefunded at genesis with 250,000,000 NIGHT and its DUST
 address is registered from block zero, so it can pay fees immediately and survives a
@@ -450,12 +484,12 @@ NIGHT reads as `0xcecb8f27f4200f3a000000` (2.5 × 10²⁶).
 
 ### Which wallets are monitored
 
-All nine `wallets/wallets.json` entries, out of the box, via two env vars:
+All seven `wallets/wallets.json` entries, out of the box, via two env vars:
 
 | Variable | Takes | Why both |
 |---|---|---|
-| `EVM_WATCH_SEEDS` | comma-separated **32-byte** seeds; the monitor derives the address itself | Short, already in `.env`, and self-checking — the monitor's HD derivation was verified identical to `midnight-node-toolkit show-address` for all six 32-byte seeds |
-| `EVM_WATCH_ADDRESSES` | comma-separated `mn_addr` values, verbatim | **Every mnemonic-derived wallet must be watched by address.** A BIP-39 master seed is 64 bytes and the monitor's derivation accepts 32 only, so `lace-test`, `mnemonic-abandon-art` and `mnemonic-zoo-vote` can go nowhere else |
+| `EVM_WATCH_SEEDS` | comma-separated **32-byte** seeds; the monitor derives the address itself | Short, already in `.env`, and self-checking — the monitor's HD derivation was verified identical to `midnight-node-toolkit show-address` for all three 32-byte seeds |
+| `EVM_WATCH_ADDRESSES` | comma-separated `mn_addr` values, verbatim | **Every mnemonic-derived wallet must be watched by address.** A BIP-39 master seed is 64 bytes and the monitor's derivation accepts 32 only, so `lace-test` and `demo-alice`/`demo-bob`/`demo-carol` can go nowhere else — which is every wallet except the genesis three |
 
 That split is the one thing to get right when adding a wallet. An address nobody watches is
 not an error anywhere in the stack — it simply reads `0x0`, which looks exactly like a funding

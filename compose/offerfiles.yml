@@ -99,6 +99,70 @@ services:
       start_period: 90s
     restart: 'unless-stopped'
 
+
+  # ── the kernel itself (T4.2/T4.3/T4.5) ──────────────────────────────────────
+  # One container runs the kernel's own processes — pglite, one-shot contract
+  # deploy (T4.5: the offer-files contract lands on the demo chain at first
+  # bring-up; /v1/midnight/config serves its address), dev-token mint, sync
+  # node (:9999) and balancing batcher (:3334) — via the kernel repo's
+  # start.external.ts, which launches NO Midnight/Celestia infrastructure and
+  # fail-fast-probes this stack's services instead. See the design notes below
+  # (they were written by T4.4 before this service existed, and every one of
+  # them is honoured here).
+  #
+  # OFFER HISTORY IS IN-MEMORY (T4.6): the kernel stores offers in PGLite
+  # inside the container, so `docker compose restart kernel` (or any container
+  # recreation) resets the offer book — while the CHAIN keeps the settled
+  # state. That is a spec'd edge case of the demo, not a bug; the contract is
+  # re-read and re-indexed from genesis on the next start.
+  kernel:
+    image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+    build:
+      context: '../images/offerfiles-kernel'
+      args:
+        KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
+        KERNEL_REF: '${KERNEL_REF:-00001-ledger-v9}'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${KERNEL_HOST_PORT:-9999}:9999'
+      - '${BIND_ADDR:-127.0.0.1}:${BATCHER_HOST_PORT:-3334}:3334'
+    volumes:
+      - 'celestia-auth:/celestia/auth:ro'   # the token handoff, READ-ONLY (note 1)
+    environment:
+      MIDNIGHT_NETWORK_ID: 'undeployed'
+      MIDNIGHT_NODE_HTTP: 'http://node:9944'
+      # Explicit v4 (K4.2) — the kernel and its SDK line moved off the v3 alias.
+      MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v4/graphql'
+      MIDNIGHT_INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
+      MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
+      # genesis-1 deploys/mints; genesis-2 is the batcher fee wallet — the seed
+      # wallets.json reserves for exactly this role. Both are prefunded with
+      # DUST registered at genesis, so no funding step gates the bring-up.
+      MIDNIGHT_WALLET_SEED: '${KERNEL_WALLET_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      BATCHER_WALLET_SEED: '${BATCHER_WALLET_SEED:-0000000000000000000000000000000000000000000000000000000000000002}'
+      CELESTIA_RPC_URL: 'http://celestia:26658'           # container port, not CELESTIA_HOST_PORT
+      CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'  # SAME var as above
+      CELESTIA_NETWORK: '${CELESTIA_NETWORK:-devnet}'
+      CELESTIA_START_HEIGHT: '1'                          # devnet history is not worth skipping (note 2)
+    healthcheck:
+      # bun, not curl: the oven/bun runtime image ships no curl/wget.
+      test:
+        - 'CMD'
+        - 'bun'
+        - '-e'
+        - 'const r = await fetch("http://127.0.0.1:9999/v1/health"); process.exit(r.ok ? 0 : 1)'
+      interval: 5s
+      timeout: 4s
+      # Bring-up does real chain work before the API answers: probe, contract
+      # deploy (proving a deploy tx), mint, first sync. start_period absorbs it.
+      retries: 30
+      start_period: 180s
+    depends_on:
+      celestia: { condition: service_healthy }            # guarantees a valid token on the volume
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+    restart: 'unless-stopped'
+
+
   # ═══════════════════════════════════════════════════════════════════════════
   # P4b GOES HERE — the offer-files kernel (T4.2, T4.3, T4.5) and the batcher.
   #

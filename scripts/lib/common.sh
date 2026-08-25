@@ -97,22 +97,19 @@ load_env() {
 # a typo, and `--all` looks like it brought up the whole four-component demo when it
 # brought up part of it.
 #
-# `offerfiles` left this list when compose/offerfiles.yml landed — pending_profiles() would have
-# dropped it on its own (it subtracts anything with a fragment), but leaving a built profile in
-# the registry turns it into a lie waiting for a reader.
-KNOWN_FUTURE_PROFILES="frontend"
-FUTURE_PROFILES_BLOCKER="the Effectstream ledger-v9 migration (project 00016)"
+# `offerfiles` left this list when compose/offerfiles.yml landed, and `frontend` left it when
+# compose/frontend.yml landed (P5, 2026-08-25). The list is now empty; keep the variable (and
+# the machinery reading it) for the next reserved-but-unbuilt profile.
+KNOWN_FUTURE_PROFILES=""
+FUTURE_PROFILES_BLOCKER=""
 
 # PARTIAL_PROFILES have a fragment — so `--with` accepts them and `--all` includes them — but do
-# not yet contain every service the finished profile will. `offerfiles` ships its Celestia devnet
-# and not (yet) the kernel or the batcher, because Celestia is the one part of that stack which
-# touches no Midnight SDK and is therefore not blocked on the migration above. Saying so out loud
-# is the difference between "this is half-built on purpose" and "the offer-files demo is broken".
-# When P4b lands the kernel + batcher, delete the profile from this list and its note below.
-PARTIAL_PROFILES="offerfiles"
+# not yet contain every service the finished profile will. Empty since P4b landed the kernel +
+# batcher in `offerfiles` and P5 landed `frontend` (2026-08-25). Keep the machinery: the note is
+# how a half-built profile says "half-built on purpose" instead of reading as broken.
+PARTIAL_PROFILES=""
 partial_profile_note() {
   case "$1" in
-    offerfiles) printf '%s\n' "Celestia DA devnet only — the offer-files kernel (:9999) and batcher (:3334) join this profile with ${FUTURE_PROFILES_BLOCKER}" ;;
     *) return 1 ;;
   esac
 }

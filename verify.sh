@@ -21,6 +21,8 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 SKIP_WALLETS=0
 EVM_MODE=auto
 CELESTIA_MODE=auto
+KERNEL_MODE=auto
+FRONTEND_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -34,6 +36,10 @@ Options:
   --no-evm       skip the umbra-evm section even if the profile is up
   --celestia     require the celestia section (fail if the profile is not up)
   --no-celestia  skip the celestia section even if the profile is up
+  --kernel       require the kernel section (fail if the service is not up)
+  --no-kernel    skip the kernel section even if the service is up
+  --frontend     require the frontend section (fail if the profile is not up)
+  --no-frontend  skip the frontend section even if the profile is up
   -h, --help     this text
 
 By default each optional section runs if and only if that profile's containers exist for this
@@ -52,6 +58,10 @@ while [[ $# -gt 0 ]]; do
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
+    --kernel)      KERNEL_MODE=on; shift ;;
+    --no-kernel)   KERNEL_MODE=off; shift ;;
+    --frontend)    FRONTEND_MODE=on; shift ;;
+    --no-frontend) FRONTEND_MODE=off; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -184,6 +194,71 @@ case "$CELESTIA_MODE" in
     else
       echo
       dim "offerfiles profile not up — skipping celestia (./up.sh --with offerfiles to include it)"
+    fi
+    ;;
+esac
+
+# ── kernel (the offerfiles profile's sync node + batcher) ────────────────────
+# Same presence-detection rule as the sections above.
+KERNEL_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=kernel" 2>/dev/null)" ]]; then
+  KERNEL_PRESENT=1
+fi
+
+case "$KERNEL_MODE" in
+  off) ;;
+  on|auto)
+    if (( KERNEL_PRESENT )); then
+      echo
+      log "kernel"
+      if "$REPO_ROOT/scripts/verify-kernel.sh"; then
+        ok "kernel assertions passed"
+      else
+        err "kernel assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$KERNEL_MODE" == "on" ]]; then
+      echo
+      err "--kernel was requested but no kernel container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with offerfiles"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "kernel not up — skipping (./up.sh --with offerfiles to include it)"
+    fi
+    ;;
+esac
+
+# ── frontend (the zswap-da trading UI) ───────────────────────────────────────
+FRONTEND_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=frontend" 2>/dev/null)" ]]; then
+  FRONTEND_PRESENT=1
+fi
+
+case "$FRONTEND_MODE" in
+  off) ;;
+  on|auto)
+    if (( FRONTEND_PRESENT )); then
+      echo
+      log "frontend"
+      if "$REPO_ROOT/scripts/verify-frontend.sh"; then
+        ok "frontend assertions passed"
+      else
+        err "frontend assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$FRONTEND_MODE" == "on" ]]; then
+      echo
+      err "--frontend was requested but no frontend container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with frontend"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "frontend profile not up — skipping (./up.sh --with frontend to include it)"
     fi
     ;;
 esac

@@ -1,0 +1,40 @@
+# frontend — the zswap-da trading UI (profile `frontend`, T5.1/T5.2).
+#
+# In this repo a "profile" IS the compose fragment: up.sh --with frontend adds
+# this file. The UI is static nginx and starts fine on its own, but it is only
+# USEFUL with the `offerfiles` profile running (kernel API :9999 + batcher
+# :3334) — there is deliberately no cross-fragment depends_on, so `--with
+# frontend` neither drags in nor breaks without the kernel; the page just
+# shows a disconnected state until `--with offerfiles` is up.
+
+services:
+  # Built from the LOCAL ledger-v9 migration of templates/zswap-da — upstream
+  # is still on ledger-v8 and frozen, so there is no remote to clone (see
+  # images/zswap-da/Dockerfile). Without that local copy the build fails at
+  # `COPY --from=template` — set ZSWAP_DA_TEMPLATE_DIR to where yours lives.
+  #
+  # Wallet story (T5.3, spec Q5 note): the in-page JS wallet works against any
+  # host ports; the LACE path needs the stack on the default 9944/8088/6300.
+  frontend:
+    image: '${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}'
+    build:
+      context: '../images/zswap-da'
+      additional_contexts:
+        template: '${ZSWAP_DA_TEMPLATE_DIR:-../../00001-zswap-da-template}'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${FRONTEND_HOST_PORT:-10600}:10600'
+    environment:
+      # Empty by default: src/config.ts falls back to http://<hostname>:9999
+      # and :3334, which is exactly where compose publishes the kernel. Set
+      # these only when the frontend is reached through a proxy or a
+      # non-default port layout (e.g. pick-ports.sh: API_BASE=http://127.0.0.1:<KERNEL_HOST_PORT>).
+      API_BASE: '${FRONTEND_API_BASE:-}'
+      BATCHER_URL: '${FRONTEND_BATCHER_URL:-}'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO/dev/null http://127.0.0.1:10600/']
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+    restart: 'unless-stopped'
+
