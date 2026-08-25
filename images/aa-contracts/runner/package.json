@@ -1,0 +1,25 @@
+{
+  "name": "aa-deploy-runner",
+  "private": true,
+  "type": "module",
+  "//": [
+    "The exact pin set the rest of this stack runs on (kernel branch 00001-ledger-v9 /",
+    "@effectstream/*@0.200.1). The override collapses ledger-v9 to ONE wasm copy —",
+    "two copies in one process fail instanceof checks (the documented trap)."
+  ],
+  "dependencies": {
+    "@effectstream/midnight-contracts": "0.200.1",
+    "@effectstream/utils": "0.200.1",
+    "@midnight-ntwrk/compact-js": "2.5.5-rc.7",
+    "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1",
+    "@midnight-ntwrk/midnight-js-contracts": "5.0.0-beta.6",
+    "@midnight-ntwrk/midnight-js-network-id": "5.0.0-beta.6",
+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
+    "@midnightntwrk/wallet-sdk-abstractions": "3.0.0-beta.0",
+    "@midnightntwrk/wallet-sdk-address-format": "4.0.0-beta.2",
+    "rxjs": "7.8.2"
+  },
+  "overrides": {
+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
+  }
+}

@@ -22,6 +22,7 @@ SKIP_WALLETS=0
 EVM_MODE=auto
 CELESTIA_MODE=auto
 KERNEL_MODE=auto
+AA_MODE=auto
 FRONTEND_MODE=auto
 
 usage() {
@@ -36,6 +37,8 @@ Options:
   --no-evm       skip the umbra-evm section even if the profile is up
   --celestia     require the celestia section (fail if the profile is not up)
   --no-celestia  skip the celestia section even if the profile is up
+  --aa           require the aa section (fail if the profile was not brought up)
+  --no-aa        skip the aa section even if it is present
   --kernel       require the kernel section (fail if the service is not up)
   --no-kernel    skip the kernel section even if the service is up
   --frontend     require the frontend section (fail if the profile is not up)
@@ -58,6 +61,8 @@ while [[ $# -gt 0 ]]; do
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
     --no-celestia) CELESTIA_MODE=off; shift ;;
+    --aa)          AA_MODE=on; shift ;;
+    --no-aa)       AA_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on; shift ;;
     --no-kernel)   KERNEL_MODE=off; shift ;;
     --frontend)    FRONTEND_MODE=on; shift ;;
@@ -194,6 +199,39 @@ case "$CELESTIA_MODE" in
     else
       echo
       dim "offerfiles profile not up — skipping celestia (./up.sh --with offerfiles to include it)"
+    fi
+    ;;
+esac
+
+# ── aa (the AA Manager + Minter one-shot) ────────────────────────────────────
+# Presence = the exited one-shot container (docker ps -a, not -q: it is not running).
+AA_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=aa-deploy" 2>/dev/null)" ]]; then
+  AA_PRESENT=1
+fi
+
+case "$AA_MODE" in
+  off) ;;
+  on|auto)
+    if (( AA_PRESENT )); then
+      echo
+      log "aa"
+      if "$REPO_ROOT/scripts/verify-aa.sh"; then
+        ok "aa assertions passed"
+      else
+        err "aa assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$AA_MODE" == "on" ]]; then
+      echo
+      err "--aa was requested but no aa-deploy container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with aa"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "aa profile not up — skipping (./up.sh --with aa to include it)"
     fi
     ;;
 esac

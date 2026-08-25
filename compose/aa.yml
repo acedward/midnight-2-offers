@@ -1,0 +1,70 @@
+# aa — deploy the AA Manager + test Minter at bring-up, and mint a token
+# (profile `aa`; in this repo a profile IS the compose fragment).
+#
+# Two services:
+#
+#   aa-proof-server   midnightntwrk/proof-server:9.0.0-rc.5_experimental, INTERNAL
+#                     ONLY (no host port). The AA contracts are compiled with
+#                     --feature-zkir-v3 (the Manager is keccak/EIP-712-heavy), so
+#                     their verifier keys are [v7] and proving a call against them
+#                     needs the _experimental build — while the core proof-server
+#                     stays on the PLAIN tag the kernel's [v6] keys are proven
+#                     with. Whether _experimental also proves [v6] is unverified;
+#                     running both sidesteps the question entirely.
+#
+#   aa-deploy         one-shot: deploys Manager(domain) + Minter(tag) with the
+#                     stack's own deploy machinery (@effectstream/midnight-contracts
+#                     0.200.1), then proves two mint calls (shielded + unshielded)
+#                     through aa-proof-server, and writes the evidence to the
+#                     aa-out volume as aa-contracts.json. IDEMPOTENT: compose
+#                     re-runs completed one-shots on every `up` (T4.7 finding),
+#                     so the entrypoint exits early when the artifact exists.
+#                     Contract addresses are keyed to the chain, and aa-out is a
+#                     compose-declared volume — both die together on down.sh -v.
+#
+# The deploy wallet defaults to genesis-3 (the spare prefunded genesis wallet;
+# genesis-1 is the faucet, genesis-2 the batcher) — prefunded with DUST registered
+# at genesis, so nothing has to be funded first.
+
+services:
+  aa-proof-server:
+    image: 'midnightntwrk/proof-server:${AA_PROOF_TAG:-9.0.0-rc.5_experimental}'
+    # Same nix-based image family as the core proof-server: no curl, no shell
+    # healthcheck possible; consumers TCP-wait (the runner's first proving call
+    # comes minutes into the deploy, long after this container listens).
+    healthcheck:
+      disable: true
+    restart: 'unless-stopped'
+
+  aa-deploy:
+    image: '${AA_IMAGE:-midnight-2-offers/aa-contracts:local}'
+    build:
+      context: '../images/aa-contracts'
+      args:
+        AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
+        AA_REF: '${AA_REF:-main}'
+    environment:
+      MIDNIGHT_NETWORK_ID: 'undeployed'
+      MIDNIGHT_NODE_HTTP: 'http://node:9944'
+      MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v4/graphql'
+      MIDNIGHT_INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
+      MIDNIGHT_PROOF_SERVER_URL: 'http://aa-proof-server:6300'
+      # Same dev value the kernel's own deploy uses (level-db private-state store).
+      MIDNIGHT_STORAGE_PASSWORD: 'YourPasswordMy1!'
+      MIDNIGHT_WALLET_SEED: '${AA_WALLET_SEED:-0000000000000000000000000000000000000000000000000000000000000003}'
+      AA_DOMAIN: '${AA_DOMAIN:-demo-infra:aa:v1}'
+      AA_MINTER_TAG: '${AA_MINTER_TAG:-TOKA}'
+      AA_MINT_AMOUNT: '${AA_MINT_AMOUNT:-1000000000}'
+    volumes:
+      - 'aa-out:/aa/out'
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      aa-proof-server: { condition: service_started }
+    restart: 'no'
+
+volumes:
+  # Compose-declared so it carries the project label and down.sh -v removes it —
+  # deliberately: the artifact records contract addresses on THIS chain, and a
+  # reset genesis invalidates them.
+  aa-out:

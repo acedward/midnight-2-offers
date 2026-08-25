@@ -10,6 +10,7 @@ A single Docker Compose project that brings up a complete local Midnight 2.x dem
 | Celestia DA devnet | `offerfiles` | **shipped** | Local single-node Celestia (consensus + bridge), DA JSON-RPC `:26658`, funded bridge wallet, blob round trip verified |
 | offer-files kernel + batcher | `offerfiles` | **shipped** | zswap offer-files sync node `:9999` + balancing batcher `:3334`, contract deployed at bring-up |
 | zswap-da frontend | `frontend` | **shipped** (needs the local template checkout) | React/Vite make→take swap SPA `:10600` |
+| AA Manager + Minter | `aa` | **shipped** | one-shot deploy + mint; internal `_experimental` proof server; receipt in the `aa-out` volume |
 
 **Everything here is dev-only.** Every seed and mnemonic in this repo is public: the genesis
 ones are the well-known Midnight `CFG_PRESET=dev` seeds, the `demo-*` ones are obvious
@@ -38,6 +39,19 @@ frozen on ledger-v8), so `images/zswap-da/Dockerfile` consumes it as a local bui
 `ZSWAP_DA_TEMPLATE_DIR`, defaulting to a sibling checkout. Without it, `--with frontend` fails
 at build with a clear error while every other profile is unaffected.
 
+**The `aa` profile deploys the AA contracts and mints a token.** `--with aa` deploys
+[`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3)'s
+Manager (the account-abstraction custody contract) and test Minter on the demo chain at
+bring-up, then proves two mint calls (one shielded colour, one unshielded) and writes the
+receipt — addresses, colours, tx ids — to the `aa-out` volume as `aa-contracts.json`
+(`./scripts/verify-aa.sh` reads it back; `verify.sh` gains an `aa` section). Two design
+points worth knowing: the contracts are compiled with `--feature-zkir-v3` (the Manager is
+keccak/EIP-712-heavy), so the profile runs its **own internal
+`proof-server:9.0.0-rc.5_experimental`** next to the plain core one rather than flipping
+`PROOF_TAG` for everything; and the Manager's 1.1 GB `execute.prover` key is deliberately
+NOT in the image — deploying needs only verifier keys, and bring-up never calls `execute`.
+The one-shot is idempotent across `up` runs and its state dies with `down.sh -v`.
+
 **Offer history is in-memory (by design).** The kernel stores its offer book in PGLite inside
 the container: restarting or recreating the `kernel` container resets the indexed offers, while
 the chain keeps the settled state — the book is re-indexed from genesis on the next start. A
@@ -50,6 +64,7 @@ cp .env.example .env                  # then edit ports/tags if needed
 ./up.sh                               # bring up the core stack; blocks until it is usable
 ./up.sh --with evm                    # …plus the read-only Ethereum JSON-RPC façade
 ./up.sh --with offerfiles             # …plus Celestia DA + the offer-files kernel & batcher
+./up.sh --with aa                     # …plus the AA Manager + Minter, deployed + a token minted
 ./up.sh --with frontend               # …plus the swap UI (needs the local template checkout)
 ./up.sh --all                         # …every profile: core + evm + offerfiles + frontend
 ./up.sh --converge                    # back to core only: stop the optional profiles
