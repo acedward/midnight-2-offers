@@ -66,6 +66,10 @@
   main.view { display: none; }
   main.view.active { display: grid; }
   #infra-canvas { width: 100%; max-width: 1120px; height: auto; display: block; }
+  #memos-frame {
+    width: 100%; height: 78vh; border: 1px solid var(--edge); border-radius: 8px;
+    background: #fff; display: block;
+  }
   .statusdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
   .dot-up { background: var(--ok); } .dot-down { background: var(--err); } .dot-absent { background: #4a5563; }
   .ladder { border: 1px solid var(--edge); border-radius: 6px; padding: 8px 12px; min-width: 220px; }
@@ -81,6 +85,8 @@
     <button data-view="aa" class="active">Account Abstraction + EVM</button>
     <button data-view="solver">COW Solver Web Socket</button>
     <button data-view="infra">Infrastructure</button>
+    <button data-view="memos">Memos</button>
+    <button data-view="repos">Repos</button>
   </nav>
 </header>
 <main id="view-aa" class="view active">
@@ -236,6 +242,30 @@
     <div class="tablewrap"><table>
       <thead><tr><th>component</th><th>status</th><th>detail</th></tr></thead>
       <tbody id="if-table"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<main id="view-memos" class="view">
+  <section class="wide">
+    <h2>Memos <span class="pill dim">web-memo.pages.dev</span></h2>
+    <!-- src is set lazily on first activation (views.js) so visiting the other
+         tabs never loads the external app. -->
+    <iframe id="memos-frame" title="Web Memo" data-src="https://web-memo.pages.dev/"></iframe>
+    <p class="note">If the app refuses to render in a frame,
+      <a href="https://web-memo.pages.dev/" target="_blank" rel="noopener">open it in its own tab</a>.</p>
+  </section>
+</main>
+
+<main id="view-repos" class="view">
+  <section class="wide">
+    <h2>Repositories this demo is built from</h2>
+    <p class="note">Every repo, with the exact branch / commit / PR the stack pins. The same
+    information lives in <code>.env.example</code> and the compose fragments — this table is the
+    human summary.</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>repository</th><th>role</th><th>ref in use</th><th>PRs / notes</th></tr></thead>
+      <tbody id="repos-table"></tbody>
     </table></div>
   </section>
 </main>
