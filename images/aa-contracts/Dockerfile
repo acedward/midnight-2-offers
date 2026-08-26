@@ -88,11 +88,50 @@ RUN set -eux; \
     fi; \
     ls /aa/contract-manager/src/managed/keys /aa/contract-minter/src/managed/keys
 
+# ── stage 2b: OPTIONAL k=18 `execute` overlay ────────────────────────────────
+# Swaps the Manager's `execute` artifact for the MinoCrab-compiled k=18 build
+# (the 00020-manager-k18-main handoff): 211,056 rows instead of 382,781, a
+# 544 MiB prover key instead of 1.14 GB, ~2× faster proofs — the cure for the
+# proof server's OOM class on memory-tight hosts. TWO CAVEATS TRAVEL WITH IT
+# (from the handoff MANIFEST): the artifact comes from an UNAUDITED third-party
+# compiler (equivalence tested 56/56 + 4,888 tamper probes against compactc,
+# not formally proven) — dev chains only; and the keys carry no compiler
+# manifest of their own, so the manifest compactc wrote is PATCHED below with
+# the k=18 sizes/hashes (NodeZkConfigProvider runs verify:"require").
+# KEY-BREAKING like any execute change: redeploy the contracts after enabling.
+FROM debian:stable-slim AS k18-overlay
+
+COPY --from=compact /aa/contract-manager/src/managed/keys /compact-keys
+ARG AA_EXECUTE_K18=0
+# The `k18` named context: the handoff folder when enabled, k18-stub/ otherwise.
+COPY --from=k18 / /k18/
+# Stage only the DELTA under /delta — empty when the overlay is off, so the
+# runtime's merge-COPY of /delta is a no-op layer.
+RUN set -eux; \
+    mkdir -p /delta/keys /delta/zkir; \
+    if [ "${AA_EXECUTE_K18:-0}" = "1" ]; then \
+      test -f /k18/execute.verifier || { echo "AA_EXECUTE_K18=1 but the k18 context has no execute.verifier — set AA_K18_DIR to the handoff folder" >&2; exit 1; }; \
+      cp /k18/execute.zkir /delta/zkir/execute.zkir; \
+      cp /k18/execute.bzkir /delta/zkir/execute.bzkir; \
+      cp /k18/execute.verifier /delta/keys/execute.verifier; \
+      if [ -f /compact-keys/execute.prover ]; then cp /k18/execute.prover /delta/keys/execute.prover; fi; \
+      chmod -R u+rw,a+r /delta; \
+      echo "k18 overlay staged (manifest is re-stamped in the runtime stage)"; \
+    else \
+      echo "k18 overlay disabled (AA_EXECUTE_K18=0)"; \
+    fi; \
+    rm -rf /k18 /compact-keys
+
 # ── stage 3: the deploy+mint runner ──────────────────────────────────────────
 # Same bun pin as the kernel image, same reason (1.3.14 breaks on graphql-17 ESM).
 FROM oven/bun:1.3.11
 
 WORKDIR /aa
+# From `compact`, NOT from the overlay stage: keeps every layer below —
+# including the network-dependent `bun install` — byte-identical to a non-k18
+# build, so flipping AA_EXECUTE_K18 can never force a registry fetch. The
+# overlay lands as FINAL layers after the install (costs the image the k=18
+# files on top of the k=19 layer; acceptable for a dev image).
 COPY --from=compact /aa /aa
 COPY --from=source /aa-commit /aa/.aa-commit
 # The AA repo's OWN test library — EIP-712 codec, MetaMask V4 signing, execute
@@ -123,5 +162,23 @@ RUN printf '%s\n' \
       'exec bun run /aa/runner/deploy-aa.ts' \
       > /usr/local/bin/aa-entrypoint \
  && chmod +x /usr/local/bin/aa-entrypoint
+
+# ── k=18 overlay merge (FINAL layers — see the stage-2b comment) ─────────────
+# /delta is empty when AA_EXECUTE_K18=0, making both steps no-ops; when
+# enabled, the four execute artifacts land here and the compiler manifest is
+# re-stamped from the ACTUAL files (NodeZkConfigProvider runs verify:"require").
+COPY --from=k18-overlay /delta/ /aa/contract-manager/src/managed/
+RUN bun -e 'const M = "/aa/contract-manager/src/managed"; \
+  const path = `${M}/compiler/contract-manifest.json`; \
+  const m = await Bun.file(path).json(); \
+  for (const [section, name] of [["keys","execute.prover"],["keys","execute.verifier"],["zkir","execute.zkir"],["zkir","execute.bzkir"]]) { \
+    const f = Bun.file(`${M}/${section}/${name}`); \
+    if (!(await f.exists())) continue; \
+    const hasher = new Bun.CryptoHasher("sha256"); \
+    hasher.update(await f.arrayBuffer()); \
+    m[section][name] = { type: "file", size: f.size, hash: hasher.digest("hex") }; \
+  } \
+  await Bun.write(path, JSON.stringify(m, null, 2)); \
+  console.log("manifest re-stamped for execute artifacts");'
 
 ENTRYPOINT ["/usr/local/bin/aa-entrypoint"]

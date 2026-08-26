@@ -51,6 +51,12 @@ services:
       args:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
         AA_REF: '${AA_REF:-main}'
+        # Optional k=18 execute overlay (halved prover key, ~2x faster proofs;
+        # unaudited-compiler caveat — see the Dockerfile). KEY-BREAKING: wipe
+        # the aa-out artifact and redeploy after flipping this.
+        AA_EXECUTE_K18: '${AA_EXECUTE_K18:-0}'
+      additional_contexts:
+        k18: '${AA_K18_DIR:-../images/aa-contracts/k18-stub}'
     environment:
       MIDNIGHT_NETWORK_ID: 'undeployed'
       MIDNIGHT_NODE_HTTP: 'http://node:9944'
@@ -90,6 +96,9 @@ services:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
         AA_REF: '${AA_REF:-main}'
         AA_PRUNE_MANAGER_PROVERS: '0'
+        AA_EXECUTE_K18: '${AA_EXECUTE_K18:-0}'
+      additional_contexts:
+        k18: '${AA_K18_DIR:-../images/aa-contracts/k18-stub}'
     entrypoint: ['bun', 'run', '/aa/runner/aa-console.ts']
     environment:
       MIDNIGHT_NETWORK_ID: 'undeployed'
