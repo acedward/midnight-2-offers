@@ -98,8 +98,6 @@ async function loadInfo() {
   fillTokens("fs-token", "shielded", "wBTC");
   fillTokens("sw-give-token", "shielded", "wBTC");
   fillTokens("sw-want-token", "shielded", "wETH");
-  fillTokens("trs-token", "shielded", "wBTC");
-  fillTokens("tr-token", "unshielded", "wUSD");
   { // send-to-address: ALL tokens
     const el = $("sd-token");
     el.innerHTML = "";
@@ -180,17 +178,13 @@ function renderAccounts() {
   };
   fill("fund-account", state.accounts, "no accounts yet — register first");
   const mineList = state.accounts.filter(mine);
-  fill("tr-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   fill("tr-to", state.accounts, "no accounts yet");
   fill("fs-account", state.accounts, "no accounts yet — register first");
   fill("sw-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
-  fill("trs-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
-  fill("trs-to", state.accounts, "no accounts yet");
   $("op-register").disabled = !state.signer;
   $("op-transfer").disabled = !mineList.length;
   $("op-withdraw").disabled = !mineList.length;
   $("op-swap").disabled = !mineList.length;
-  $("op-transfer-sh").disabled = !mineList.length;
   renderWallet();
 }
 
@@ -313,17 +307,55 @@ $("f-fund").onsubmit = busy(async () => {
   });
   await watchJob(jobId);
 });
-$("f-transfer").onsubmit = busy(() => prepareSignSubmit({
-  kind: "transfer", owner: state.signer,
-  accountId: $("tr-from").value, toAccountId: $("tr-to").value, amount: $("tr-amount").value,
-  token: $("tr-token").value,
-}));
 
-$("f-transfer-sh").onsubmit = busy(() => prepareSignSubmit({
-  kind: "transfer-shielded", owner: state.signer,
-  accountId: $("trs-from").value, toAccountId: $("trs-to").value,
-  amount: $("trs-amount").value, token: $("trs-token").value,
-}));
+
+// Transfer — token-first flow, symmetric with Withdraw: pick from the typed,
+// balance-annotated list, THEN the destination account + amount. The picked
+// token's family decides the signed action (selector 5 vs 4).
+function renderTransfer() {
+  const tok = (state.info?.tokens ?? []).find((t) => t.name === state.trToken);
+  $("tr-list").style.display = tok ? "none" : "";
+  $("tr-form").style.display = tok ? "" : "none";
+  const acct = currentAccount();
+  if (!tok) {
+    const list = $("tr-list");
+    list.innerHTML = "";
+    for (const t of state.info?.tokens ?? []) {
+      const row = document.createElement("div");
+      row.className = "balrow pick";
+      const name = document.createElement("span"); name.className = "tok"; name.textContent = t.name;
+      const chip = document.createElement("span");
+      chip.className = `chip ${t.family === "shielded" ? "sh" : "ush"}`;
+      chip.textContent = t.family;
+      const amt = document.createElement("span"); amt.className = "amt";
+      amt.textContent = (acct?.balances ?? {})[t.name] ?? "0";
+      const chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "›";
+      row.append(name, chip, amt, chev);
+      row.onclick = () => { state.trToken = t.name; renderTransfer(); };
+      list.append(row);
+    }
+    return;
+  }
+  const sh = tok.family === "shielded";
+  $("tr-chosen-name").textContent = tok.name;
+  const chip = $("tr-chosen-chip");
+  chip.className = `chip ${sh ? "sh" : "ush"}`;
+  chip.textContent = tok.family;
+  $("tr-chosen-bal").textContent = `balance ${(acct?.balances ?? {})[tok.name] ?? "0"}`;
+  $("tr-doc").textContent = sh
+    ? "Selector 4 — internal SHIELDED transfer between AA accounts, signed by your EVM wallet."
+    : "Selector 5 — internal unshielded transfer between AA accounts, signed by your EVM wallet.";
+}
+$("tr-back").onclick = () => { state.trToken = null; renderTransfer(); };
+$("f-tr").onsubmit = busy(() => {
+  const tok = (state.info?.tokens ?? []).find((t) => t.name === state.trToken);
+  const acct = currentAccount();
+  return prepareSignSubmit({
+    kind: tok.family === "shielded" ? "transfer-shielded" : "transfer",
+    owner: state.signer, accountId: acct.accountId,
+    toAccountId: $("tr-to").value, amount: $("tr-amount").value, token: tok.name,
+  });
+});
 // Withdraw — token-first flow: pick from the list (name + family + balance),
 // THEN amount + recipient. One form serves both selectors; the family decides
 // which recipient control shows and which action kind is signed.
@@ -515,7 +547,8 @@ function renderWallet() {
   }
   $("wl-nonce").textContent = acct.nonce;
   renderWithdraw();
-  for (const id of ["tr-from", "trs-from", "sw-from"]) {
+  renderTransfer();
+  for (const id of ["sw-from"]) {
     const el = $(id);
     if ([...el.options].some((o) => o.value === acct.accountId)) el.value = acct.accountId;
   }

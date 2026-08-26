@@ -230,26 +230,24 @@
 
         <div id="ops-transfer" class="opspane">
           <div class="opgroup">
-            <h3>Transfer <span class="chip ush">unshielded</span></h3>
-            <p class="note">Selector 5 — internal transfer between AA accounts.</p>
-            <form id="f-transfer"><div class="row">
-              <div style="display:none"><label>from</label><select id="tr-from" required></select></div>
-              <div><label>to account</label><select id="tr-to" required></select></div>
-              <div><label>token</label><select id="tr-token" required></select></div>
-              <div><label>amount</label><input id="tr-amount" value="250000" pattern="[0-9]+" required></div>
-              <div><button type="submit" disabled id="op-transfer">Transfer</button></div>
-            </div></form>
-          </div>
-          <div class="opgroup">
-            <h3>Transfer <span class="chip sh">shielded</span></h3>
-            <p class="note">Selector 4 — internal shielded transfer between AA accounts.</p>
-            <form id="f-transfer-sh"><div class="row">
-              <div style="display:none"><label>from</label><select id="trs-from" required></select></div>
-              <div><label>to account</label><select id="trs-to" required></select></div>
-              <div><label>token</label><select id="trs-token" required></select></div>
-              <div><label>amount</label><input id="trs-amount" value="100000" pattern="[0-9]+" required></div>
-              <div><button type="submit" disabled id="op-transfer-sh">Transfer shielded</button></div>
-            </div></form>
+            <h3>Transfer — pick a token</h3>
+            <p class="note">Moves balance between AA accounts inside the Manager. Pick what to
+            transfer — the token's type decides which selector is signed.</p>
+            <div id="tr-list"></div>
+            <div id="tr-form" style="display:none">
+              <div class="wdp-head">
+                <button type="button" class="ghost" id="tr-back">‹ back</button>
+                <span class="tok" id="tr-chosen-name"></span>
+                <span class="chip" id="tr-chosen-chip"></span>
+                <span class="note" id="tr-chosen-bal" style="margin:0"></span>
+              </div>
+              <p class="note" id="tr-doc"></p>
+              <form id="f-tr"><div class="row">
+                <div style="flex:2"><label>to account</label><select id="tr-to" required></select></div>
+                <div><label>amount</label><input id="tr-amount" value="100000" pattern="[0-9]+" required></div>
+                <div><button type="submit" id="op-transfer">Transfer</button></div>
+              </div></form>
+            </div>
           </div>
         </div>
 
