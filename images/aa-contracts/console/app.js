@@ -98,6 +98,12 @@ async function loadInfo() {
   fillTokens("sw-want-token", "shielded", "wETH");
   fillTokens("trs-token", "shielded", "wBTC");
   fillTokens("wds-token", "shielded", "wBTC");
+  { // faucet: ALL tokens
+    const el = $("fc-token");
+    el.innerHTML = "";
+    for (const t of (i.tokens ?? [])) el.append(new Option(`${t.name} (${t.family})`, t.name));
+    if ([...el.options].some((o) => o.value === "wETH")) el.value = "wETH";
+  }
   $("s-relay").innerHTML = "";
   const pill = document.createElement("span");
   pill.className = `pill ${i.relay.funded ? "ok" : "warn"}`;
@@ -235,19 +241,23 @@ async function loadBook() {
 // ── jobs ─────────────────────────────────────────────────────────────────────
 
 function renderJob(job) {
-  const el = $("joblog");
   const lines = job.log.length ? job.log.join("\n") : "(queued…)";
-  el.innerHTML = "";
-  const span = document.createElement("span");
-  span.className = "hot";
-  span.textContent = `[${job.kind}] ${job.state}${job.txId ? ` tx=${job.txId}` : ""}${job.error ? `\n${job.error}` : ""}\n`;
-  el.append(span, lines);
-  el.scrollTop = el.scrollHeight;
-  $("job-state").innerHTML = "";
-  const pill = document.createElement("span");
-  pill.className = `pill ${job.state === "done" ? "ok" : job.state === "error" ? "err" : "warn"}`;
-  pill.textContent = job.state;
-  $("job-state").append(pill);
+  for (const [logId, stateId] of [["joblog", "job-state"], ["joblog2", "job-state2"]]) {
+    const el = $(logId);
+    if (!el) continue;
+    el.innerHTML = "";
+    const span = document.createElement("span");
+    span.className = "hot";
+    span.textContent = `[${job.kind}] ${job.state}${job.txId ? ` tx=${job.txId}` : ""}${job.error ? `\n${job.error}` : ""}\n`;
+    el.append(span, lines);
+    el.scrollTop = el.scrollHeight;
+    const st = $(stateId);
+    st.innerHTML = "";
+    const pill = document.createElement("span");
+    pill.className = `pill ${job.state === "done" ? "ok" : job.state === "error" ? "err" : "warn"}`;
+    pill.textContent = job.state;
+    st.append(pill);
+  }
 }
 
 async function watchJob(jobId) {
@@ -311,6 +321,12 @@ $("f-withdraw-sh").onsubmit = busy(() => prepareSignSubmit({
   accountId: $("wds-from").value, amount: $("wds-amount").value,
   token: $("wds-token").value, target: $("wds-target").value,
 }));
+$("f-faucet").onsubmit = busy(async () => {
+  const { jobId } = await api("/api/faucet", {
+    token: $("fc-token").value, amount: $("fc-amount").value, target: $("fc-target").value,
+  });
+  await watchJob(jobId);
+});
 $("f-fundsh").onsubmit = busy(async () => {
   const { jobId } = await api("/api/fund-shielded", {
     accountId: $("fs-account").value, amount: $("fs-amount").value,

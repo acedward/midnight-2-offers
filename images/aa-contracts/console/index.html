@@ -67,6 +67,10 @@
   .seg.small button { padding: 5px 12px; font-size: 12px; }
   .actpane { display: none; }
   .actpane.active { display: block; }
+  .activity-sticky {
+    position: sticky; bottom: 10px; z-index: 5;
+    box-shadow: 0 -10px 28px rgba(0, 0, 0, .5);
+  }
   main.view { display: none; }
   main.view.active { display: grid; }
   #infra-canvas { width: 100%; max-width: 1120px; height: auto; display: block; }
@@ -86,9 +90,10 @@
   <p id="head-note">Your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (~1–2 min)
      through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.</p>
   <nav class="seg" id="seg">
-    <button data-view="aa" class="active">Account Abstraction + EVM</button>
+    <button data-view="aa" class="active">AA + EVM</button>
+    <button data-view="aainfra">AA infra</button>
     <button data-view="aamid">AA + Midnight</button>
-    <button data-view="solver">COW Solver Web Socket</button>
+    <button data-view="solver">Offers + Solver</button>
     <button data-view="infra">Infrastructure</button>
     <button data-view="memos">Memos</button>
     <button data-view="repos">Repos</button>
@@ -110,42 +115,13 @@
   </section>
 
   <section>
-    <h2>Stack</h2>
-    <dl class="kv">
-      <dt>network</dt><dd id="s-net">—</dd>
-      <dt>manager</dt><dd id="s-manager">—</dd>
-      <dt>minter</dt><dd id="s-minter">—</dd>
-      <dt>tokens</dt><dd id="s-tokens">—</dd>
-      <dt>relay wallet</dt><dd id="s-relay">—</dd>
-      <dt>taker wallet</dt><dd id="s-taker">—</dd>
-    </dl>
-  </section>
-
-  <section>
     <h2>Register account</h2>
+
     <p class="note">Creates an AA account owned by the connected EVM address (fresh random salt →
     fresh account id). Signed by your wallet, executed by the relay.</p>
     <div class="row" style="margin-top:8px"><div><button id="op-register" disabled>Register</button></div></div>
   </section>
 
-  <section>
-    <h2>Fund account</h2>
-    <p class="note">Relay operations (no signature): mint demo tokens and deposit them into the
-    chosen account. <b>Unshielded</b> feeds transfers and withdrawals; <b>shielded</b> feeds the
-    swap's give leg.</p>
-    <form id="f-fund"><div class="row">
-      <div><label>account</label><select id="fund-account" required></select></div>
-      <div><label>token</label><select id="fund-token" required></select></div>
-      <div><label>amount (unshielded)</label><input id="fund-amount" value="600000" pattern="[0-9]+" required></div>
-      <div><button type="submit">Fund</button></div>
-    </div></form>
-    <form id="f-fundsh"><div class="row">
-      <div><label>account</label><select id="fs-account" required></select></div>
-      <div><label>token</label><select id="fs-token" required></select></div>
-      <div><label>amount (shielded)</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
-      <div><button type="submit" class="ghost">Fund shielded</button></div>
-    </div></form>
-  </section>
 
   <section class="wide">
     <h2>Actions — the Manager's <code>execute</code></h2>
@@ -245,12 +221,56 @@
     <div id="pure-result" style="background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:8px 12px;margin-top:8px;overflow-wrap:anywhere;color:var(--dim)">—</div>
   </section>
 
-  <section class="wide">
-    <h2>Offer book <span id="book-state"></span></h2>
-    <div class="tablewrap"><table>
-      <thead><tr><th>offer id</th><th>gives</th><th>wants</th><th>status</th><th></th></tr></thead>
-      <tbody id="book"></tbody>
-    </table></div>
+
+
+  <section class="wide activity-sticky">
+    <h2>Activity <span id="job-state"></span></h2>
+    <div id="joblog">idle — actions appear here (proving an execute takes ~1–2 minutes; the log keeps you honest company)</div>
+  </section>
+</main>
+
+<main id="view-aainfra" class="view">
+  <section>
+    <h2>Stack</h2>
+    <dl class="kv">
+      <dt>network</dt><dd id="s-net">—</dd>
+      <dt>manager</dt><dd id="s-manager">—</dd>
+      <dt>minter</dt><dd id="s-minter">—</dd>
+      <dt>tokens</dt><dd id="s-tokens">—</dd>
+      <dt>relay wallet</dt><dd id="s-relay">—</dd>
+      <dt>taker wallet</dt><dd id="s-taker">—</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Fund account</h2>
+    <p class="note">Relay operations (no signature): mint demo tokens and deposit them into the
+    chosen account. <b>Unshielded</b> feeds transfers and withdrawals; <b>shielded</b> feeds the
+    swap's give leg.</p>
+    <form id="f-fund"><div class="row">
+      <div><label>account</label><select id="fund-account" required></select></div>
+      <div><label>token</label><select id="fund-token" required></select></div>
+      <div><label>amount (unshielded)</label><input id="fund-amount" value="600000" pattern="[0-9]+" required></div>
+      <div><button type="submit">Fund</button></div>
+    </div></form>
+    <form id="f-fundsh"><div class="row">
+      <div><label>account</label><select id="fs-account" required></select></div>
+      <div><label>token</label><select id="fs-token" required></select></div>
+      <div><label>amount (shielded)</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
+      <div><button type="submit" class="ghost">Fund shielded</button></div>
+    </div></form>
+  </section>
+
+  <section>
+    <h2>Faucet — mint to a wallet</h2>
+    <p class="note">Mints tokens straight to one of the stack's wallets (no Manager deposit) —
+    e.g. give the taker the want-leg funds for settling offers.</p>
+    <form id="f-faucet"><div class="row">
+      <div><label>token</label><select id="fc-token" required></select></div>
+      <div><label>amount</label><input id="fc-amount" value="200000" pattern="[0-9]+" required></div>
+      <div><label>wallet</label><select id="fc-target"><option value="taker">taker</option><option value="relay">relay</option><option value="funder">funder</option></select></div>
+      <div><button type="submit" class="ghost">Mint</button></div>
+    </div></form>
   </section>
 
   <section class="wide">
@@ -262,8 +282,8 @@
   </section>
 
   <section class="wide">
-    <h2>Activity <span id="job-state"></span></h2>
-    <div id="joblog">idle — actions appear here (proving an execute takes ~1–2 minutes; the log keeps you honest company)</div>
+    <h2>Activity <span id="job-state2"></span></h2>
+    <div id="joblog2" style="background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:10px 12px;min-height:90px;max-height:260px;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dim)">idle</div>
   </section>
 </main>
 
@@ -347,6 +367,14 @@
 </main>
 
 <main id="view-solver" class="view">
+  <section class="wide">
+    <h2>Offer book <span id="book-state"></span></h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>offer id</th><th>gives</th><th>wants</th><th>status</th><th></th></tr></thead>
+      <tbody id="book"></tbody>
+    </table></div>
+  </section>
+
   <section class="wide">
     <h2>Solver feed <span id="sv-state"></span></h2>
     <p class="note">The ported COW solver runs in <b>observation mode</b>: it mirrors the kernel's
