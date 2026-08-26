@@ -56,15 +56,34 @@
   .note { font-size: 12.5px; color: var(--dim); margin: 8px 0 0; }
   .note.warn { color: var(--warn); }
   a { color: var(--accent); }
+  .seg { display: inline-flex; margin-top: 12px; border: 1px solid var(--edge); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    background: transparent; color: var(--dim); border: 0; border-radius: 0;
+    padding: 7px 16px; font: 600 13px system-ui; cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--edge); }
+  .seg button.active { background: var(--accent); color: #0b1018; }
+  main.view { display: none; }
+  main.view.active { display: grid; }
+  #infra-canvas { width: 100%; max-width: 1120px; height: auto; display: block; }
+  .statusdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .dot-up { background: var(--ok); } .dot-down { background: var(--err); } .dot-absent { background: #4a5563; }
+  .ladder { border: 1px solid var(--edge); border-radius: 6px; padding: 8px 12px; min-width: 220px; }
+  .ladder h3 { margin: 0 0 6px; font: 600 12px var(--mono); color: var(--accent); overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <header>
-  <h1>AA Console</h1>
-  <p>Your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (k=19, ~2 min)
+  <h1>Midnight Demo Console</h1>
+  <p id="head-note">Your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (k=19, ~2 min)
      through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.</p>
+  <nav class="seg" id="seg">
+    <button data-view="aa" class="active">Account Abstraction + EVM</button>
+    <button data-view="solver">COW Solver Web Socket</button>
+    <button data-view="infra">Infrastructure</button>
+  </nav>
 </header>
-<main>
+<main id="view-aa" class="view active">
   <section>
     <h2>EVM wallet</h2>
     <div class="row">
@@ -171,6 +190,57 @@
     <div id="joblog">idle — actions appear here (proving a k=19 execute takes ~2 minutes; the log keeps you honest company)</div>
   </section>
 </main>
+
+<main id="view-solver" class="view">
+  <section class="wide">
+    <h2>Solver feed <span id="sv-state"></span></h2>
+    <p class="note">The ported COW solver runs in <b>observation mode</b>: it mirrors the kernel's
+    book and pushes its price ladders over the authenticated relay WebSocket to a demo-side sink,
+    which this view streams live (same-origin SSE). The sink implements only the receive half of
+    the relay boundary — it can never dispatch work, so the solver can never build, prove, or
+    submit a transaction.</p>
+    <dl class="kv" style="margin-top:8px">
+      <dt>solver connection</dt><dd id="sv-conn">—</dd>
+      <dt>frames</dt><dd id="sv-frames">—</dd>
+      <dt>kernel book</dt><dd id="sv-book">—</dd>
+      <dt>safety</dt><dd id="sv-safety">—</dd>
+    </dl>
+    <p class="note warn" id="sv-alarm" style="display:none"></p>
+  </section>
+  <section class="wide">
+    <h2>Price ladders</h2>
+    <div id="sv-ladders" style="display:flex;gap:12px;flex-wrap:wrap"><p class="note">no ladders yet</p></div>
+  </section>
+  <section class="wide">
+    <h2>Admission (inferred)</h2>
+    <p class="note">Book pairs vs published ladder pairs — the solver's true per-offer reasons never
+    reach the wire, so absence here proves only that a pair was not published.</p>
+    <div class="tablewrap"><table>
+      <thead><tr><th>pair</th><th>on the book</th><th>ladder published</th></tr></thead>
+      <tbody id="sv-admission"></tbody>
+    </table></div>
+  </section>
+  <section class="wide">
+    <h2>Frame history</h2>
+    <div id="sv-history" style="background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:10px 12px;max-height:240px;overflow-y:auto;color:var(--dim)"></div>
+  </section>
+</main>
+
+<main id="view-infra" class="view">
+  <section class="wide">
+    <h2>Stack topology <span id="if-state"></span></h2>
+    <canvas id="infra-canvas" width="1120" height="620"></canvas>
+  </section>
+  <section class="wide">
+    <h2>Components</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>component</th><th>status</th><th>detail</th></tr></thead>
+      <tbody id="if-table"></tbody>
+    </table></div>
+  </section>
+</main>
+
 <script src="/app.js"></script>
+<script src="/views.js"></script>
 </body>
 </html>

@@ -65,6 +65,9 @@ const DEV_ADDR = addressForPrivateKey(DEV_KEY) as Hex20;
 // The offer-files kernel (profile `offerfiles`), feature-detected: the swap
 // panel publishes there and degrades gracefully when the profile is down.
 const KERNEL_URL = process.env["AA_KERNEL_URL"] ?? "http://kernel:9999";
+// The cow-solver sink (profile `solver`), feature-detected: the page's solver
+// view reads its snapshot/stream through same-origin proxies here.
+const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
 // Shielded funding runs on the aa-deploy wallet (genesis-3): prefunded, and it
 // already holds the shielded colour minted at bring-up. The RELAY wallet stays
 // shielded-free (T7.5 rule) — that is the entire reason for the second seed.
@@ -631,8 +634,125 @@ const json = (data: unknown, status = 200) =>
 const bad = (msg: string, status = 400) => json({ error: msg }, status);
 
 const STATIC_DIR = "/aa/console";
+const STATIC_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+};
+// no-store: this is a dev console that redeploys often — stale cached JS has
+// already cost one confused verification pass.
 const staticFile = (name: string, type: string) =>
-  new Response(Bun.file(resolve(STATIC_DIR, name)), { headers: { "content-type": type } });
+  new Response(Bun.file(resolve(STATIC_DIR, name)), {
+    headers: { "content-type": type, "cache-control": "no-store" },
+  });
+
+// ── infrastructure status (the page's Infrastructure view) ───────────────────
+// Every probe runs over the COMPOSE network with a short timeout. A service
+// whose DNS name does not resolve is a profile that is not up → "absent";
+// a resolvable name that refuses/errors is "down".
+type ProbeResult = { status: "up" | "down" | "absent"; info?: unknown };
+async function probe(fn: () => Promise<unknown>): Promise<ProbeResult> {
+  try {
+    return { status: "up", info: await fn() };
+  } catch (e) {
+    const m = e instanceof Error ? `${e.message} ${(e as any).code ?? ""}` : String(e);
+    // ConnectionRefused = the name resolved but nothing is listening → DOWN
+    // (a container exists and is broken/booting). Only a name that does not
+    // resolve at all means the profile is not up → ABSENT.
+    const refused = /ConnectionRefused|ECONNREFUSED/i.test(m);
+    const absent = !refused && /getaddrinfo|resolve|ENOTFOUND|DNS|FailedToOpenSocket|Unable to connect/i.test(m);
+    return { status: absent ? "absent" : "down", info: m.slice(0, 160) };
+  }
+}
+const T = (ms: number) => AbortSignal.timeout(ms);
+const fetchJson = async (url: string, init: RequestInit = {}, ms = 3500) => {
+  const r = await fetch(url, { ...init, signal: T(ms) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return await r.json();
+};
+// The nix-based proof-server images answer nothing useful at "/" — any HTTP
+// response at all (even 404) proves the service is listening.
+const fetchAlive = async (url: string, ms = 3000) => {
+  const r = await fetch(url, { signal: T(ms) }).catch((e) => {
+    // A refused/failed connection throws; an HTTP error status does not.
+    throw e;
+  });
+  return { httpStatus: r.status };
+};
+
+async function infraStatus() {
+  const rpc = (method: string) =>
+    fetchJson("http://node:9944", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: [] }),
+    });
+  const [node, indexer, proofServer, aaProofServer, kernel, kernelSync, batcher, celestia, evmRpc, frontend, sink] =
+    await Promise.all([
+      probe(async () => {
+        const health = (await rpc("system_health")) as any;
+        const head = (await rpc("chain_getHeader")) as any;
+        return { peers: health.result?.peers, block: parseInt(head.result?.number ?? "0", 16) };
+      }),
+      probe(async () => {
+        const r = (await fetchJson("http://indexer:8088/api/v4/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ query: "{ block { height } }" }),
+        })) as any;
+        return { height: r.data?.block?.height };
+      }),
+      probe(() => fetchAlive("http://proof-server:6300/")),
+      probe(() => fetchAlive("http://aa-proof-server:6300/")),
+      probe(async () => {
+        const h = (await fetchJson(`${KERNEL_URL}/health`)) as any;
+        return { status: h.status, blockHeight: h.apply?.blockHeight };
+      }),
+      probe(async () => {
+        const s = (await fetchJson(`${KERNEL_URL}/v1/health/sync`)) as any;
+        return { current: s.current ?? s.isCurrent ?? null, offers: s.offers ?? null };
+      }),
+      probe(async () => (await fetchJson("http://kernel:3334/health")) as any),
+      probe(() => fetchAlive("http://celestia:26658/")),
+      probe(async () => {
+        const r = (await fetchJson("http://evm-rpc:8545", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }),
+        })) as any;
+        return { block: parseInt(r.result ?? "0", 16) };
+      }),
+      probe(() => fetchAlive("http://frontend:10600/")),
+      probe(async () => {
+        const h = (await fetchJson(`${SINK_URL}/health`)) as any;
+        const snap = (await fetchJson(`${SINK_URL}/api/snapshot`)) as any;
+        return {
+          health: h,
+          solverConnected: snap.solver?.connected ?? false,
+          ladderPairs: Object.keys(snap.ladders ?? {}).length,
+          framesAccepted: snap.frames?.accepted ?? 0,
+        };
+      }),
+    ]);
+  // The solver has no HTTP surface of its own — its liveness is what the sink
+  // sees on the authenticated relay socket.
+  const solver: ProbeResult =
+    sink.status !== "up"
+      ? { status: "absent", info: "sink not up — no visibility" }
+      : (sink.info as any).solverConnected
+        ? { status: "up", info: { via: "sink relay socket" } }
+        : { status: "down", info: "sink up, no solver connected" };
+  return {
+    at: new Date().toISOString(),
+    components: {
+      console: { status: "up", info: { relayFunded: relay.funded, takerFunded: taker.funded, jobsQueued: queue.length } },
+      node, indexer, proofServer, aaProofServer,
+      kernel, kernelSync, batcher, celestia,
+      evmRpc, frontend, solverSink: sink, solver,
+    },
+  };
+}
 
 Bun.serve({
   port: PORT,
@@ -643,7 +763,36 @@ Bun.serve({
     const path = url.pathname;
     try {
       if (path === "/" || path === "/index.html") return staticFile("index.html", "text/html; charset=utf-8");
-      if (path === "/app.js") return staticFile("app.js", "text/javascript; charset=utf-8");
+      // Any other flat file in /aa/console by extension (no subdirs, no dotfiles).
+      if (/^\/[A-Za-z0-9_.-]+\.(html|js|css|svg)$/.test(path)) {
+        const ext = path.slice(path.lastIndexOf("."));
+        const f = Bun.file(resolve(STATIC_DIR, path.slice(1)));
+        if (await f.exists()) {
+          return new Response(f, { headers: { "content-type": STATIC_TYPES[ext], "cache-control": "no-store" } });
+        }
+        return bad("not found", 404);
+      }
+      if (path === "/api/infra") return json(await infraStatus());
+      if (path === "/api/solver/snapshot") {
+        try {
+          return json({ sink: true, snapshot: await fetchJson(`${SINK_URL}/api/snapshot`, {}, 5000) });
+        } catch {
+          return json({ sink: false, snapshot: null });
+        }
+      }
+      if (path === "/api/solver/stream") {
+        // Pass-through SSE proxy so the browser stays same-origin. No abort
+        // signal here — a timeout signal would kill the LONG-LIVED stream, not
+        // just the connect; connection failures throw fast on their own.
+        try {
+          const upstream = await fetch(`${SINK_URL}/api/stream`);
+          return new Response(upstream.body, {
+            headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+          });
+        } catch {
+          return bad("solver sink unreachable (start the solver profile)", 503);
+        }
+      }
       if (path === "/healthz") {
         return json({ ok: true, relay, taker, jobsQueued: queue.length, deployed: existsSync(ARTIFACT_PATH) });
       }

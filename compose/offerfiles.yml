@@ -149,6 +149,11 @@ services:
       # zswap proofs + signatures (the contract-call proof is verified by the
       # node at settlement). Off by default upstream; the demo turns it on.
       ALLOW_CONTRACT_MAKER_OFFERS: '${ALLOW_CONTRACT_MAKER_OFFERS:-1}'
+      # The solver-branch kernel (00001-solver-v9) adds an HTTP rate limiter
+      # (default 60/min) — too tight for the solver's book mirror + the console
+      # + a browser all polling one dev kernel. No effect on the plain
+      # 00001-ledger-v9 build, which has no limiter.
+      API_RATE_LIMIT_MAX: '${API_RATE_LIMIT_MAX:-600}'
     healthcheck:
       # bun, not curl: the oven/bun runtime image ships no curl/wget.
       test:
