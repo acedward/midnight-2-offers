@@ -14,8 +14,17 @@
 # compose/solver.yml via `additional_contexts`. That keeps this Dockerfile's
 # own context small (this directory) while the source comes from wherever
 # SOLVER_KERNEL_SRC points. BuildKit honours the named context's own
-# `.dockerignore`, which the branch provides — without it the context would be
-# 1.7 GB of node_modules instead of ~14 MB.
+# `.dockerignore` — without it the context is 1.7 GB of node_modules instead of
+# ~14 MB.
+#
+# THAT FILE IS NOT IN THE KERNEL REPO, and cannot be: the kernel repo gitignores
+# `.dockerignore` by convention (alongside `docker/` and `docker-compose.yml`).
+# Ship it into the checkout once, from the canonical copy beside this file:
+#
+#     cp images/cow-solver/kernel.dockerignore "$SOLVER_KERNEL_SRC/.dockerignore"
+#
+# The build still succeeds without it — just slowly, copying 1.7 GB it does not
+# need.
 #
 # CONSEQUENCE, and it is the reason this file is not just a copy of the kernel
 # one: `docker build` of this image is NOT reproducible from a git clone of the
