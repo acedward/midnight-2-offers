@@ -368,8 +368,12 @@
   <section class="wide">
     <h2>Memos <span class="pill dim">web-memo.pages.dev</span></h2>
     <!-- src is set lazily on first activation (views.js) so visiting the other
-         tabs never loads the external app. -->
-    <iframe id="memos-frame" title="Web Memo" data-src="https://web-memo.pages.dev/"></iframe>
+         tabs never loads the external app. `allow` delegates Local Network
+         Access so the embedded app can reach a proof server on 127.0.0.1 from
+         inside the cross-origin frame (Chrome gates that behind a permission
+         the embedder must grant). -->
+    <iframe id="memos-frame" title="Web Memo" data-src="https://web-memo.pages.dev/"
+            allow="local-network-access https://web-memo.pages.dev"></iframe>
     <p class="note">If the app refuses to render in a frame,
       <a href="https://web-memo.pages.dev/" target="_blank" rel="noopener">open it in its own tab</a>.</p>
   </section>
