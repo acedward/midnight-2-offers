@@ -5,7 +5,7 @@
 // ── router ───────────────────────────────────────────────────────────────────
 
 const HEAD_NOTES = {
-  aa: "Your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (k=19, ~2 min) through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.",
+  aa: "Your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (~1–2 min) through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.",
   solver: "The ported COW solver, observed live over the relay WebSocket boundary it would normally speak to the Midnight Intents relay — received by a demo sink that can never send it work.",
   infra: "Every component of the compose stack, probed over the internal network by the console's relay service.",
   aamid: "UI preview: the same AA account flows, authorized by a Midnight wallet instead of an EVM one. Not wired yet.",

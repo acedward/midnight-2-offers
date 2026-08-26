@@ -158,7 +158,7 @@ export async function buildOpenSwapOffer(spec: OpenSwapOfferSpec): Promise<Built
     privateStateId: "aaManagerPrivateState",
   } as any);
 
-  log("proving the open-swap execute (k=19) — the LAST thing the maker does (no balance, no dust, no submit)");
+  log("proving the open-swap execute — the LAST thing the maker does (no balance, no dust, no submit)");
   const t0 = Date.now();
   const provenUnbound: any = await spec.providers.proofProvider.proveTx(built.private.unprovenTx);
   const proveMs = Date.now() - t0;

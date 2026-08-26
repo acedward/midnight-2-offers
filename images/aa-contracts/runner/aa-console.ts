@@ -525,7 +525,7 @@ function executeJob(prep: Prepared, signature: string): Job {
     jlog(j, `signer verified (${recovered.address}) — opening a wallet session`);
     await withProveRetry(j, prep.kind, () => session(prep.kind, async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      jlog(j, "proving execute (k=19 — expect ~2 minutes)…");
+      jlog(j, "proving execute (k=18 with the MinoCrab overlay, k=19 without — expect ~1–2 minutes)…");
       const t0 = Date.now();
       const tx = await (mgr.handle.callTx as any).execute(p.payload, p.signature, p.point);
       j.txId = tx.public?.txId ?? null;
