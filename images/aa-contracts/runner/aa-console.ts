@@ -25,7 +25,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import * as Rx from "rxjs";
-import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
+import { findDeployedContract, createUnprovenCallTx } from "@midnight-ntwrk/midnight-js-contracts";
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
@@ -521,9 +521,37 @@ async function checkRelayWallet() {
   log(`relay wallet: funded=${relay.funded} balance=${relay.balance}${relay.error ? ` error=${relay.error}` : ""}`);
 }
 
+// Resolve a wallet's zswap public keys from its seed (facade build, no funds
+// needed, no session queue — read-only key derivation plus a short sync).
+async function walletZswapKeys(seed: string) {
+  const wr: any = await buildWalletFacade(
+    {
+      id: midnightNetworkConfig.id,
+      indexer: midnightNetworkConfig.indexer,
+      indexerWS: midnightNetworkConfig.indexerWS,
+      node: midnightNetworkConfig.node,
+      proofServer: WALLET_PROOF,
+    } as any,
+    seed,
+    midnightNetworkConfig.id as any,
+  );
+  try {
+    const cpk = wr.zswapSecretKeys.coinPublicKey;
+    const epk = wr.zswapSecretKeys.encryptionPublicKey;
+    return {
+      coinPublicKey: String(cpk).replace(/^0x/, "").toLowerCase(),
+      encryptionPublicKey: String(epk).replace(/^0x/, "").toLowerCase(),
+      coinPublicKeyRaw: cpk,
+      encryptionPublicKeyRaw: epk,
+    };
+  } finally {
+    await wr.wallet?.stop?.().catch(() => {});
+  }
+}
+
 // ── prepared actions (built here, signed in the browser) ─────────────────────
 
-type Prepared = { action: any; owner: Hex20; kind: string; createdAt: number; summary: Record<string, unknown> };
+type Prepared = { action: any; owner: Hex20; kind: string; createdAt: number; summary: Record<string, unknown>; encMapping?: [unknown, unknown] };
 const prepared = new Map<string, Prepared>();
 const PREP_TTL_MS = 30 * 60_000; // the deadline horizon makes older ones useless anyway
 const newId = (): string => crypto.randomUUID();
@@ -564,6 +592,46 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
       color: ("0x" + token.color) as Hex32, amount,
     };
     return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce), token: token.name } }, accountId };
+  }
+  if (kind === "transfer-shielded") {
+    // Selector 4 — first wired here; moves the SHIELDED in-Manager credit.
+    const toAccountId = String(body.toAccountId ?? "") as Hex32;
+    if (!/^0x[0-9a-f]{64}$/i.test(toAccountId)) throw new Error("toAccountId must be 0x…32 bytes");
+    const token = tokenByName(String(body.token ?? "wBTC"));
+    if (token.family !== "shielded") throw new Error("transfer-shielded (selector 4) moves a SHIELDED credit — pick a shielded token");
+    const action = {
+      primaryType: "TransferInternalShielded", manager: manager32, accountId, owner,
+      validUntil: deadline(), nonce, toAccountId,
+      color: ("0x" + token.color) as Hex32, amount,
+    };
+    return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce), token: token.name } }, accountId };
+  }
+  if (kind === "withdraw-shielded") {
+    // Selector 2 — first wired here. recipientKind 0 = the recipient's zswap
+    // COIN PUBLIC KEY (PR #10 refuses contract recipients). The matching
+    // ENCRYPTION key is resolved at build time (see withdrawShieldedJob) —
+    // the action itself only carries the coin key.
+    const token = tokenByName(String(body.token ?? "wBTC"));
+    if (token.family !== "shielded") throw new Error("withdraw-shielded (selector 2) pays a SHIELDED balance — pick a shielded token");
+    const target = String(body.target ?? "taker");
+    if (!["taker", "relay", "funder"].includes(target)) throw new Error("target must be taker|relay|funder");
+    const action = {
+      primaryType: "WithdrawShielded", manager: manager32, accountId, owner,
+      validUntil: deadline(), nonce,
+      color: ("0x" + token.color) as Hex32, amount,
+      recipientKind: 0n, recipient: "0x" + "0".repeat(64), // stamped below
+    } as any;
+    // The recipient coin public key comes from the target wallet's keys — a
+    // quick facade build (no funds needed) resolves them.
+    const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
+    const keys = await walletZswapKeys(seed);
+    action.recipient = ("0x" + keys.coinPublicKey) as Hex32;
+    return {
+      prep: { action, owner, kind, createdAt: Date.now(),
+        summary: { nonce: String(nonce), token: token.name, target, recipientCoinPk: keys.coinPublicKey },
+        encMapping: [keys.coinPublicKeyRaw, keys.encryptionPublicKeyRaw] },
+      accountId,
+    };
   }
   if (kind === "swap") {
     // Open-shape selector 6 (SHIELDED-ONLY by contract design): give the demo
@@ -718,9 +786,35 @@ function executeJob(prep: Prepared, signature: string): Job {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
       jlog(j, "proving execute (k=18 with the MinoCrab overlay, k=19 without — expect ~1–2 minutes)…");
       const t0 = Date.now();
-      const tx = await (mgr.handle.callTx as any).execute(p.payload, p.signature, p.point);
-      j.txId = tx.public?.txId ?? null;
-      jlog(j, `landed — tx=${j.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+      if (prep.encMapping) {
+        // Selector 2 (withdraw shielded): the payout coin is ENCRYPTED to the
+        // recipient, so the builder needs their encryption public key — which
+        // callTx cannot carry. Manual path: build the unproven call with the
+        // mapping, prove, then wallet-balance (DUST fees) and submit — the
+        // exact settle mechanics the taker flow already proved.
+        const built: any = await createUnprovenCallTx(mgr.providers, {
+          compiledContract: mgr.compiled,
+          circuitId: "execute",
+          contractAddress: MANAGER,
+          args: [p.payload, p.signature, p.point],
+          privateStateId: "aaManagerPrivateState",
+          additionalCoinEncPublicKeyMappings: new Map([[prep.encMapping[0], prep.encMapping[1]]]),
+        } as any);
+        const proven: any = await mgr.providers.proofProvider.proveTx(built.private.unprovenTx);
+        const bound: any = typeof proven.bind === "function" ? proven.bind() : proven;
+        jlog(j, `proven (${((Date.now() - t0) / 1000).toFixed(0)}s) — balancing + submitting…`);
+        const wallet = walletResult.wallet as any;
+        const keys = { shieldedSecretKeys: walletResult.zswapSecretKeys, dustSecretKey: walletResult.dustSecretKey };
+        const recipe = await wallet.balanceFinalizedTransaction(bound, keys, { ttl: new Date(Date.now() + 30 * 60_000) });
+        const finalTx = await wallet.finalizeRecipe(recipe);
+        await wallet.submitTransaction(finalTx);
+        j.txId = finalTx.transactionHash?.().toString?.() ?? null;
+        jlog(j, `landed — tx=${j.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s total)`);
+      } else {
+        const tx = await (mgr.handle.callTx as any).execute(p.payload, p.signature, p.point);
+        j.txId = tx.public?.txId ?? null;
+        jlog(j, `landed — tx=${j.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+      }
     }));
   });
 }
@@ -1112,6 +1206,35 @@ Bun.serve({
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
         const job = fundJob(accountId, amount, String(body.token ?? "wUSD"));
+        return json({ jobId: job.id });
+      }
+      if (path === "/api/deposit" && req.method === "POST") {
+        // A wallet actor (taker/relay/funder) deposits tokens IT HOLDS into an
+        // AA account — the onward-spend half of the withdraw paths.
+        const body = await req.json();
+        const accountId = String(body.accountId ?? "") as Hex32;
+        if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
+        const amount = BigInt(body.amount ?? 0);
+        if (amount <= 0n) return bad("amount must be a positive integer");
+        const from = String(body.from ?? "taker");
+        if (!["taker", "relay", "funder"].includes(from)) return bad("from must be taker|relay|funder");
+        const token = tokenByName(String(body.token ?? "wUSD"));
+        const seed = from === "taker" ? TAKER_SEED : from === "funder" ? FUNDER_SEED : RELAY_SEED;
+        const job = enqueue(`deposit-from-${from}`, async (j) => {
+          await withProveRetry(j, "deposit", () => session(`deposit-${from}`, async (walletResult) => {
+            const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
+            jlog(j, `deposit${token.family === "shielded" ? "Shielded" : "Unshielded"}(${amount} ${token.name}) from the ${from} wallet → ${accountId.slice(0, 18)}…`);
+            let tx;
+            if (token.family === "shielded") {
+              const coin = { nonce: crypto.getRandomValues(new Uint8Array(32)), color: hexToBytes(token.color), value: amount };
+              tx = await (mgr.handle.callTx as any).depositShielded(coin, hexToBytes(accountId));
+            } else {
+              tx = await (mgr.handle.callTx as any).depositUnshielded(hexToBytes(token.color), amount, hexToBytes(accountId));
+            }
+            j.txId = tx.public?.txId ?? null;
+            jlog(j, `deposited — tx=${j.txId ?? "?"}`);
+          }, { seed }));
+        });
         return json({ jobId: job.id });
       }
       if (path === "/api/faucet" && req.method === "POST") {

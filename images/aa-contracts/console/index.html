@@ -168,13 +168,14 @@
     </div>
 
     <div id="act-transfer-sh" class="actpane">
-      <p class="note warn">Selector 4 — internal SHIELDED transfer between AA accounts. Supported by
-      the contract; <b>not wired in this console yet</b> (UI preview).</p>
-      <form><div class="row">
-        <div><label>from (yours)</label><select disabled><option>—</option></select></div>
-        <div><label>to</label><select disabled><option>—</option></select></div>
-        <div><label>amount (shielded)</label><input value="100000" disabled></div>
-        <div><button type="button" disabled>Transfer shielded</button></div>
+      <p class="note">Selector 4 — internal SHIELDED transfer between AA accounts, signed by the
+      sender's EVM wallet.</p>
+      <form id="f-transfer-sh"><div class="row">
+        <div><label>from (yours)</label><select id="trs-from" required></select></div>
+        <div><label>to</label><select id="trs-to" required></select></div>
+        <div><label>token</label><select id="trs-token" required></select></div>
+        <div><label>amount (shielded)</label><input id="trs-amount" value="100000" pattern="[0-9]+" required></div>
+        <div><button type="submit" disabled id="op-transfer-sh">Transfer shielded</button></div>
       </div></form>
     </div>
 
@@ -191,15 +192,15 @@
     </div>
 
     <div id="act-withdraw-sh" class="actpane">
-      <p class="note warn">Selector 2 — withdraw the account's SHIELDED balance to a standard shielded
-      address (<code>mn_shield-addr…</code>: the coin public key rides the signed action, the
-      encryption key is supplied at build time). Supported by the contract, never yet run live
-      anywhere; <b>not wired in this console yet</b> (UI preview).</p>
-      <form><div class="row">
-        <div><label>account (yours)</label><select disabled><option>—</option></select></div>
-        <div><label>amount (shielded)</label><input value="50000" disabled></div>
-        <div style="flex:2"><label>recipient (mn_shield-addr…)</label><input disabled placeholder="mn_shield-addr_…"></div>
-        <div><button type="button" disabled>Withdraw shielded</button></div>
+      <p class="note">Selector 2 — withdraw the account's SHIELDED balance to a wallet. The
+      recipient's coin public key rides the signed action; their encryption key is resolved at
+      build time (which is why the recipient is one of the stack's wallets here).</p>
+      <form id="f-withdraw-sh"><div class="row">
+        <div><label>account (yours)</label><select id="wds-from" required></select></div>
+        <div><label>token</label><select id="wds-token" required></select></div>
+        <div><label>amount (shielded)</label><input id="wds-amount" value="50000" pattern="[0-9]+" required></div>
+        <div><label>recipient wallet</label><select id="wds-target"><option value="taker">taker</option><option value="relay">relay</option><option value="funder">funder</option></select></div>
+        <div><button type="submit" disabled id="op-withdraw-sh">Withdraw shielded</button></div>
       </div></form>
     </div>
 

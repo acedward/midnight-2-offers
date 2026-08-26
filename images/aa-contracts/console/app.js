@@ -96,6 +96,8 @@ async function loadInfo() {
   fillTokens("fs-token", "shielded", "wBTC");
   fillTokens("sw-give-token", "shielded", "wBTC");
   fillTokens("sw-want-token", "shielded", "wETH");
+  fillTokens("trs-token", "shielded", "wBTC");
+  fillTokens("wds-token", "shielded", "wBTC");
   $("s-relay").innerHTML = "";
   const pill = document.createElement("span");
   pill.className = `pill ${i.relay.funded ? "ok" : "warn"}`;
@@ -169,10 +171,15 @@ function renderAccounts() {
   fill("wd-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   fill("fs-account", state.accounts, "no accounts yet — register first");
   fill("sw-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
+  fill("trs-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
+  fill("trs-to", state.accounts, "no accounts yet");
+  fill("wds-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   $("op-register").disabled = !state.signer;
   $("op-transfer").disabled = !mineList.length;
   $("op-withdraw").disabled = !mineList.length;
   $("op-swap").disabled = !mineList.length;
+  $("op-transfer-sh").disabled = !mineList.length;
+  $("op-withdraw-sh").disabled = !mineList.length;
 }
 
 async function loadBook() {
@@ -293,6 +300,16 @@ $("f-withdraw").onsubmit = busy(() => prepareSignSubmit({
   kind: "withdraw", owner: state.signer,
   accountId: $("wd-from").value, amount: $("wd-amount").value,
   recipient: $("wd-recipient").value.trim(),
+}));
+$("f-transfer-sh").onsubmit = busy(() => prepareSignSubmit({
+  kind: "transfer-shielded", owner: state.signer,
+  accountId: $("trs-from").value, toAccountId: $("trs-to").value,
+  amount: $("trs-amount").value, token: $("trs-token").value,
+}));
+$("f-withdraw-sh").onsubmit = busy(() => prepareSignSubmit({
+  kind: "withdraw-shielded", owner: state.signer,
+  accountId: $("wds-from").value, amount: $("wds-amount").value,
+  token: $("wds-token").value, target: $("wds-target").value,
 }));
 $("f-fundsh").onsubmit = busy(async () => {
   const { jobId } = await api("/api/fund-shielded", {
