@@ -616,23 +616,39 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     // the action itself only carries the coin key.
     const token = tokenByName(String(body.token ?? "wBTC"));
     if (token.family !== "shielded") throw new Error("withdraw-shielded (selector 2) pays a SHIELDED balance — pick a shielded token");
-    const target = String(body.target ?? "taker");
-    if (!["taker", "relay", "funder"].includes(target)) throw new Error("target must be taker|relay|funder");
     const action = {
       primaryType: "WithdrawShielded", manager: manager32, accountId, owner,
       validUntil: deadline(), nonce,
       color: ("0x" + token.color) as Hex32, amount,
       recipientKind: 0n, recipient: "0x" + "0".repeat(64), // stamped below
     } as any;
-    // The recipient coin public key comes from the target wallet's keys — a
-    // quick facade build (no funds needed) resolves them.
-    const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
-    const keys = await walletZswapKeys(seed);
-    action.recipient = ("0x" + keys.coinPublicKey) as Hex32;
+    // The recipient's coin + encryption keys come from either a pasted
+    // mn_shield-addr… (the address IS both keys — the general form) or one of
+    // the stack's wallets, whose keys a quick facade build derives from seed.
+    const to = String(body.to ?? "").trim();
+    let coinPk: string, encPk: unknown, coinPkRaw: unknown, label: string;
+    if (to) {
+      if (!to.startsWith("mn_shield-addr")) throw new Error("recipient must be a mn_shield-addr… address for a shielded withdraw");
+      const dec: any = MidnightBech32m.parse(to).decode(ShieldedAddress as any, midnightNetworkConfig.id as any);
+      coinPk = String(dec.coinPublicKeyString()).toLowerCase();
+      coinPkRaw = coinPk;
+      encPk = String(dec.encryptionPublicKeyString()).toLowerCase();
+      label = `${to.slice(0, 26)}…`;
+    } else {
+      const target = String(body.target ?? "taker");
+      if (!["taker", "relay", "funder"].includes(target)) throw new Error("target must be taker|relay|funder — or pass `to` with a mn_shield-addr… address");
+      const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
+      const keys = await walletZswapKeys(seed);
+      coinPk = keys.coinPublicKey;
+      coinPkRaw = keys.coinPublicKeyRaw;
+      encPk = keys.encryptionPublicKeyRaw;
+      label = target;
+    }
+    action.recipient = ("0x" + coinPk) as Hex32;
     return {
       prep: { action, owner, kind, createdAt: Date.now(),
-        summary: { nonce: String(nonce), token: token.name, target, recipientCoinPk: keys.coinPublicKey },
-        encMapping: [keys.coinPublicKeyRaw, keys.encryptionPublicKeyRaw] },
+        summary: { nonce: String(nonce), token: token.name, target: label, recipientCoinPk: coinPk },
+        encMapping: [coinPkRaw, encPk] },
       accountId,
     };
   }

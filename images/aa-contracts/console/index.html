@@ -221,7 +221,8 @@
               <form id="f-wd"><div class="row">
                 <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
                 <div style="flex:2" id="wd-rec-un"><label>recipient (mn_addr… / 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
-                <div id="wd-rec-sh" style="display:none"><label>recipient wallet</label><select id="wd-target"><option value="taker">taker</option><option value="relay">relay</option><option value="funder">funder</option></select></div>
+                <div id="wd-rec-sh" style="display:none"><label>recipient</label><select id="wd-target"><option value="address">custom address…</option><option value="taker">taker wallet</option><option value="relay">relay wallet</option><option value="funder">funder wallet</option></select></div>
+                <div id="wd-shaddr-wrap" style="flex:2;display:none"><label>shielded address (mn_shield-addr…)</label><input id="wd-shaddr" placeholder="mn_shield-addr_undeployed1…"></div>
                 <div><button type="submit" id="op-withdraw">Withdraw</button></div>
               </div></form>
             </div>

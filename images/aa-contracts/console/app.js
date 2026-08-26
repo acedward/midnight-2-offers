@@ -395,17 +395,24 @@ function renderWithdraw() {
   $("wd-chosen-bal").textContent = `balance ${(acct?.balances ?? {})[tok.name] ?? "0"}`;
   $("wd-rec-un").style.display = sh ? "none" : "";
   $("wd-rec-sh").style.display = sh ? "" : "none";
+  $("wd-shaddr-wrap").style.display = sh && $("wd-target").value === "address" ? "" : "none";
   $("wd-doc").textContent = sh
-    ? "Selector 2 — shielded. The recipient's coin key rides the signed action and their ENCRYPTION key must be known when the relay builds the transaction, so the demo offers the stack's wallets (whose keys the relay derives from their seeds)."
+    ? "Selector 2 — shielded, to ANY mn_shield-addr… (the address carries the recipient's coin + encryption keys), or one of the stack's wallets."
     : "Selector 3 — unshielded, to any standard Midnight address (contract recipients are refused by design). Empty = relay wallet.";
 }
+$("wd-target").onchange = () => {
+  $("wd-shaddr-wrap").style.display = $("wd-target").value === "address" ? "" : "none";
+};
 $("wd-back").onclick = () => { state.wdToken = null; renderWithdraw(); };
 $("f-wd").onsubmit = busy(() => {
   const tok = (state.info?.tokens ?? []).find((t) => t.name === state.wdToken);
   const acct = currentAccount();
   return prepareSignSubmit(tok.family === "shielded"
     ? { kind: "withdraw-shielded", owner: state.signer, accountId: acct.accountId,
-        amount: $("wd-amount").value, token: tok.name, target: $("wd-target").value }
+        amount: $("wd-amount").value, token: tok.name,
+        ...($("wd-target").value === "address"
+          ? { to: $("wd-shaddr").value.trim() }
+          : { target: $("wd-target").value }) }
     : { kind: "withdraw", owner: state.signer, accountId: acct.accountId,
         amount: $("wd-amount").value, token: tok.name, recipient: $("wd-recipient").value.trim() });
 });
