@@ -224,6 +224,31 @@ config/     files mounted into containers (e.g. umbra-evm watch.json)
 .env.example  every host port and image tag, with the Midnight-standard defaults
 ```
 
+## Repositories this demo is built from
+
+The same table the console's **Repos** tab renders — every repo with the exact branch / commit /
+PR the stack pins. We manage the `acedward/*` and `effectstream/*` repos; the upstream rows at
+the bottom are consumed as-is.
+
+| repository | role | ref in use | latest PR / note |
+|---|---|---|---|
+| [acedward/midnight-2-offers](https://github.com/acedward/midnight-2-offers) | THIS demo stack — compose, scripts, wallets, the console | `main` | |
+| [acedward/AA-midnight-evm-experiment-v3](https://github.com/acedward/AA-midnight-evm-experiment-v3) | AA Manager + test Minter contracts, EIP-712 codec (baked as `/aa/aalib`) | `main @ 713a2021` (sha-pinned) | [PR #10](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10) — merged; pinned because key-breaking merges need an explicit redeploy |
+| [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) | the k=18 `execute` variation (MinoCrab-compiled alternative zkir — the `AA_EXECUTE_K18` overlay: 544 MiB prover key, ~2× faster proofs) | 00020 handoff artifacts (`AA_K18_DIR`) | equivalence-tested against compactc (56/56 + 4,888 tamper probes), unaudited compiler — dev chains only |
+| [effectstream/zswap-offerfiles-kernel](https://github.com/effectstream/zswap-offerfiles-kernel) | offer-files kernel + batcher (profile `offerfiles`) | branch `00001-ledger-v9` | [PR #49](https://github.com/effectstream/zswap-offerfiles-kernel/pull/49) — migrated from v8 to v9 |
+| [effectstream/zswap-offerfiles-kernel (solver)](https://github.com/effectstream/zswap-offerfiles-kernel/tree/00001-solver-v9) | COW solver, observation mode (profile `solver`; the kernel also builds from this branch when the solver runs) | branch `00001-solver-v9` | [PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50) — the v9 port, pointing into PR #48 |
+| [effectstream/effectstream](https://github.com/effectstream/effectstream) | the `@effectstream` npm packages every runner here uses | npm `@effectstream/*@0.200.2` · `mip-zswap-offer@0.4.0-v9.0` | [PR #882](https://github.com/effectstream/effectstream/pull/882) — merged; consumed from npm |
+| [acedward/UmbraDB](https://github.com/acedward/UmbraDB) | umbra-evm read-only Ethereum JSON-RPC (profile `evm`) | branch `feat/00006-json-rpc-review` | [PR #5](https://github.com/acedward/UmbraDB/pull/5) — home of the JSON-RPC work, everything merged into it |
+| [shieldedtech/midnight-intents-swaps](https://github.com/shieldedtech/midnight-intents-swaps) *(upstream)* | the Midnight Intents relay the solver would execute through | pinned `d444c83` — DROPPED (observation-only solver) | |
+| effectstream `templates/zswap-da` | the swap frontend (profile `frontend`) | LOCAL v9-migrated checkout (`ZSWAP_DA_TEMPLATE_DIR`) | upstream `templates/**` frozen on ledger-v8 (checked 2026-08-26: `v-next` has `@effectstream` 0.200.1 but still ledger-v8 + midnight-js 4) |
+| [acedward/web-memo](https://github.com/acedward/web-memo) | the Memos tab app (web-memo.pages.dev) | `main` (Cloudflare Pages) | |
+| [acedward/midnight-ledger](https://github.com/acedward/midnight-ledger) | the memo-v3 ledger fork Web Memo builds on | PR #2 branch | [PR #2](https://github.com/acedward/midnight-ledger/pull/2) — the memo format lives on a ledger fork, not upstream |
+| [acedward/dusk-wallet](https://github.com/acedward/dusk-wallet/tree/00001-utxo-pinning) | dusk wallet — UTxO pinning work | branch `00001-utxo-pinning` | PRIVATE repo — the link needs access |
+| midnightntwrk/midnight-node *(upstream)* | the Midnight node (core) | image `2.0.0-rc.4` | |
+| midnightntwrk/indexer-standalone *(upstream)* | the chain indexer (core; GraphQL v4) | image `4.4.0-rc.1` (linux/amd64 only) | |
+| midnightntwrk/proof-server *(upstream)* | proving — two instances: plain (kernel's v6 keys) + `_experimental` (the aa profile's zkir-v3/v7 keys) | images `9.0.0-rc.5` and `9.0.0-rc.5_experimental` | |
+| midnightntwrk/midnight-node-toolkit *(upstream)* | wallet funding / address derivation (scripts) | image `2.0.0-rc.4` (must match the node) | |
+
 ## Reference material
 
 The research basis for this stack lives in the `midnight-ref-ai` reference checkout

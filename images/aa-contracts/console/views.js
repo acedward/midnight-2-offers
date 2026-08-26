@@ -320,6 +320,12 @@ const REPOS = [
     notes: [["PR #10", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10", "merged to main; pinned because key-breaking merges need an explicit redeploy"]],
   },
   {
+    repo: "acedward/AA-midnight-evm-experiment-minocrab", url: "https://github.com/acedward/AA-midnight-evm-experiment-minocrab",
+    role: "the k=18 execute variation (MinoCrab-compiled alternative zkir — the AA_EXECUTE_K18 overlay: 544 MiB prover key, ~2x faster proofs)",
+    ref: "00020 handoff artifacts (AA_K18_DIR)",
+    notes: [["", "", "equivalence-tested against compactc (56/56 + 4,888 tamper probes); unaudited compiler — dev chains only"]],
+  },
+  {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
     role: "offer-files kernel + batcher (profile offerfiles)",
     ref: "branch 00001-ledger-v9",
