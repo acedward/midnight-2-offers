@@ -309,43 +309,41 @@ async function main() {
     (results["transfer"] as any).balances = { alice: String(a), bob: String(b) };
   }
 
-  // ── 5. PROBE (non-fatal): withdraw to an address (selector 3) ──────────────
-  // Proving is clean since AA PR #9, but the NODE currently rejects the
-  // submitted withdraw with `1010: Invalid Transaction: Custom error: 214`
-  // (first-ever live execution of this path; under investigation — the
-  // internal transfer above is unaffected). The probe records the current
-  // status without failing the suite.
-  try {
-    await session("withdraw-probe", async (walletResult) => {
-      const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-      const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-      const action = {
-        primaryType: "WithdrawUnshielded",
-        manager: manager32,
-        accountId: ALICE_ID,
-        owner: ALICE,
-        validUntil: DEADLINE,
-        nonce: 1n, // after the transfer
-        color: ("0x" + artifact.mints.unshielded.color) as Hex32,
-        amount: WITHDRAW,
-        recipientKind: 0n,
-        recipient: ("0x" + toHex(userAddr)) as Hex32,
-      } as any;
-      const sig = metamaskSign(ALICE_KEY, action, artifactDomain());
-      const prep = prepareEvmExecute(action, artifactDomain(), sig);
-      log(`withdraw ${WITHDRAW} alice→relay (selector 3): proving execute (k=19)…`);
-      const t0 = Date.now();
-      const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
-      log(`✅ withdrawn — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-      results["withdraw"] = { amount: String(WITHDRAW), tx: tx.public?.txId ?? null };
-    });
+  // ── 5. SEND — withdraw to an address (selector 3), DEFAULT flow ────────────
+  // The node's 214 rejection (recipient Either arms inverted in the claim —
+  // the 00016 investigation's confirmed root cause) was FIXED upstream in
+  // AA PR #10 ("Fix WithdrawUnshielded's 214 … BREAKING: execute keys
+  // regenerate"); withdraw is now a fatal assert like every other step.
+  // recipientKind 0 (a 32-byte user address) is the ONLY supported withdraw
+  // recipient — the contract now refuses contract-recipient payout shapes.
+  await session("withdraw", async (walletResult) => {
+    const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
+    const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+    const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
+    const action = {
+      primaryType: "WithdrawUnshielded",
+      manager: manager32,
+      accountId: ALICE_ID,
+      owner: ALICE,
+      validUntil: DEADLINE,
+      nonce: 1n, // after the transfer
+      color: ("0x" + artifact.mints.unshielded.color) as Hex32,
+      amount: WITHDRAW,
+      recipientKind: 0n,
+      recipient: ("0x" + toHex(userAddr)) as Hex32,
+    } as any;
+    const sig = metamaskSign(ALICE_KEY, action, artifactDomain());
+    const prep = prepareEvmExecute(action, artifactDomain(), sig);
+    log(`withdraw ${WITHDRAW} alice→relay (selector 3): proving execute (k=19)…`);
+    const t0 = Date.now();
+    const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
+    log(`✅ withdrawn — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+    results["withdraw"] = { amount: String(WITHDRAW), tx: tx.public?.txId ?? null };
+  });
+  {
     const a = await balanceOf(ALICE_ID);
-    log(`✅ ledger after withdraw: alice=${a}`);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    log(`withdraw probe: EXPECTED-BLOCKED (node) — ${msg.slice(0, 120)}`);
-    results["withdraw"] = { status: "blocked — node rejects with Custom error 214 (under investigation)" };
+    if (a !== DEPOSIT - TRANSFER - WITHDRAW) throw new Error(`alice ${a} != ${DEPOSIT - TRANSFER - WITHDRAW} after withdraw`);
+    log(`✅ ledger after withdraw: alice=${a} — withdraw exact`);
   }
 
   const report = {

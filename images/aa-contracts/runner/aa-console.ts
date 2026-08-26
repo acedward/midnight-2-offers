@@ -810,10 +810,10 @@ Bun.serve({
           },
           kernelUrl: KERNEL_URL,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
-          withdrawKnownIssue:
-            "withdraw currently lands a node rejection (Custom error 214 — recipient Either arm " +
-            "inversion in manager.compact, fix in flight upstream); the console submits it anyway " +
-            "and reports the node's verdict.",
+          // Withdraw's node-rejection (Custom error 214, recipient Either arm
+          // inversion) was FIXED upstream in AA PR #10 (713a2021…) and this
+          // stack pins a post-fix AA_REF — no known-issue banner any more.
+          withdrawKnownIssue: null,
         });
       }
       if (path === "/api/accounts") return json({ accounts: await listAccounts() });

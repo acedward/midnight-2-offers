@@ -43,11 +43,10 @@ E2E_SEED="${AA_E2E_SEED:-e2ee2e0000000000000000000000000000000000000000000000000
 log "funding the e2e relay wallet (unshielded NIGHT + DUST, no shielded)…"
 "$REPO_ROOT/scripts/fund-wallet.sh" "$E2E_SEED"
 
-log "running the E2E (register ×2 → mint → deposit; k=19 proofs — takes a while)…"
-log "(debit probes — withdraw/transfer — are blocked upstream; AA_E2E_PROBE_DEBITS=1 runs them anyway)"
-# AA_E2E_PROBE_DEBITS must be forwarded explicitly — `docker compose run` does
-# not inherit ambient host env (found by the 00015 investigation, P0-A).
+log "running the E2E (register ×2 → mint → deposit → transfer → withdraw; k=19 proofs — takes a while)…"
+# All five steps are DEFAULT, fatal asserts since the upstream fixes landed
+# (AA PR #9: transfer pool underflow; AA PR #10: withdraw 214). The old
+# AA_E2E_PROBE_DEBITS gate is gone with the probes it gated.
 AA_IMAGE="$E2E_IMAGE" "${COMPOSE[@]}" run --rm \
   -e AA_E2E_SEED="$E2E_SEED" \
-  -e AA_E2E_PROBE_DEBITS="${AA_E2E_PROBE_DEBITS:-}" \
   --entrypoint bun aa-deploy /aa/runner/aa-e2e.ts

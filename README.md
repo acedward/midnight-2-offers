@@ -64,9 +64,12 @@ operation; the page shows the live job log) and submits, paying fees from its ow
 DUST only, deliberately shielded-free). The console's image variant keeps the 1.1 GB
 `execute.prover` the deploy image prunes (`midnight-2-offers/aa-contracts:console`).
 `AA_CONSOLE_DEV_SIGNER=1` enables a built-in test signer for wallet-less CI runs; leave it off
-otherwise. Known limit inherited from upstream: **withdraw** currently lands a node rejection
-(`Custom error: 214`, a recipient-encoding defect in the Manager contract with a fix in flight)
-— the console submits it and reports the node's verdict honestly.
+otherwise. The one-time withdraw limitation is GONE: the node's `Custom error: 214` (a
+recipient-encoding defect in the Manager) was fixed upstream in
+[AA PR #10](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10) — pin `AA_REF`
+at or past its merge (`713a2021…`; key-breaking, so redeploy the contracts) and withdraw lands
+like every other operation. Withdraws go to a 32-byte user address only (`recipientKind 0`);
+the contract now refuses contract-recipient payout shapes by design.
 
 **The console's Swap panel publishes real offer files.** An `OpenSwapShielded` action (signed by
 the browser wallet like every other op) is proven as a Manager `execute` and then **never

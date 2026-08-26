@@ -93,7 +93,8 @@ async function loadInfo() {
   tp.className = `pill ${i.taker?.funded ? "ok" : "warn"}`;
   tp.textContent = i.taker?.funded ? `funded (${i.taker.balance})` : "UNFUNDED — fund-wallet.sh <aa-taker seed> --shielded-amount";
   $("s-taker").append(tp, ` ${short(i.taker?.address ?? "")}`);
-  $("withdraw-note").textContent = i.withdrawKnownIssue;
+  if (i.withdrawKnownIssue) $("withdraw-note").textContent = i.withdrawKnownIssue;
+  else $("withdraw-note").style.display = "none";
   $("devsigner-slot").style.display = i.devSigner ? "" : "none";
 }
 
