@@ -405,6 +405,22 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     // survive as a real {+give, −want} pair (same-colour legs would net out and
     // the kernel would reject NOT_A_SWAP). recipientKind 0 = open offer: zero
     // recipient, the give surplus floats for whoever settles.
+    //
+    // Friendly pre-check: the give leg spends the account's SHIELDED balance,
+    // and "balance 600000, give 1000 → account colour balance too low" has
+    // already confused one demo user whose 600000 was all unshielded.
+    {
+      const { ledger, Mod } = await readLedger();
+      const shKey = Mod.pureCircuits.shieldedKey(hexToBytes(accountId), hexToBytes(SHIELDED_COLOR_HEX));
+      const shBal = ledger.shieldedBalances.member(shKey) ? ledger.shieldedBalances.lookup(shKey) : 0n;
+      if (shBal < amount) {
+        throw new Error(
+          `the swap's give leg spends the account's SHIELDED balance, which is ${shBal} ` +
+          `(the unshielded balance does not count here) — run "Fund shielded" first, ` +
+          `then give at most that amount`,
+        );
+      }
+    }
     const giveAmount = amount;
     const wantAmount = BigInt(body.wantAmount ?? 0);
     if (wantAmount <= 0n) throw new Error("wantAmount must be a positive integer");
