@@ -121,6 +121,11 @@
   .opspane { display: none; } .opspane.active { display: block; }
   .opgroup { border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
   .opgroup h3 { margin: 0 0 4px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+  .balrow.pick { cursor: pointer; padding-left: 8px; padding-right: 8px; border-radius: 8px; }
+  .balrow.pick:hover { background: rgba(139, 92, 246, .14); }
+  .balrow.pick .chev { color: var(--dim); margin-left: 10px; }
+  .wdp-head { display: flex; align-items: center; gap: 10px; margin: 2px 0 6px; }
+  .wdp-head button { padding: 3px 10px; font-size: 12px; }
   .advanced { width: min(520px, 100%); }
   .advanced summary { cursor: pointer; color: var(--dim); font-size: 13px; padding: 4px 2px; }
   .activity-float {
@@ -200,30 +205,26 @@
 
         <div id="ops-withdraw" class="opspane active">
           <div class="opgroup">
-            <h3>Withdraw <span class="chip ush">unshielded</span></h3>
-            <p class="note">Selector 3 — send unshielded balance to any standard Midnight address
-            (contract recipients are refused by design).</p>
-            <p class="note warn" id="withdraw-note">—</p>
-            <form id="f-withdraw"><div class="row">
-              <div style="display:none"><label>account</label><select id="wd-from" required></select></div>
-              <div><label>token</label><select id="wd-token" required></select></div>
-              <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
-              <div style="flex:2"><label>recipient (mn_addr… / 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
-              <div><button type="submit" disabled id="op-withdraw">Withdraw</button></div>
-            </div></form>
-          </div>
-          <div class="opgroup">
-            <h3>Withdraw <span class="chip sh">shielded</span></h3>
-            <p class="note">Selector 2 — send shielded balance to a wallet. The recipient's coin key
-            rides the signed action; the encryption key is resolved at build time (so the recipient
-            is one of the stack's wallets here).</p>
-            <form id="f-withdraw-sh"><div class="row">
-              <div style="display:none"><label>account</label><select id="wds-from" required></select></div>
-              <div><label>token</label><select id="wds-token" required></select></div>
-              <div><label>amount</label><input id="wds-amount" value="50000" pattern="[0-9]+" required></div>
-              <div><label>recipient wallet</label><select id="wds-target"><option value="taker">taker</option><option value="relay">relay</option><option value="funder">funder</option></select></div>
-              <div><button type="submit" disabled id="op-withdraw-sh">Withdraw shielded</button></div>
-            </div></form>
+            <h3>Withdraw — pick a token</h3>
+            <p class="note">Sends balance out of the AA account. Pick what to withdraw — the
+            token's type decides where it can go.</p>
+            <div id="wd-list"></div>
+            <div id="wd-form" style="display:none">
+              <div class="wdp-head">
+                <button type="button" class="ghost" id="wd-back">‹ back</button>
+                <span class="tok" id="wd-chosen-name"></span>
+                <span class="chip" id="wd-chosen-chip"></span>
+                <span class="note" id="wd-chosen-bal" style="margin:0"></span>
+              </div>
+              <p class="note" id="wd-doc"></p>
+              <p class="note warn" id="withdraw-note">—</p>
+              <form id="f-wd"><div class="row">
+                <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
+                <div style="flex:2" id="wd-rec-un"><label>recipient (mn_addr… / 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
+                <div id="wd-rec-sh" style="display:none"><label>recipient wallet</label><select id="wd-target"><option value="taker">taker</option><option value="relay">relay</option><option value="funder">funder</option></select></div>
+                <div><button type="submit" id="op-withdraw">Withdraw</button></div>
+              </div></form>
+            </div>
           </div>
         </div>
 

@@ -99,8 +99,6 @@ async function loadInfo() {
   fillTokens("sw-give-token", "shielded", "wBTC");
   fillTokens("sw-want-token", "shielded", "wETH");
   fillTokens("trs-token", "shielded", "wBTC");
-  fillTokens("wds-token", "shielded", "wBTC");
-  fillTokens("wd-token", "unshielded", "wUSD");
   fillTokens("tr-token", "unshielded", "wUSD");
   { // faucet: ALL tokens
     const el = $("fc-token");
@@ -178,18 +176,15 @@ function renderAccounts() {
   const mineList = state.accounts.filter(mine);
   fill("tr-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   fill("tr-to", state.accounts, "no accounts yet");
-  fill("wd-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   fill("fs-account", state.accounts, "no accounts yet — register first");
   fill("sw-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   fill("trs-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   fill("trs-to", state.accounts, "no accounts yet");
-  fill("wds-from", mineList, state.signer ? "no accounts for this signer" : "connect a wallet first");
   $("op-register").disabled = !state.signer;
   $("op-transfer").disabled = !mineList.length;
   $("op-withdraw").disabled = !mineList.length;
   $("op-swap").disabled = !mineList.length;
   $("op-transfer-sh").disabled = !mineList.length;
-  $("op-withdraw-sh").disabled = !mineList.length;
   renderWallet();
 }
 
@@ -317,21 +312,65 @@ $("f-transfer").onsubmit = busy(() => prepareSignSubmit({
   accountId: $("tr-from").value, toAccountId: $("tr-to").value, amount: $("tr-amount").value,
   token: $("tr-token").value,
 }));
-$("f-withdraw").onsubmit = busy(() => prepareSignSubmit({
-  kind: "withdraw", owner: state.signer,
-  accountId: $("wd-from").value, amount: $("wd-amount").value,
-  recipient: $("wd-recipient").value.trim(), token: $("wd-token").value,
-}));
+
 $("f-transfer-sh").onsubmit = busy(() => prepareSignSubmit({
   kind: "transfer-shielded", owner: state.signer,
   accountId: $("trs-from").value, toAccountId: $("trs-to").value,
   amount: $("trs-amount").value, token: $("trs-token").value,
 }));
-$("f-withdraw-sh").onsubmit = busy(() => prepareSignSubmit({
-  kind: "withdraw-shielded", owner: state.signer,
-  accountId: $("wds-from").value, amount: $("wds-amount").value,
-  token: $("wds-token").value, target: $("wds-target").value,
-}));
+// Withdraw — token-first flow: pick from the list (name + family + balance),
+// THEN amount + recipient. One form serves both selectors; the family decides
+// which recipient control shows and which action kind is signed.
+function currentAccount() {
+  const mine = state.accounts.filter((a) => a.owner.toLowerCase() === state.signer);
+  return mine.find((a) => a.accountId === $("wl-account").value) ?? mine[0] ?? null;
+}
+function renderWithdraw() {
+  const tok = (state.info?.tokens ?? []).find((t) => t.name === state.wdToken);
+  $("wd-list").style.display = tok ? "none" : "";
+  $("wd-form").style.display = tok ? "" : "none";
+  const acct = currentAccount();
+  if (!tok) {
+    const list = $("wd-list");
+    list.innerHTML = "";
+    for (const t of state.info?.tokens ?? []) {
+      const row = document.createElement("div");
+      row.className = "balrow pick";
+      const name = document.createElement("span"); name.className = "tok"; name.textContent = t.name;
+      const chip = document.createElement("span");
+      chip.className = `chip ${t.family === "shielded" ? "sh" : "ush"}`;
+      chip.textContent = t.family;
+      const amt = document.createElement("span"); amt.className = "amt";
+      amt.textContent = (acct?.balances ?? {})[t.name] ?? "0";
+      const chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "›";
+      row.append(name, chip, amt, chev);
+      row.onclick = () => { state.wdToken = t.name; renderWithdraw(); };
+      list.append(row);
+    }
+    return;
+  }
+  const sh = tok.family === "shielded";
+  $("wd-chosen-name").textContent = tok.name;
+  const chip = $("wd-chosen-chip");
+  chip.className = `chip ${sh ? "sh" : "ush"}`;
+  chip.textContent = tok.family;
+  $("wd-chosen-bal").textContent = `balance ${(acct?.balances ?? {})[tok.name] ?? "0"}`;
+  $("wd-rec-un").style.display = sh ? "none" : "";
+  $("wd-rec-sh").style.display = sh ? "" : "none";
+  $("wd-doc").textContent = sh
+    ? "Selector 2 — shielded. The recipient's coin key rides the signed action and their ENCRYPTION key must be known when the relay builds the transaction, so the demo offers the stack's wallets (whose keys the relay derives from their seeds)."
+    : "Selector 3 — unshielded, to any standard Midnight address (contract recipients are refused by design). Empty = relay wallet.";
+}
+$("wd-back").onclick = () => { state.wdToken = null; renderWithdraw(); };
+$("f-wd").onsubmit = busy(() => {
+  const tok = (state.info?.tokens ?? []).find((t) => t.name === state.wdToken);
+  const acct = currentAccount();
+  return prepareSignSubmit(tok.family === "shielded"
+    ? { kind: "withdraw-shielded", owner: state.signer, accountId: acct.accountId,
+        amount: $("wd-amount").value, token: tok.name, target: $("wd-target").value }
+    : { kind: "withdraw", owner: state.signer, accountId: acct.accountId,
+        amount: $("wd-amount").value, token: tok.name, recipient: $("wd-recipient").value.trim() });
+});
 $("f-faucet").onsubmit = busy(async () => {
   const { jobId } = await api("/api/faucet", {
     token: $("fc-token").value, amount: $("fc-amount").value, target: $("fc-target").value,
@@ -463,7 +502,8 @@ function renderWallet() {
     row.append(tok, chip, amt); list.append(row);
   }
   $("wl-nonce").textContent = acct.nonce;
-  for (const id of ["tr-from", "trs-from", "wd-from", "wds-from", "sw-from"]) {
+  renderWithdraw();
+  for (const id of ["tr-from", "trs-from", "sw-from"]) {
     const el = $(id);
     if ([...el.options].some((o) => o.value === acct.accountId)) el.value = acct.accountId;
   }
