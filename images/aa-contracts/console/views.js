@@ -368,6 +368,12 @@ const REPOS = [
     notes: [["PR #2", "https://github.com/acedward/midnight-ledger/pull/2", "the memo format lives on a ledger fork, not upstream"]],
   },
   {
+    repo: "acedward/dusk-wallet", url: "https://github.com/acedward/dusk-wallet/tree/00001-utxo-pinning",
+    role: "dusk wallet — UTxO pinning work",
+    ref: "branch 00001-utxo-pinning",
+    notes: [["", "", "PRIVATE repo — the link needs access"]],
+  },
+  {
     repo: "midnightntwrk/midnight-node", muted: true, url: "https://hub.docker.com/r/midnightntwrk/midnight-node",
     role: "the Midnight node (core)",
     ref: "image 2.0.0-rc.4",
