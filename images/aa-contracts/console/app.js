@@ -53,6 +53,8 @@ window.ethereum?.on?.("accountsChanged", (accounts) => {
 
 function onSignerChanged() {
   $("w-addr").textContent = state.signer ?? "—";
+  $("w-addr").title = state.signer ?? "";
+  $("w-addr").style.display = state.signer ? "" : "none";
   setStatus(
     state.signer ? "ok" : "dim",
     state.signer ? (state.signerKind === "dev" ? "dev signer (testing)" : "connected") : "disconnected",
@@ -98,6 +100,8 @@ async function loadInfo() {
   fillTokens("sw-want-token", "shielded", "wETH");
   fillTokens("trs-token", "shielded", "wBTC");
   fillTokens("wds-token", "shielded", "wBTC");
+  fillTokens("wd-token", "unshielded", "wUSD");
+  fillTokens("tr-token", "unshielded", "wUSD");
   { // faucet: ALL tokens
     const el = $("fc-token");
     el.innerHTML = "";
@@ -116,7 +120,7 @@ async function loadInfo() {
   $("s-taker").append(tp, ` ${short(i.taker?.address ?? "")}`);
   if (i.withdrawKnownIssue) $("withdraw-note").textContent = i.withdrawKnownIssue;
   else $("withdraw-note").style.display = "none";
-  $("devsigner-slot").style.display = i.devSigner ? "" : "none";
+  $("use-dev").style.display = i.devSigner ? "" : "none";
 }
 
 async function loadAccounts() {
@@ -186,6 +190,7 @@ function renderAccounts() {
   $("op-swap").disabled = !mineList.length;
   $("op-transfer-sh").disabled = !mineList.length;
   $("op-withdraw-sh").disabled = !mineList.length;
+  renderWallet();
 }
 
 async function loadBook() {
@@ -241,6 +246,7 @@ async function loadBook() {
 // ── jobs ─────────────────────────────────────────────────────────────────────
 
 function renderJob(job) {
+  showActivity();
   const lines = job.log.length ? job.log.join("\n") : "(queued…)";
   for (const [logId, stateId] of [["joblog", "job-state"], ["joblog2", "job-state2"]]) {
     const el = $(logId);
@@ -274,9 +280,12 @@ async function watchJob(jobId) {
   return job;
 }
 
+const showActivity = () => $("activity-aa")?.classList.remove("collapsed");
+
 const busy = (fn) => async (ev) => {
   ev?.preventDefault?.();
   try { await fn(); } catch (e) {
+    showActivity();
     $("joblog").textContent = `ERROR: ${e?.message ?? e}`;
     $("job-state").innerHTML = '<span class="pill err">error</span>';
   }
@@ -286,6 +295,7 @@ const busy = (fn) => async (ev) => {
 
 async function prepareSignSubmit(body) {
   const prep = await api("/api/prepare", body);
+  showActivity();
   $("joblog").textContent = `waiting for the wallet to sign ${body.kind}…`;
   const signature = await signPrepared(prep);
   const { jobId } = await api("/api/submit", { prepId: prep.prepId, signature });
@@ -305,11 +315,12 @@ $("f-fund").onsubmit = busy(async () => {
 $("f-transfer").onsubmit = busy(() => prepareSignSubmit({
   kind: "transfer", owner: state.signer,
   accountId: $("tr-from").value, toAccountId: $("tr-to").value, amount: $("tr-amount").value,
+  token: $("tr-token").value,
 }));
 $("f-withdraw").onsubmit = busy(() => prepareSignSubmit({
   kind: "withdraw", owner: state.signer,
   accountId: $("wd-from").value, amount: $("wd-amount").value,
-  recipient: $("wd-recipient").value.trim(),
+  recipient: $("wd-recipient").value.trim(), token: $("wd-token").value,
 }));
 $("f-transfer-sh").onsubmit = busy(() => prepareSignSubmit({
   kind: "transfer-shielded", owner: state.signer,
@@ -337,6 +348,7 @@ $("f-fundsh").onsubmit = busy(async () => {
 $("f-swap").onsubmit = busy(async () => {
   // Step 1: sign + contract call + prove — the result is the offer's bech32m,
   // shown below; publishing is the explicit second step.
+  showActivity();
   $("swap-built").style.display = "none";
   const prep = await api("/api/prepare", {
     kind: "swap", owner: state.signer,
@@ -414,14 +426,59 @@ $("f-pure").onsubmit = busy(async () => {
   }
 });
 
-// The Actions panel's sub-segments (one per Manager `execute` action). Purely
-// a view toggle — the wired forms keep their own submit handlers above, and
-// the two shielded panes are inert UI previews.
-$("act-seg").addEventListener("click", (ev) => {
-  const b = ev.target.closest("button[data-act]");
+// ── AA Wallet view state ─────────────────────────────────────────────────────
+// The wallet card is a state machine: disconnected → connect only; connected
+// but unregistered → warning + Register; registered → balances + operations.
+// The per-operation "from account" selects stay in the DOM (hidden) and are
+// kept in sync with the wallet's account picker.
+
+function renderWallet() {
+  const connected = !!state.signer;
+  $("wl-connect").style.display = connected ? "none" : "";
+  $("wl-main").style.display = connected ? "" : "none";
+  if (!connected) return;
+  const mine = state.accounts.filter((a) => a.owner.toLowerCase() === state.signer);
+  $("wl-warn").style.display = mine.length ? "none" : "";
+  $("wl-balances").style.display = mine.length ? "" : "none";
+  if (!mine.length) return;
+  const sel = $("wl-account");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  for (const a of mine) sel.append(new Option(`Account ${short(a.accountId)}`, a.accountId));
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  const acct = mine.find((a) => a.accountId === sel.value) ?? mine[0];
+  const list = $("wl-ballist");
+  list.innerHTML = "";
+  // All the stack's demo tokens, zeros included — these are the executed reads
+  // (the relay's indexer lookups behind /api/accounts).
+  for (const t of state.info?.tokens ?? []) {
+    const row = document.createElement("div"); row.className = "balrow";
+    const tok = document.createElement("span"); tok.className = "tok"; tok.textContent = t.name;
+    const chip = document.createElement("span");
+    chip.className = `chip ${t.family === "shielded" ? "sh" : "ush"}`;
+    chip.textContent = t.family;
+    const amt = document.createElement("span"); amt.className = "amt";
+    amt.textContent = (acct.balances ?? {})[t.name] ?? "0";
+    row.append(tok, chip, amt); list.append(row);
+  }
+  $("wl-nonce").textContent = acct.nonce;
+  for (const id of ["tr-from", "trs-from", "wd-from", "wds-from", "sw-from"]) {
+    const el = $(id);
+    if ([...el.options].some((o) => o.value === acct.accountId)) el.value = acct.accountId;
+  }
+}
+$("wl-account").onchange = renderWallet;
+$("wl-refresh").onclick = busy(loadAccounts);
+$("wl-more").onclick = busy(() => prepareSignSubmit({ kind: "register", owner: state.signer }));
+$("act-head").onclick = () => $("activity-aa").classList.toggle("collapsed");
+
+// Operation groups: Withdraw | Transfer | Publish Offer. Purely a view toggle
+// — the wired forms keep their own submit handlers above.
+$("ops-seg").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-ops]");
   if (!b) return;
-  for (const x of document.querySelectorAll("#act-seg button")) x.classList.toggle("active", x === b);
-  for (const p of document.querySelectorAll(".actpane")) p.classList.toggle("active", p.id === `act-${b.dataset.act}`);
+  for (const x of document.querySelectorAll("#ops-seg button")) x.classList.toggle("active", x === b);
+  for (const p of document.querySelectorAll(".opspane")) p.classList.toggle("active", p.id === `ops-${b.dataset.ops}`);
 });
 
 // ── boot ─────────────────────────────────────────────────────────────────────

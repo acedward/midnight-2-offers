@@ -82,6 +82,52 @@
   .dot-up { background: var(--ok); } .dot-down { background: var(--err); } .dot-absent { background: #4a5563; }
   .ladder { border: 1px solid var(--edge); border-radius: 6px; padding: 8px 12px; min-width: 220px; }
   .ladder h3 { margin: 0 0 6px; font: 600 12px var(--mono); color: var(--accent); overflow-wrap: anywhere; }
+
+  /* ── AA Wallet (view-aa) — its own product identity, distinct from the console ── */
+  #view-aa.active { display: flex; flex-direction: column; align-items: center; gap: 16px; padding-bottom: 150px; }
+  .wallet {
+    width: min(520px, 100%);
+    --bg: #140e26; --panel: #1e1538; --edge: #3a2d63; --ink: #f1edfc; --dim: #a79fc7; --accent: #b197fc;
+    background: linear-gradient(165deg, #1b1233 0%, #251a48 55%, #1c1440 100%);
+    border: 1px solid var(--edge); border-radius: 20px; padding: 20px 20px 14px;
+    color: var(--ink); box-shadow: 0 22px 60px rgba(15, 8, 40, .6);
+  }
+  .wl-head { display: flex; align-items: center; gap: 12px; }
+  .wl-mark { width: 38px; height: 38px; border-radius: 12px; background: linear-gradient(140deg, #8b5cf6, #5b21b6); display: flex; align-items: center; justify-content: center; font-size: 19px; color: #fff; }
+  .wl-name { font-size: 17px; font-weight: 700; letter-spacing: .01em; }
+  .wl-sub { font-size: 11.5px; color: var(--dim); }
+  .wl-addr { margin-left: auto; font: 11px var(--mono); background: #2b2052; border: 1px solid var(--edge); color: var(--ink); border-radius: 99px; padding: 4px 10px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wl-status { font-size: 11px; margin: 8px 0 10px; }
+  .wl-cta { width: 100%; padding: 12px; border-radius: 12px; font-size: 15px; background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff; margin-top: 10px; }
+  .wl-cta.ghost { background: transparent; color: var(--accent); border: 1px solid var(--edge); }
+  .wl-warn { display: flex; gap: 10px; align-items: center; background: rgba(230, 180, 90, .1); border: 1px solid #8a6d2f; color: var(--warn); border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
+  .wl-warn button { margin-left: auto; background: var(--warn); color: #201703; white-space: nowrap; }
+  .wl-balcard { background: rgba(10, 6, 24, .45); border: 1px solid var(--edge); border-radius: 14px; padding: 12px 14px; margin-bottom: 12px; }
+  .wl-balhead { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .wl-balhead select { flex: 1; background: #150e2c; }
+  .wl-balhead button { padding: 6px 10px; font-size: 12px; }
+  .balrow { display: flex; align-items: baseline; gap: 8px; padding: 7px 2px; border-bottom: 1px solid rgba(58, 45, 99, .5); }
+  .balrow:last-of-type { border-bottom: 0; }
+  .balrow .tok { font-weight: 650; font-size: 14px; }
+  .chip { font-size: 9.5px; font-weight: 700; letter-spacing: .07em; border-radius: 4px; padding: 1px 5px; text-transform: uppercase; }
+  .chip.sh { color: #c4a8ff; background: rgba(139, 92, 246, .18); }
+  .chip.ush { color: #9aa7bd; background: rgba(120, 135, 160, .18); }
+  .balrow .amt { margin-left: auto; font: 600 15px var(--mono); font-variant-numeric: tabular-nums; }
+  .wl-nonce { font-size: 11px; color: var(--dim); margin-top: 6px; text-align: right; font-family: var(--mono); }
+  .wl-ops { display: flex; width: 100%; margin: 2px 0 12px; border: 1px solid var(--edge); border-radius: 10px; overflow: hidden; }
+  .wl-ops button { flex: 1; background: transparent; color: var(--dim); border: 0; border-radius: 0; padding: 9px 4px; font: 600 12.5px system-ui; }
+  .wl-ops button + button { border-left: 1px solid var(--edge); }
+  .wl-ops button.active { background: rgba(139, 92, 246, .25); color: var(--ink); }
+  .opspane { display: none; } .opspane.active { display: block; }
+  .opgroup { border: 1px solid var(--edge); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+  .opgroup h3 { margin: 0 0 4px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; }
+  .advanced { width: min(520px, 100%); }
+  .advanced summary { cursor: pointer; color: var(--dim); font-size: 13px; padding: 4px 2px; }
+  .activity-float {
+    position: fixed; right: 18px; bottom: 18px; width: min(440px, calc(100vw - 36px));
+    z-index: 40; box-shadow: 0 14px 40px rgba(0, 0, 0, .65); margin: 0;
+  }
+  .activity-float.collapsed #joblog { display: none; }
 </style>
 </head>
 <body>
@@ -100,132 +146,154 @@
   </nav>
 </header>
 <main id="view-aa" class="view active">
-  <section>
-    <h2>EVM wallet</h2>
-    <div class="row">
-      <div><button id="connect">Connect wallet</button></div>
-      <div id="devsigner-slot" style="display:none"><button id="use-dev" class="ghost">Use built-in dev signer</button></div>
+  <div class="wallet">
+    <div class="wl-head">
+      <div class="wl-mark">◈</div>
+      <div><div class="wl-name">AA Wallet</div><div class="wl-sub">account abstraction on Midnight</div></div>
+      <div id="w-addr" class="wl-addr" style="display:none" title="connected EVM signer">—</div>
     </div>
-    <dl class="kv" style="margin-top:10px">
-      <dt>signer</dt><dd id="w-addr">—</dd>
-      <dt>status</dt><dd id="w-status"><span class="pill dim">disconnected</span></dd>
-    </dl>
-    <p class="note">Any injected EIP-1193 wallet works (MetaMask, Rabby, …). It only ever signs
-    typed data — no chain, no gas, no funds needed on the EVM side.</p>
-  </section>
+    <div id="w-status" class="wl-status"><span class="pill dim">disconnected</span></div>
 
-  <section>
-    <h2>Register account</h2>
-
-    <p class="note">Creates an AA account owned by the connected EVM address (fresh random salt →
-    fresh account id). Signed by your wallet, executed by the relay.</p>
-    <div class="row" style="margin-top:8px"><div><button id="op-register" disabled>Register</button></div></div>
-  </section>
-
-
-  <section class="wide">
-    <h2>Actions — the Manager's <code>execute</code></h2>
-    <nav class="seg small" id="act-seg">
-      <button data-act="transfer" class="active">Transfer</button>
-      <button data-act="transfer-sh">Transfer (shielded)</button>
-      <button data-act="withdraw">Withdraw</button>
-      <button data-act="withdraw-sh">Withdraw (shielded)</button>
-      <button data-act="swap">Swap — publish offer</button>
-    </nav>
-
-    <div id="act-transfer" class="actpane active">
-      <p class="note">Selector 5 — internal transfer between AA accounts, signed by the sender's EVM wallet.</p>
-      <form id="f-transfer"><div class="row">
-        <div><label>from (yours)</label><select id="tr-from" required></select></div>
-        <div><label>to</label><select id="tr-to" required></select></div>
-        <div><label>amount</label><input id="tr-amount" value="250000" pattern="[0-9]+" required></div>
-        <div><button type="submit" disabled id="op-transfer">Transfer</button></div>
-      </div></form>
+    <div id="wl-connect">
+      <p class="note" style="margin-top:2px">Funds live on Midnight, inside the Manager contract. Your EVM
+      wallet only ever signs typed data — no chain, no gas, no funds needed on the EVM side; the
+      stack's relay proves each action (~1–2 min) and submits it.</p>
+      <button id="connect" class="wl-cta">Connect wallet</button>
+      <button id="use-dev" class="wl-cta ghost" style="display:none">Use built-in dev signer</button>
+      <p class="note" style="text-align:center">Any injected EIP-1193 wallet works (MetaMask, Rabby, …).</p>
     </div>
 
-    <div id="act-transfer-sh" class="actpane">
-      <p class="note">Selector 4 — internal SHIELDED transfer between AA accounts, signed by the
-      sender's EVM wallet.</p>
-      <form id="f-transfer-sh"><div class="row">
-        <div><label>from (yours)</label><select id="trs-from" required></select></div>
-        <div><label>to</label><select id="trs-to" required></select></div>
-        <div><label>token</label><select id="trs-token" required></select></div>
-        <div><label>amount (shielded)</label><input id="trs-amount" value="100000" pattern="[0-9]+" required></div>
-        <div><button type="submit" disabled id="op-transfer-sh">Transfer shielded</button></div>
-      </div></form>
-    </div>
+    <div id="wl-main" style="display:none">
+      <div id="wl-warn" class="wl-warn" style="display:none">
+        <span><b>Not registered</b> — this address owns no AA account yet. Register creates one
+        (fresh salt → fresh account id), signed by your wallet.</span>
+        <button id="op-register" disabled>Register</button>
+      </div>
 
-    <div id="act-withdraw" class="actpane">
-      <p class="note">Selector 3 — withdraw the account's unshielded balance to any standard Midnight
-      address (a 32-byte user address; contract recipients are refused by design).</p>
-      <p class="note warn" id="withdraw-note">—</p>
-      <form id="f-withdraw"><div class="row">
-        <div><label>account (yours)</label><select id="wd-from" required></select></div>
-        <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
-        <div style="flex:2"><label>recipient (mn_addr… or 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
-        <div><button type="submit" disabled id="op-withdraw">Withdraw</button></div>
-      </div></form>
-    </div>
-
-    <div id="act-withdraw-sh" class="actpane">
-      <p class="note">Selector 2 — withdraw the account's SHIELDED balance to a wallet. The
-      recipient's coin public key rides the signed action; their encryption key is resolved at
-      build time (which is why the recipient is one of the stack's wallets here).</p>
-      <form id="f-withdraw-sh"><div class="row">
-        <div><label>account (yours)</label><select id="wds-from" required></select></div>
-        <div><label>token</label><select id="wds-token" required></select></div>
-        <div><label>amount (shielded)</label><input id="wds-amount" value="50000" pattern="[0-9]+" required></div>
-        <div><label>recipient wallet</label><select id="wds-target"><option value="taker">taker</option><option value="relay">relay</option><option value="funder">funder</option></select></div>
-        <div><button type="submit" disabled id="op-withdraw-sh">Withdraw shielded</button></div>
-      </div></form>
-    </div>
-
-    <div id="act-swap" class="actpane">
-      <p class="note">Selector 6 — opens a shielded swap on the Manager, signed by your EVM wallet. The
-      proven transaction is <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the
-      offer, published to the offer-files kernel as a <code>swapoffer1…</code> blob for a taker (or
-      the solver) to settle. The give leg spends the account's <b>shielded</b> balance — fund it
-      first via <b>Fund account → Fund shielded</b> above.</p>
-      <form id="f-swap"><div class="row">
-        <div><label>account (yours)</label><select id="sw-from" required></select></div>
-        <div><label>give token</label><select id="sw-give-token" required></select></div>
-        <div><label>give amount</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
-        <div><label>want token</label><select id="sw-want-token" required></select></div>
-        <div><label>want amount</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
-        <div><button type="submit" disabled id="op-swap">1 · Build offer</button></div>
-      </div></form>
-      <div id="swap-built" style="display:none;margin-top:12px">
-        <label>built offer (MIP-0005 bech32m) — <span id="swap-built-meta"></span></label>
-        <textarea id="swap-blob" readonly rows="5" style="width:100%;background:var(--bg);color:var(--dim);border:1px solid var(--edge);border-radius:6px;font:11px/1.5 var(--mono);padding:8px 10px;resize:vertical"></textarea>
-        <div class="row" style="margin-top:8px">
-          <div><button type="button" id="op-publish">2 · Publish to the offer-file kernel</button></div>
-          <div><button type="button" class="ghost" id="op-copy-blob">Copy blob</button></div>
-          <div style="flex:2"><span id="publish-result" class="note"></span></div>
+      <div id="wl-balances" style="display:none">
+        <div class="wl-balcard">
+          <div class="wl-balhead">
+            <select id="wl-account" title="your AA accounts"></select>
+            <button id="wl-refresh" class="ghost" title="re-read every value from the ledger">↻ Refresh</button>
+          </div>
+          <div id="wl-ballist"></div>
+          <div class="wl-nonce">account nonce <span id="wl-nonce">0</span></div>
         </div>
+
+        <nav class="wl-ops" id="ops-seg">
+          <button data-ops="withdraw" class="active">Withdraw Tokens</button>
+          <button data-ops="transfer">Transfer Tokens</button>
+          <button data-ops="offer">Publish Offer</button>
+        </nav>
+
+        <div id="ops-withdraw" class="opspane active">
+          <div class="opgroup">
+            <h3>Withdraw <span class="chip ush">unshielded</span></h3>
+            <p class="note">Selector 3 — send unshielded balance to any standard Midnight address
+            (contract recipients are refused by design).</p>
+            <p class="note warn" id="withdraw-note">—</p>
+            <form id="f-withdraw"><div class="row">
+              <div style="display:none"><label>account</label><select id="wd-from" required></select></div>
+              <div><label>token</label><select id="wd-token" required></select></div>
+              <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
+              <div style="flex:2"><label>recipient (mn_addr… / 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
+              <div><button type="submit" disabled id="op-withdraw">Withdraw</button></div>
+            </div></form>
+          </div>
+          <div class="opgroup">
+            <h3>Withdraw <span class="chip sh">shielded</span></h3>
+            <p class="note">Selector 2 — send shielded balance to a wallet. The recipient's coin key
+            rides the signed action; the encryption key is resolved at build time (so the recipient
+            is one of the stack's wallets here).</p>
+            <form id="f-withdraw-sh"><div class="row">
+              <div style="display:none"><label>account</label><select id="wds-from" required></select></div>
+              <div><label>token</label><select id="wds-token" required></select></div>
+              <div><label>amount</label><input id="wds-amount" value="50000" pattern="[0-9]+" required></div>
+              <div><label>recipient wallet</label><select id="wds-target"><option value="taker">taker</option><option value="relay">relay</option><option value="funder">funder</option></select></div>
+              <div><button type="submit" disabled id="op-withdraw-sh">Withdraw shielded</button></div>
+            </div></form>
+          </div>
+        </div>
+
+        <div id="ops-transfer" class="opspane">
+          <div class="opgroup">
+            <h3>Transfer <span class="chip ush">unshielded</span></h3>
+            <p class="note">Selector 5 — internal transfer between AA accounts.</p>
+            <form id="f-transfer"><div class="row">
+              <div style="display:none"><label>from</label><select id="tr-from" required></select></div>
+              <div><label>to account</label><select id="tr-to" required></select></div>
+              <div><label>token</label><select id="tr-token" required></select></div>
+              <div><label>amount</label><input id="tr-amount" value="250000" pattern="[0-9]+" required></div>
+              <div><button type="submit" disabled id="op-transfer">Transfer</button></div>
+            </div></form>
+          </div>
+          <div class="opgroup">
+            <h3>Transfer <span class="chip sh">shielded</span></h3>
+            <p class="note">Selector 4 — internal shielded transfer between AA accounts.</p>
+            <form id="f-transfer-sh"><div class="row">
+              <div style="display:none"><label>from</label><select id="trs-from" required></select></div>
+              <div><label>to account</label><select id="trs-to" required></select></div>
+              <div><label>token</label><select id="trs-token" required></select></div>
+              <div><label>amount</label><input id="trs-amount" value="100000" pattern="[0-9]+" required></div>
+              <div><button type="submit" disabled id="op-transfer-sh">Transfer shielded</button></div>
+            </div></form>
+          </div>
+        </div>
+
+        <div id="ops-offer" class="opspane">
+          <div class="opgroup">
+            <h3>Publish offer <span class="chip sh">shielded swap</span></h3>
+            <p class="note">Selector 6 — opens a shielded swap on the Manager. The proven transaction is
+            <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the offer, published to
+            the offer-files kernel for a taker (or the solver) to settle. The give leg spends the
+            account's <b>shielded</b> balance — fund it on the <b>AA infra</b> tab first.</p>
+            <form id="f-swap"><div class="row">
+              <div style="display:none"><label>account</label><select id="sw-from" required></select></div>
+              <div><label>give token</label><select id="sw-give-token" required></select></div>
+              <div><label>give amount</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
+              <div><label>want token</label><select id="sw-want-token" required></select></div>
+              <div><label>want amount</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
+              <div><button type="submit" disabled id="op-swap">1 · Build offer</button></div>
+            </div></form>
+            <div id="swap-built" style="display:none;margin-top:12px">
+              <label>built offer (MIP-0005 bech32m) — <span id="swap-built-meta"></span></label>
+              <textarea id="swap-blob" readonly rows="5" style="width:100%;background:var(--bg);color:var(--dim);border:1px solid var(--edge);border-radius:6px;font:11px/1.5 var(--mono);padding:8px 10px;resize:vertical"></textarea>
+              <div class="row" style="margin-top:8px">
+                <div><button type="button" id="op-publish">2 · Publish to the offer-file kernel</button></div>
+                <div><button type="button" class="ghost" id="op-copy-blob">Copy blob</button></div>
+                <div style="flex:2"><span id="publish-result" class="note"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="note" style="text-align:center;margin-top:8px"><a href="#" id="wl-more">+ register another account</a></p>
       </div>
     </div>
-  </section>
+  </div>
 
-  <section class="wide">
-    <h2>Read &amp; pure functions</h2>
-    <p class="note">The Manager's non-mutating surface: <b>pure</b> functions run the compiled
-    circuit module locally, <b>read</b> functions are ledger lookups through the indexer. No
-    signature, no proof, instant.</p>
-    <form id="f-pure"><div class="row">
-      <div><label>function</label><select id="pure-fn"></select></div>
-      <div id="pure-arg0-wrap" style="flex:2"><label id="pure-arg0-label">arg 1</label><input id="pure-arg0"></div>
-      <div id="pure-arg1-wrap" style="flex:2"><label id="pure-arg1-label">arg 2</label><input id="pure-arg1"></div>
-      <div><button type="submit" class="ghost">Run</button></div>
-    </div></form>
-    <p class="note" id="pure-doc"></p>
-    <div id="pure-result" style="background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:8px 12px;margin-top:8px;overflow-wrap:anywhere;color:var(--dim)">—</div>
-  </section>
+  <details class="advanced">
+    <summary>Read &amp; pure functions</summary>
+    <section class="wide" style="margin-top:8px">
+      <p class="note">The Manager's non-mutating surface: <b>pure</b> functions run the compiled
+      circuit module locally, <b>read</b> functions are ledger lookups through the indexer. No
+      signature, no proof, instant.</p>
+      <form id="f-pure"><div class="row">
+        <div><label>function</label><select id="pure-fn"></select></div>
+        <div id="pure-arg0-wrap" style="flex:2"><label id="pure-arg0-label">arg 1</label><input id="pure-arg0"></div>
+        <div id="pure-arg1-wrap" style="flex:2"><label id="pure-arg1-label">arg 2</label><input id="pure-arg1"></div>
+        <div><button type="submit" class="ghost">Run</button></div>
+      </div></form>
+      <p class="note" id="pure-doc"></p>
+      <div id="pure-result" style="background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:8px 12px;margin-top:8px;overflow-wrap:anywhere;color:var(--dim)">—</div>
+    </section>
+  </details>
 
-
-
-  <section class="wide activity-sticky">
-    <h2>Activity <span id="job-state"></span></h2>
-    <div id="joblog">idle — actions appear here (proving an execute takes ~1–2 minutes; the log keeps you honest company)</div>
+  <!-- Floating, deliberately OUTSIDE the wallet card: relay job progress. -->
+  <section id="activity-aa" class="activity-float collapsed">
+    <h2 id="act-head" style="cursor:pointer;margin:0">Activity <span id="job-state"></span>
+      <span style="float:right;color:var(--dim)">▾</span></h2>
+    <div id="joblog" style="margin-top:10px">idle — actions appear here (proving an execute takes ~1–2 minutes)</div>
   </section>
 </main>
 

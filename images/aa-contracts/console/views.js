@@ -5,7 +5,7 @@
 // ── router ───────────────────────────────────────────────────────────────────
 
 const HEAD_NOTES = {
-  aa: "Your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (~1–2 min) through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.",
+  aa: "The AA Wallet — your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (~1–2 min) and submits to Midnight. The wallet never sees a Midnight key.",
   aainfra: "The AA plumbing: the stack's contracts and wallets, token faucets and funding, and every account on the Manager.",
   solver: "The offer book, and the ported COW solver observed live over its relay WebSocket boundary — received by a demo sink that can never send it work.",
   infra: "Every component of the compose stack, probed over the internal network by the console's relay service.",
@@ -237,14 +237,21 @@ const INFRA_EDGES = [
   // The one store (T11.4): the kernel's offer book and umbra's index.
   ["kernel", "postgres"], ["evmRpc", "postgres"],
 ];
+// Short names for the table (long text hover-only — it was forcing a scroll).
 const INFRA_LABELS = {
-  console: "aa-console backend — the relay: serves the page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this very table", node: "midnight node", indexer: "indexer",
-  proofServer: "proof-server (plain)", aaProofServer: "aa-proof-server (experimental)",
-  kernel: "offer-files kernel (sync node :9999; contract deployed once per stack, address persisted)",
-  postgres: "postgres — the ONE store for the stack: the kernel's offer book (db offerfiles) and umbra's index (db umbra). No host port; probed at TCP level",
-  kernelSync: "kernel sync", batcher: "offer-files batcher (:3334, own container since the split)",
+  console: "aa-relay", node: "midnight-node", indexer: "indexer",
+  proofServer: "proof-server (plain)", aaProofServer: "proof-server (exp)",
+  kernel: "offer-files kernel", kernelSync: "kernel sync", batcher: "batcher",
   celestia: "celestia", evmRpc: "umbra-evm RPC", frontend: "zswap-da frontend",
-  solverSink: "solver sink", solver: "cow-solver",
+  solverSink: "solver sink", solver: "cow-solver", postgres: "postgres (shared)",
+};
+const INFRA_TITLES = {
+  console: "the relay: serves this page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this table",
+  kernel: "sync node :9999; contract deployed once per stack, address persisted",
+  batcher: ":3334 — own container since the split",
+  postgres: "the one store for the stack: the kernel's offer book (db offerfiles) + umbra's index (db umbra); no host port, TCP-level probe",
+  aaProofServer: "9.0.0-rc.5_experimental — zkir-v3 / [v7], the AA circuits",
+  proofServer: "9.0.0-rc.5 plain — zkir-v2 / [v6] + the wallet standard lane",
 };
 const DOT = { up: "#6fd18b", down: "#e57373", absent: "#4a5563" };
 
@@ -341,6 +348,8 @@ function renderInfra(r) {
     const tr = document.createElement("tr");
     const tdName = document.createElement("td");
     tdName.textContent = INFRA_LABELS[id] ?? id;
+    tdName.style.whiteSpace = "normal";
+    if (INFRA_TITLES[id]) tdName.title = INFRA_TITLES[id];
     const tdStatus = document.createElement("td");
     const dot = document.createElement("span");
     dot.className = "statusdot " + (c.status === "up" ? "dot-up" : c.status === "down" ? "dot-down" : "dot-absent");
