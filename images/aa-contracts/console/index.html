@@ -211,8 +211,17 @@
         <div><label>account (yours)</label><select id="sw-from" required></select></div>
         <div><label id="sw-give-label">give (shielded token)</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
         <div><label>want (shielded NIGHT)</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
-        <div><button type="submit" disabled id="op-swap">Publish offer</button></div>
+        <div><button type="submit" disabled id="op-swap">1 · Build offer</button></div>
       </div></form>
+      <div id="swap-built" style="display:none;margin-top:12px">
+        <label>built offer (MIP-0005 bech32m) — <span id="swap-built-meta"></span></label>
+        <textarea id="swap-blob" readonly rows="5" style="width:100%;background:var(--bg);color:var(--dim);border:1px solid var(--edge);border-radius:6px;font:11px/1.5 var(--mono);padding:8px 10px;resize:vertical"></textarea>
+        <div class="row" style="margin-top:8px">
+          <div><button type="button" id="op-publish">2 · Publish to the offer-file kernel</button></div>
+          <div><button type="button" class="ghost" id="op-copy-blob">Copy blob</button></div>
+          <div style="flex:2"><span id="publish-result" class="note"></span></div>
+        </div>
+      </div>
     </div>
   </section>
 

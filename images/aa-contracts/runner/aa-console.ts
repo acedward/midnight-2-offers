@@ -542,6 +542,7 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
 type Job = {
   id: string; kind: string; state: "queued" | "running" | "done" | "error";
   log: string[]; txId: string | null; error: string | null;
+  data?: unknown; // job-specific result payload (e.g. the built offer blob)
   createdAt: string; run: (j: Job) => Promise<void>;
 };
 const jobs = new Map<string, Job>();
@@ -627,7 +628,7 @@ function executeJob(prep: Prepared, signature: string): Job {
 /** Selector-6 open swap: prove the execute, NEVER submit — the proven-unbalanced
  * transaction IS the offer; encode MIP-0005 and publish to the kernel. */
 function offerJob(prep: Prepared, signature: string): Job {
-  return enqueue("swap-offer", async (j) => {
+  return enqueue("swap-build", async (j) => {
     jlog(j, `verifying the ${prep.action.primaryType} signature`);
     const { digest } = computeDigest(prep.action, artifactDomain());
     const recovered = recoverSigner(digest, signature, { requireLowS: true });
@@ -659,27 +660,12 @@ function offerJob(prep: Prepared, signature: string): Job {
     } catch (e) {
       jlog(j, `blob save failed (continuing): ${e instanceof Error ? e.message : String(e)}`);
     }
-    jlog(j, `publishing to the offer-files kernel (${KERNEL_URL})…`);
-    let res: Response;
-    try {
-      res = await fetch(`${KERNEL_URL}/v1/offers`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ offer: built.blob }),
-      });
-    } catch (e) {
-      throw new Error(
-        `offer PROVEN (sha256 ${built.sha256.slice(0, 16)}…) but the kernel is unreachable at ${KERNEL_URL} — ` +
-        `bring the offerfiles profile up (./up.sh --with offerfiles) and retry. ` +
-        `Cause: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
-    const out: any = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(`kernel rejected the offer (${res.status}): ${JSON.stringify(out).slice(0, 300)}`);
-    }
-    j.txId = out.offerId ?? built.sha256;
-    jlog(j, `PUBLISHED — offerId=${j.txId} (${built.bytes} bytes); track: GET ${KERNEL_URL}/v1/offers/${j.txId}/status`);
+    // Step 1 of the user-directed split ends HERE: the proven-unbalanced
+    // transaction is the offer, the page shows its bech32m, and publishing is
+    // an explicit second step (POST /api/publish-offer).
+    j.txId = built.sha256;
+    j.data = { blob: built.blob, sha256: built.sha256, bytes: built.bytes };
+    jlog(j, `offer BUILT — ${built.bytes} bytes, offerId ${built.sha256.slice(0, 16)}…; use Publish to send it to the kernel`);
   });
 }
 
@@ -957,6 +943,29 @@ Bun.serve({
         const fn = String(body.fn ?? "");
         const args = Array.isArray(body.args) ? body.args.map(String) : [];
         return json({ fn, result: await runPureFn(fn, args) });
+      }
+      if (path === "/api/publish-offer" && req.method === "POST") {
+        const body = await req.json();
+        const blob = String(body.blob ?? "").trim();
+        if (!/^swapoffer1[a-z0-9]+$/.test(blob)) return bad("blob must be a swapoffer1… bech32m string");
+        let res: Response;
+        try {
+          res = await fetch(`${KERNEL_URL}/v1/offers`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ offer: blob }),
+            signal: AbortSignal.timeout(30_000),
+          });
+        } catch (e) {
+          return bad(
+            `kernel unreachable at ${KERNEL_URL} — bring the offerfiles profile up and retry ` +
+            `(the built offer is not lost). Cause: ${e instanceof Error ? e.message : String(e)}`,
+            503,
+          );
+        }
+        const out: any = await res.json().catch(() => ({}));
+        if (!res.ok) return bad(`kernel rejected the offer (${res.status}): ${JSON.stringify(out).slice(0, 300)}`, 400);
+        return json({ published: true, offerId: out.offerId ?? null });
       }
       if (path === "/api/take" && req.method === "POST") {
         const body = await req.json();

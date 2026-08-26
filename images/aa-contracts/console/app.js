@@ -216,14 +216,16 @@ function renderJob(job) {
 
 async function watchJob(jobId) {
   state.activeJob = jobId;
+  let job;
   for (;;) {
-    const job = await api(`/api/jobs/${jobId}`);
+    job = await api(`/api/jobs/${jobId}`);
     renderJob(job);
     if (job.state === "done" || job.state === "error") break;
     await new Promise((r) => setTimeout(r, 2000));
   }
   state.activeJob = null;
   await loadAccounts();
+  return job;
 }
 
 const busy = (fn) => async (ev) => {
@@ -269,13 +271,39 @@ $("f-fundsh").onsubmit = busy(async () => {
   await watchJob(jobId);
 });
 $("f-swap").onsubmit = busy(async () => {
-  await prepareSignSubmit({
+  // Step 1: sign + contract call + prove — the result is the offer's bech32m,
+  // shown below; publishing is the explicit second step.
+  $("swap-built").style.display = "none";
+  const prep = await api("/api/prepare", {
     kind: "swap", owner: state.signer,
     accountId: $("sw-from").value,
     amount: $("sw-give").value, wantAmount: $("sw-want").value,
   });
-  await loadBook();
+  $("joblog").textContent = "waiting for the wallet to sign the swap…";
+  const signature = await signPrepared(prep);
+  const { jobId } = await api("/api/submit", { prepId: prep.prepId, signature });
+  const job = await watchJob(jobId);
+  if (job?.data?.blob) {
+    $("swap-blob").value = job.data.blob;
+    $("swap-built-meta").textContent = `${job.data.bytes} bytes · offerId ${job.data.sha256.slice(0, 16)}…`;
+    $("publish-result").textContent = "";
+    $("swap-built").style.display = "";
+  }
 });
+$("op-publish").onclick = busy(async () => {
+  $("publish-result").textContent = "publishing…";
+  try {
+    const r = await api("/api/publish-offer", { blob: $("swap-blob").value });
+    $("publish-result").textContent = `PUBLISHED — offerId ${String(r.offerId).slice(0, 16)}… (now on the book below)`;
+    await loadBook();
+  } catch (e) {
+    $("publish-result").textContent = `publish failed: ${e?.message ?? e}`;
+  }
+});
+$("op-copy-blob").onclick = () => {
+  navigator.clipboard?.writeText($("swap-blob").value);
+  $("publish-result").textContent = "copied to clipboard";
+};
 $("refresh").onclick = busy(loadAccounts);
 
 // ── Read & pure functions panel ──────────────────────────────────────────────
