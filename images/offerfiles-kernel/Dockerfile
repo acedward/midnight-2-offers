@@ -21,8 +21,8 @@
 # launching only the kernel's own processes, but kept the orchestrator shape:
 # six processes in one container, and a contract re-deploy on every recreate.
 # Phase 11 drops the orchestrator entirely. The repo's real entrypoints —
-# `packages/node/main.dev.ts`, `packages/batcher/batcher.dev.ts`,
-# `packages/node/pglite.dev.ts` — are each a single-process `bun run`, and
+# `packages/node/main.dev.ts` and `packages/batcher/batcher.dev.ts` — are each
+# a single-process `bun run`, and
 # preflight-external runs per container instead of once as a service.
 #
 # `*.dev.ts` and not `*.mainnet.ts`: the mainnet variants are hard-gated —
@@ -120,7 +120,8 @@ RUN bun install --frozen-lockfile
 #                      persists the address on a volume; mints dev tokens
 #                      (non-fatal) riding the same run. Skips when the artifact
 #                      is already there, so recreates JOIN the contract.
-#   kernel             the sync node (:9999) + its embedded PGLite store.
+#   kernel             the sync node (:9999). Its store is the shared
+#                      `postgres` service, database `offerfiles` (T11.4).
 #   batcher            the balancing batcher (:3334), alone.
 #
 # All three share entrypoint-common.sh: the Celestia token handoff, then

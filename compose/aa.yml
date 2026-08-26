@@ -120,6 +120,8 @@ services:
       # foreign taker settled one on-chain anyway (ledger-exact). Unset to fail
       # closed at the FR-302 gate (see runner/aa-offer.ts).
       AA_OFFER_ALLOW_FALLIBLE: '${AA_OFFER_ALLOW_FALLIBLE:-1}'
+      # Host-reachable sink page URL for the Offers+Solver tab's iframe.
+      AA_SINK_PUBLIC_URL: '${AA_SINK_PUBLIC_URL:-http://127.0.0.1:${SOLVER_SINK_HOST_PORT:-10800}}'
     ports:
       - '${HOST_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
     volumes:

@@ -18,6 +18,7 @@ consumed as-is with no code changes of ours.
 | Midnight node | `core` | RPC `http://127.0.0.1:9944` (HTTP+WS) | midnightntwrk/midnight-node *(upstream)* — image `2.0.0-rc.4`, `CFG_PRESET=dev` |
 | Indexer | `core` | GraphQL v4 `http://127.0.0.1:8088/api/v4/graphql` (+`/ws`; `/api/v3` aliases v4) | midnightntwrk/indexer-standalone *(upstream)* — image `4.4.0-rc.1` (linux/amd64 only) |
 | Proof server ×2 | `core` + `aa` | plain `http://127.0.0.1:6300`; `_experimental` internal-only | midnightntwrk/proof-server *(upstream)* — `9.0.0-rc.5` (kernel's v6 keys) + `9.0.0-rc.5_experimental` (the aa profile's zkir-v3/v7 keys) |
+| PostgreSQL (shared store) | `core` | internal only — `docker compose … exec postgres psql -U offerfiles offerfiles` | `postgres:17-alpine` *(upstream)* + `pg_ivm` 1.11 compiled in (`images/postgres/`). ONE server for the stack: db `offerfiles` = the kernel's offer book, db `umbra` = umbra-evm's index |
 | Wallet tooling | `core` | `scripts/fund-wallet.sh`, `verify-wallets.sh` | midnightntwrk/midnight-node-toolkit *(upstream)* — image `2.0.0-rc.4` (must match the node) |
 | umbra-evm (read-only eth JSON-RPC) | `evm` | HTTP `http://127.0.0.1:8545` (chainId 2400) · WS `ws://127.0.0.1:10021` | [acedward/UmbraDB](https://github.com/acedward/UmbraDB) — branch `feat/00006-json-rpc-review` · [PR #5](https://github.com/acedward/UmbraDB/pull/5) is the home of the JSON-RPC work |
 | Celestia DA devnet | `offerfiles` | DA JSON-RPC `http://127.0.0.1:26658` (bearer token: `scripts/celestia-token.sh`) | celestiaorg release binaries *(upstream)* — app `6.4.10` + node `0.28.4`, one container |
@@ -33,7 +34,7 @@ consumed as-is with no code changes of ours.
 | Web Memo (Memos tab) | (embedded) | `https://web-memo.pages.dev` | [acedward/web-memo](https://github.com/acedward/web-memo) — `main`, Cloudflare Pages · builds on [acedward/midnight-ledger PR #2](https://github.com/acedward/midnight-ledger/pull/2) (memo-v3 ledger fork) |
 | dusk-wallet | (related work) | — | [acedward/dusk-wallet](https://github.com/acedward/dusk-wallet/tree/00001-utxo-pinning) — branch `00001-utxo-pinning` · PRIVATE repo |
 
-Internal-only ports (never published): `evm-postgres:5432`, celestia consensus `26657`/`9090`,
+Internal-only ports (never published): `postgres:5432` (the one shared store), celestia consensus `26657`/`9090`,
 `aa-proof-server:6300`. No service addresses another by a host port — everything internal runs
 on the compose network — so remapping host ports cannot break the stack, which is what makes
 [two stacks on one machine](docs/OPERATIONS.md#running-two-stacks-at-once) possible.

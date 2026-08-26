@@ -20,7 +20,15 @@ function showView(name) {
   for (const v of document.querySelectorAll("main.view")) v.classList.toggle("active", v.id === `view-${name}`);
   document.getElementById("head-note").textContent = HEAD_NOTES[name] ?? "";
   if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
-  if (name === "solver") startSolverFeed();
+  if (name === "solver") {
+    const frame = document.getElementById("solver-frame");
+    if (frame && !frame.src) {
+      const setSrc = (url) => { frame.src = url; document.getElementById("solver-frame-link").href = url; };
+      const url = (window.state && state.info && state.info.sinkPublicUrl) || null;
+      if (url) setSrc(url);
+      else fetch("/api/info").then((r) => r.json()).then((i) => setSrc(i.sinkPublicUrl || "http://127.0.0.1:10800")).catch(() => setSrc("http://127.0.0.1:10800"));
+    }
+  }
   if (name === "infra") startInfraPoll(); else stopInfraPoll();
   if (name === "memos") {
     // Lazy: the external app loads only when the tab is first opened.

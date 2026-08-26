@@ -376,36 +376,13 @@
   </section>
 
   <section class="wide">
-    <h2>Solver feed <span id="sv-state"></span></h2>
-    <p class="note">The ported COW solver runs in <b>observation mode</b>: it mirrors the kernel's
-    book and pushes its price ladders over the authenticated relay WebSocket to a demo-side sink,
-    which this view streams live (same-origin SSE). The sink implements only the receive half of
-    the relay boundary — it can never dispatch work, so the solver can never build, prove, or
-    submit a transaction.</p>
-    <dl class="kv" style="margin-top:8px">
-      <dt>solver connection</dt><dd id="sv-conn">—</dd>
-      <dt>frames</dt><dd id="sv-frames">—</dd>
-      <dt>kernel book</dt><dd id="sv-book">—</dd>
-      <dt>safety</dt><dd id="sv-safety">—</dd>
-    </dl>
-    <p class="note warn" id="sv-alarm" style="display:none"></p>
-  </section>
-  <section class="wide">
-    <h2>Price ladders</h2>
-    <div id="sv-ladders" style="display:flex;gap:12px;flex-wrap:wrap"><p class="note">no ladders yet</p></div>
-  </section>
-  <section class="wide">
-    <h2>Admission (inferred)</h2>
-    <p class="note">Book pairs vs published ladder pairs — the solver's true per-offer reasons never
-    reach the wire, so absence here proves only that a pair was not published.</p>
-    <div class="tablewrap"><table>
-      <thead><tr><th>pair</th><th>on the book</th><th>ladder published</th></tr></thead>
-      <tbody id="sv-admission"></tbody>
-    </table></div>
-  </section>
-  <section class="wide">
-    <h2>Frame history</h2>
-    <div id="sv-history" style="background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:10px 12px;max-height:240px;overflow-y:auto;color:var(--dim)"></div>
+    <h2>Solver ladder feed <span class="pill dim">solver-sink</span></h2>
+    <!-- The sink's OWN page (it receives the solver's relay-WS frames and
+         renders them) — embedded rather than re-implemented here. src is set
+         lazily from /api/info's sinkPublicUrl on first tab activation. -->
+    <iframe id="solver-frame" title="COW solver sink" style="width:100%;height:70vh;border:1px solid var(--edge);border-radius:8px;background:#0d1117;display:block"></iframe>
+    <p class="note">If it does not load, the solver profile is down — or
+      <a id="solver-frame-link" href="#" target="_blank" rel="noopener">open the sink page in its own tab</a>.</p>
   </section>
 </main>
 

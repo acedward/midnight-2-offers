@@ -26,7 +26,7 @@ healthy":
 ./verify.sh --celestia   # require the celestia section — fail if the profile is not up
 ./verify.sh --no-celestia # skip the celestia section even when it is up
 ./down.sh                # stop, keep the chain — ./up.sh resumes it
-./down.sh -v             # FULL RESET: wipes node, indexer, evm-postgres, celestia and cache volumes
+./down.sh -v             # FULL RESET: wipes node, indexer, postgres, celestia and cache volumes
 ```
 
 Each optional section runs automatically when that profile's containers exist, so `./verify.sh`
@@ -36,7 +36,7 @@ them alone (`--quick` skips the slow check in each: `newHeads` delivery, and the
 `down.sh -v` wipes the node volume and the indexer volume **together**, and that is a
 correctness requirement rather than tidiness: a ledger v8→v9 chain cannot be upgraded in
 place, so a fresh node genesis paired with a surviving indexer database gives you an indexer
-serving a chain that no longer exists. The toolkit's fetch cache and the umbra-evm Postgres volume
+serving a chain that no longer exists. The toolkit's fetch cache and the shared Postgres volume
 go with them for the same reason — every one of them holds state keyed to one specific genesis.
 
 `down.sh` always passes **every** fragment in `compose/`, so a profile you brought up earlier is
@@ -59,7 +59,9 @@ What it removes, and what each piece of state is keyed to:
 |---|---|---|
 | chain data | volume `<project>_node-data` | the genesis it was created with |
 | indexed blocks | volume `<project>_indexer-data` | that same genesis |
-| eth balances, logs, cursors | volume `<project>_evm-postgres-data` | that same genesis |
+| eth balances/logs/cursors (db `umbra`) **and** the offer book (db `offerfiles`) | volume `<project>_postgres-data` | that same genesis |
+| the deployed offer-files contract address | volume `<project>_offerfiles-deploy` | that same genesis |
+| the batcher's accepted-but-unsubmitted inputs | volume `<project>_offerfiles-batcher` | that same genesis |
 | Celestia chain + validator keyring + bridge store | volume `<project>_celestia-data` | its own Celestia genesis |
 | the DA auth token + handoff file | volume `<project>_celestia-auth` | the bridge store above |
 | toolkit fetch/ledger cache | host directory `.cache/<project>/` | that same Midnight genesis |

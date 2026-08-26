@@ -73,15 +73,20 @@ guaranteed-section budget, so every AA offer's legs sit in the fallible section;
 a foreign taker settles them anyway, ledger-exact). Each blob is also saved under the `aa-out`
 volume at `/aa/out/offers/<offerId>.swapoffer`.
 
-**Offer history is in-memory (by design).** The kernel stores its offer book in PGLite inside
-the container: restarting or recreating the `kernel` container resets the indexed offers, while
-the chain keeps the settled state — the book is re-indexed from genesis on the next start. A
-demo edge case, not a bug.
+**The offer book persists across restarts.** It used to be in-memory: the kernel kept its book in
+a PGLite database inside its own container, so recreating `kernel` threw the book away and
+re-indexed it from Celestia height 1. Since T11.4 the whole stack shares ONE PostgreSQL
+(`postgres` in `compose/core.yml`) and the kernel uses its `offerfiles` database, which outlives
+the container. Measured on a recreate: the offer row survived, the API served the same offer, and
+the sync cursors RESUMED — Celestia fetching restarted at block 11066 having stopped at 11065,
+not at height 1 — so the container reached healthy in **8 seconds** instead of re-indexing.
+`./down.sh -v` still drops it, which is right: the book is a projection of the chain that command
+destroys.
 
 **The contract, however, no longer moves.** The `offerfiles` profile is three services, not one:
 `offerfiles-deploy` (a one-shot that deploys the offer-files contract **once per stack** and
-persists its address on a volume), `kernel` (the sync node `:9999` plus its embedded PGLite),
-and `batcher` (the balancing batcher `:3334`, on its own). Before this split everything ran
+persists its address on a volume), `kernel` (the sync node `:9999`, storing into the shared
+`postgres`), and `batcher` (the balancing batcher `:3334`, on its own). Before this split everything ran
 under one dev orchestrator, and the contract deploy re-ran on every container recreate — its
 script begins by deleting the address file, so a `--force-recreate` silently minted a **new
 contract** and reset the book's identity. Now a recreate rejoins the existing contract; only the

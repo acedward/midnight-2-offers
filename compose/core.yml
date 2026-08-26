@@ -18,6 +18,60 @@ services:
   # ── node ───────────────────────────────────────────────────────────────────
   # CFG_PRESET=dev gives the `undeployed` genesis whose dev seeds already hold NIGHT and
   # have registered DUST addresses (see wallets/wallets.json).
+  # ── postgres (shared, T11.4) ───────────────────────────────────────────────
+  # ONE PostgreSQL for the whole stack. Each consumer gets its own database and
+  # role inside it, created once by images/postgres/initdb/10-databases.sh:
+  #
+  #   umbra       umbra-evm's balances / tx index / logs        (profile `evm`)
+  #   offerfiles  the offer-files kernel's offer book + STM     (profile `offerfiles`)
+  #
+  # It lives in CORE even though both consumers are optional profiles: an idle
+  # Postgres costs almost nothing, and the alternative — a server per profile —
+  # is two sets of volumes, healthchecks and teardown rules to keep straight.
+  # That was the shape before this change (`evm-postgres`), and it is gone.
+  #
+  # NOT a stock postgres:17-alpine. The kernel requires the `pg_ivm` extension
+  # and refuses to start without it unless ALLOW_NO_PG_IVM=true, whose fallback
+  # read path degrades sharply. PGLite, which the kernel used before, ships
+  # pg_ivm — so a stock image would have been a silent demotion. See
+  # images/postgres/Dockerfile.
+  #
+  # NO HOST PORT, deliberately: nothing outside the stack talks to it, and one
+  # unpublished port is one less collision on a shared machine. Reach it with
+  #   docker compose ... exec postgres psql -U offerfiles offerfiles
+  postgres:
+    image: '${POSTGRES_IMAGE:-midnight-2-offers/postgres:local}'
+    build:
+      context: '../images/postgres'
+      args:
+        PG_TAG: '${POSTGRES_TAG:-17-alpine}'
+        PG_IVM_VERSION: '${PG_IVM_VERSION:-1.11}'
+    environment:
+      # The superuser. Only initdb and an operator's `exec psql` use it; every
+      # service authenticates as its own per-database role.
+      POSTGRES_PASSWORD: '${POSTGRES_SUPERUSER_PASSWORD:-postgres}'
+      # Consumed by the initdb script (first boot only).
+      UMBRA_PG_USER: '${EVM_PG_USER:-umbra}'
+      UMBRA_PG_PASSWORD: '${EVM_PG_PASSWORD:-umbra}'
+      UMBRA_PG_DB: '${EVM_PG_DB:-umbra}'
+      OFFERFILES_PG_USER: '${OFFERFILES_PG_USER:-offerfiles}'
+      OFFERFILES_PG_PASSWORD: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
+      OFFERFILES_PG_DB: '${OFFERFILES_PG_DB:-offerfiles}'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Probe a REAL consumer database, not `postgres`: the default database
+      # exists before initdb has created anything, so `pg_isready` against it
+      # reports healthy while the databases the stack needs are still absent.
+      # (The retired evm-postgres carried this same note; it is still true.)
+      test: ['CMD-SHELL', 'pg_isready -U ${OFFERFILES_PG_USER:-offerfiles} -d ${OFFERFILES_PG_DB:-offerfiles} -q']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: 'unless-stopped'
+
+
   node:
     image: 'midnightntwrk/midnight-node:${NODE_TAG:-2.0.0-rc.4}'
     cap_drop:
@@ -174,3 +228,9 @@ volumes:
   # longer exists.
   node-data:
   indexer-data:
+  # The shared Postgres (T11.4). It holds the offer-files kernel's BOOK, which
+  # is a projection of this chain's Celestia + Midnight history — so it belongs
+  # in the same wipe group: a book describing offers against a genesis that no
+  # longer exists is worse than no book. It also holds umbra-evm's index, which
+  # is derived from the same chain. `./down.sh -v` takes all three together.
+  postgres-data:

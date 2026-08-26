@@ -69,6 +69,9 @@ const KERNEL_URL = process.env["AA_KERNEL_URL"] ?? "http://kernel:9999";
 // The cow-solver sink (profile `solver`), feature-detected: the page's solver
 // view reads its snapshot/stream through same-origin proxies here.
 const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
+// The HOST-reachable form of the sink page, for the browser's iframe (the
+// compose-network URL above is meaningless to a browser).
+const SINK_PUBLIC_URL = process.env["AA_SINK_PUBLIC_URL"] ?? "http://127.0.0.1:10800";
 // Shielded funding runs on the aa-deploy wallet (genesis-3): prefunded, and it
 // already holds the shielded colour minted at bring-up. The RELAY wallet stays
 // shielded-free (T7.5 rule) — that is the entire reason for the second seed.
@@ -1113,6 +1116,7 @@ Bun.serve({
           tokens: tokens.list.map((t) => ({ name: t.name, family: t.family, color: t.color })),
           tokensError: tokens.error,
           kernelUrl: KERNEL_URL,
+          sinkPublicUrl: SINK_PUBLIC_URL,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
           // Withdraw's node-rejection (Custom error 214, recipient Either arm
           // inversion) was FIXED upstream in AA PR #10 (713a2021…) and this

@@ -6,7 +6,7 @@
 #   celestia           the local Celestia DA devnet (T4.4)
 #   offerfiles-deploy  ONE-SHOT: deploys the offer-files contract once per stack and persists the
 #                      address; mints dev tokens (non-fatal) on the same run
-#   kernel             the sync node :9999 + its embedded PGLite store
+#   kernel             the sync node :9999 (store: the shared `postgres` service, db `offerfiles`)
 #   batcher            the balancing batcher :3334, on its own
 #
 # WHAT THIS REPLACED, and why it mattered. All of it used to be one `kernel` container running
@@ -146,14 +146,17 @@ services:
 
 
   # ── kernel (T11.2) ──────────────────────────────────────────────────────────
-  # The SYNC NODE and its embedded PGLite store — two processes, no orchestrator,
+  # The SYNC NODE alone — ONE process, no embedded store, no orchestrator,
   # no contract deploy. Recreating this container now rejoins the contract the
   # one-shot deployed instead of minting a new one.
   #
-  # OFFER HISTORY IS STILL IN-MEMORY (T4.6): the book lives in PGLite inside this
-  # container, so a recreate re-indexes from Celestia height 1 rather than
-  # resuming. What Phase 11 changed is that the CONTRACT no longer moves under
-  # it — the identity survives, the projection rebuilds.
+  # THE OFFER BOOK NOW PERSISTS (T11.4). It used to live in PGLite inside this
+  # container, so every recreate threw it away and re-indexed from Celestia
+  # height 1. The book is in the shared `postgres` service's `offerfiles`
+  # database now, which outlives the container — so together with T11.2's
+  # persisted contract address, a kernel recreate keeps both its identity AND
+  # its history. `./down.sh -v` drops both, which is correct: the book is a
+  # projection of the very chain that command destroys.
   kernel:
     image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
     build: *offerfiles_build
@@ -173,6 +176,17 @@ services:
       # Dev-only name registry (POST /v1/known-tokens): the demo registers the
       # unified token names (wBTC/wETH/wUSD) for the offer-files mint colours.
       ENABLE_TOKEN_REGISTRY: 'true'
+      # ── the shared Postgres (T11.4) ──────────────────────────────────────
+      # PGLITE=false is what selects the real server in @effectstream/db, and
+      # it is NOT the default — ENV.PGLITE defaults to TRUE, so omitting this
+      # would silently put the kernel back on an embedded store. The entrypoint
+      # refuses to start unless it is exactly "false".
+      PGLITE: 'false'
+      DB_HOST: 'postgres'          # container name, never a host port
+      DB_PORT: '5432'
+      DB_NAME: '${OFFERFILES_PG_DB:-offerfiles}'
+      DB_USER: '${OFFERFILES_PG_USER:-offerfiles}'
+      DB_PW: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
     healthcheck:
       # bun, not curl: the oven/bun runtime image ships no curl/wget.
       test:
@@ -188,6 +202,7 @@ services:
       start_period: 120s
     depends_on:
       offerfiles-deploy: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
       celestia: { condition: service_healthy }
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
