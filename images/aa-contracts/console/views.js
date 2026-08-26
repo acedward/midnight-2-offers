@@ -309,69 +309,56 @@ const REPOS = [
   {
     repo: "acedward/midnight-2-offers", url: "https://github.com/acedward/midnight-2-offers",
     role: "THIS demo stack — compose, scripts, wallets, this console",
-    ref: "main (the page you are reading ships from it)",
-    notes: [["repo", "https://github.com/acedward/midnight-2-offers"]],
+    ref: "main",
+    notes: [],
   },
   {
     repo: "acedward/AA-midnight-evm-experiment-v3", url: "https://github.com/acedward/AA-midnight-evm-experiment-v3",
     role: "AA Manager + test Minter contracts, EIP-712 codec (baked as /aa/aalib)",
-    ref: "main @ 713a2021 (AA_REF pin — key-breaking merges require a full-sha bump + redeploy)",
-    notes: [
-      ["PR #9 — execute pool underflow fix (selectors 3/4/5)", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/9"],
-      ["PR #10 — withdraw 214 fix (recipient Either arms) + refuse contract recipients", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10"],
-    ],
+    ref: "main @ 713a2021",
+    notes: [["PR #10", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10", "sha-pinned: key-breaking merges need an explicit redeploy"]],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
     role: "offer-files kernel + batcher (profile offerfiles)",
-    ref: "branch 00001-ledger-v9 — the full ledger-v9 migration + ALLOW_CONTRACT_MAKER_OFFERS + the sync-health Celestia bearer fix. Deliberately UNMERGED: main stays on the v8 line",
-    notes: [
-      ["PR #49 — the v9 branch (open on purpose)", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/49"],
-    ],
+    ref: "branch 00001-ledger-v9",
+    notes: [["PR #49", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/49", "main stays on ledger-v8"]],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel (solver)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/00001-solver-v9",
-    role: "COW solver, observation mode (profile solver) — the kernel image ALSO builds from this branch when the solver runs (it carries GET /v1/offers/updates)",
-    ref: "branch 00001-solver-v9 = 00001-ledger-v9 + PR #48 feat/cow-solver @ 381022d ported to v9",
-    notes: [
-      ["PR #48 — COW-Solver (DRAFT upstream, v8; ported here)", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/48"],
-    ],
+    role: "COW solver, observation mode (profile solver; the kernel also builds from this branch when the solver runs)",
+    ref: "branch 00001-solver-v9",
+    notes: [["PR #48", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/48", "upstream draft is v8; ported to v9 here"]],
   },
   {
     repo: "effectstream/effectstream", url: "https://github.com/effectstream/effectstream",
     role: "the @effectstream npm packages every runner here uses",
-    ref: "@effectstream/*@0.200.2, @effectstream/mip-zswap-offer@0.4.0-v9.0 (dist-tag ledger-v9)",
-    notes: [
-      ["PR #880 — midnight-node 2.x support (0.200.x line)", "https://github.com/effectstream/effectstream/pull/880"],
-      ["PR #882 — startPglite close regression fix (0.200.2)", "https://github.com/effectstream/effectstream/pull/882"],
-    ],
+    ref: "@effectstream/*@0.200.2 · mip-zswap-offer@0.4.0-v9.0",
+    notes: [["PR #882", "https://github.com/effectstream/effectstream/pull/882", "published to npm; no branch checkout"]],
   },
   {
     repo: "acedward/UmbraDB", url: "https://github.com/acedward/UmbraDB",
     role: "umbra-evm read-only Ethereum JSON-RPC (profile evm)",
-    ref: "branch feat/00006-json-rpc-review (UMBRA_REF default)",
-    notes: [
-      ["PR #5 — evm-compat line", "https://github.com/acedward/UmbraDB/pull/5"],
-      ["PR #7 + PR #8 — the two WS fixes this stack found, upstreamed (build-time patches retired)", "https://github.com/acedward/UmbraDB/pull/8"],
-    ],
+    ref: "branch feat/00006-json-rpc-review",
+    notes: [["PR #8", "https://github.com/acedward/UmbraDB/pull/8", "the RPC façade is not on main yet"]],
   },
   {
     repo: "shieldedtech/midnight-intents-swaps", url: "https://github.com/shieldedtech/midnight-intents-swaps",
     role: "the Midnight Intents relay the solver would execute through",
-    ref: "pinned d444c83 by the solver branch — DROPPED from this demo (v8-era, frozen): the solver runs observation-only and offers settle via the console's taker flow instead",
+    ref: "pinned d444c83 — DROPPED (observation-only solver)",
     notes: [],
   },
   {
     repo: "effectstream templates/zswap-da", url: "https://github.com/effectstream/effectstream",
     role: "the swap frontend (profile frontend)",
-    ref: "LOCAL v9-migrated checkout as a docker build context (ZSWAP_DA_TEMPLATE_DIR) — upstream templates/** is frozen on ledger-v8 and deliberately NOT pushed",
-    notes: [],
+    ref: "LOCAL v9-migrated checkout (ZSWAP_DA_TEMPLATE_DIR)",
+    notes: [["", "", "upstream templates/** frozen on ledger-v8"]],
   },
   {
     repo: "midnightntwrk (upstream images)", url: "https://hub.docker.com/u/midnightntwrk",
     role: "the Midnight 2.x core triple + tooling",
-    ref: "node 2.0.0-rc.4 · indexer 4.4.0-rc.1 · proof-server 9.0.0-rc.5 (plain for the kernel's v6 keys) + 9.0.0-rc.5_experimental (the aa profile's zkir-v3/v7 keys) · toolkit 2.0.0-rc.4",
-    notes: [["compactc 0.33.0-rc.2 (LFDT-Minokawa/compact release asset)", "https://github.com/LFDT-Minokawa/compact/releases"]],
+    ref: "node 2.0.0-rc.4 · indexer 4.4.0-rc.1 · proof-server 9.0.0-rc.5 + _experimental · toolkit 2.0.0-rc.4 · compactc 0.33.0-rc.2",
+    notes: [],
   },
 ];
 
@@ -395,12 +382,15 @@ function renderRepos() {
     tdRef.textContent = r.ref;
     const tdNotes = document.createElement("td");
     tdNotes.style.whiteSpace = "normal";
-    r.notes.forEach(([label, href], i) => {
+    r.notes.forEach(([label, href, why], i) => {
       if (i) tdNotes.append(document.createElement("br"));
-      const n = document.createElement("a");
-      n.href = href; n.target = "_blank"; n.rel = "noopener";
-      n.textContent = label;
-      tdNotes.append(n);
+      if (label) {
+        const n = document.createElement("a");
+        n.href = href; n.target = "_blank"; n.rel = "noopener";
+        n.textContent = label;
+        tdNotes.append(n);
+      }
+      if (why) tdNotes.append((label ? " — " : "") + why);
     });
     tr.append(tdRepo, tdRole, tdRef, tdNotes);
     tbody.append(tr);
