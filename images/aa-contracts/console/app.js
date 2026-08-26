@@ -82,7 +82,20 @@ async function loadInfo() {
   $("s-net").textContent = i.network;
   $("s-manager").textContent = short(i.manager);
   $("s-minter").textContent = short(i.minter);
-  $("s-color").textContent = `${i.minterTag ?? "demo token"} (${short(i.color)})`;
+  $("s-tokens").textContent = (i.tokens ?? []).length
+    ? i.tokens.map((t) => `${t.name} (${t.family}, ${short(t.color)})`).join(" · ")
+    : `unresolved — ${i.tokensError ?? "kernel down?"}`;
+  // Token selects: unshielded tokens for Fund, shielded for Fund-shielded/swap.
+  const fillTokens = (sel, family, def) => {
+    const el = $(sel);
+    el.innerHTML = "";
+    for (const t of (i.tokens ?? []).filter((x) => x.family === family)) el.append(new Option(t.name, t.name));
+    if (def && [...el.options].some((o) => o.value === def)) el.value = def;
+  };
+  fillTokens("fund-token", "unshielded", "wUSD");
+  fillTokens("fs-token", "shielded", "wBTC");
+  fillTokens("sw-give-token", "shielded", "wBTC");
+  fillTokens("sw-want-token", "shielded", "wETH");
   $("s-relay").innerHTML = "";
   const pill = document.createElement("span");
   pill.className = `pill ${i.relay.funded ? "ok" : "warn"}`;
@@ -106,15 +119,28 @@ async function loadAccounts() {
 
 function renderAccounts() {
   const mine = (a) => state.signer && a.owner.toLowerCase() === state.signer;
+  const tokenNames = (state.info?.tokens ?? []).map((t) => t.name);
+  const thead = $("accounts-head");
+  thead.innerHTML = "";
+  {
+    const tr = document.createElement("tr");
+    for (const h of ["account id", "EVM owner", "nonce", ...tokenNames, ""]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      tr.append(th);
+    }
+    thead.append(tr);
+  }
   const tbody = $("accounts");
   tbody.innerHTML = "";
   for (const a of state.accounts) {
     const tr = document.createElement("tr");
     const mark = mine(a) ? " (you)" : "";
-    for (const [text, cls] of [
-      [short(a.accountId), ""], [short(a.owner) + mark, ""],
-      [a.nonce, "num"], [a.balance, "num"], [a.shieldedBalance ?? "0", "num"],
-    ]) {
+    const cells = [
+      [short(a.accountId), ""], [short(a.owner) + mark, ""], [a.nonce, "num"],
+      ...tokenNames.map((tn) => [(a.balances ?? {})[tn] ?? "0", "num"]),
+    ];
+    for (const [text, cls] of cells) {
       const td = document.createElement("td");
       td.textContent = text;
       if (cls) td.className = cls;
@@ -130,7 +156,10 @@ function renderAccounts() {
     const prev = el.value;
     el.innerHTML = "";
     if (!list.length) el.append(new Option(placeholder, "", true, true));
-    for (const a of list) el.append(new Option(`${short(a.accountId)} — bal ${a.balance}`, a.accountId));
+    for (const a of list) {
+      const bal = a.balances ? Object.entries(a.balances).map(([k, v]) => `${k} ${v}`).join(" ") : "";
+      el.append(new Option(`${short(a.accountId)} — ${bal}`, a.accountId));
+    }
     if ([...el.options].some((o) => o.value === prev)) el.value = prev;
   };
   fill("fund-account", state.accounts, "no accounts yet — register first");
@@ -252,6 +281,7 @@ $("op-register").onclick = busy(() => prepareSignSubmit({ kind: "register", owne
 $("f-fund").onsubmit = busy(async () => {
   const { jobId } = await api("/api/fund", {
     accountId: $("fund-account").value, amount: $("fund-amount").value,
+    token: $("fund-token").value,
   });
   await watchJob(jobId);
 });
@@ -267,6 +297,7 @@ $("f-withdraw").onsubmit = busy(() => prepareSignSubmit({
 $("f-fundsh").onsubmit = busy(async () => {
   const { jobId } = await api("/api/fund-shielded", {
     accountId: $("fs-account").value, amount: $("fs-amount").value,
+    token: $("fs-token").value,
   });
   await watchJob(jobId);
 });
@@ -278,6 +309,7 @@ $("f-swap").onsubmit = busy(async () => {
     kind: "swap", owner: state.signer,
     accountId: $("sw-from").value,
     amount: $("sw-give").value, wantAmount: $("sw-want").value,
+    giveToken: $("sw-give-token").value, wantToken: $("sw-want-token").value,
   });
   $("joblog").textContent = "waiting for the wallet to sign the swap…";
   const signature = await signPrepared(prep);

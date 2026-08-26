@@ -115,7 +115,7 @@
       <dt>network</dt><dd id="s-net">—</dd>
       <dt>manager</dt><dd id="s-manager">—</dd>
       <dt>minter</dt><dd id="s-minter">—</dd>
-      <dt>token</dt><dd id="s-color">—</dd>
+      <dt>tokens</dt><dd id="s-tokens">—</dd>
       <dt>relay wallet</dt><dd id="s-relay">—</dd>
       <dt>taker wallet</dt><dd id="s-taker">—</dd>
     </dl>
@@ -135,11 +135,13 @@
     swap's give leg.</p>
     <form id="f-fund"><div class="row">
       <div><label>account</label><select id="fund-account" required></select></div>
+      <div><label>token</label><select id="fund-token" required></select></div>
       <div><label>amount (unshielded)</label><input id="fund-amount" value="600000" pattern="[0-9]+" required></div>
       <div><button type="submit">Fund</button></div>
     </div></form>
     <form id="f-fundsh"><div class="row">
       <div><label>account</label><select id="fs-account" required></select></div>
+      <div><label>token</label><select id="fs-token" required></select></div>
       <div><label>amount (shielded)</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
       <div><button type="submit" class="ghost">Fund shielded</button></div>
     </div></form>
@@ -209,8 +211,10 @@
       first via <b>Fund account → Fund shielded</b> above.</p>
       <form id="f-swap"><div class="row">
         <div><label>account (yours)</label><select id="sw-from" required></select></div>
-        <div><label id="sw-give-label">give (shielded token)</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
-        <div><label>want (shielded NIGHT)</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
+        <div><label>give token</label><select id="sw-give-token" required></select></div>
+        <div><label>give amount</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
+        <div><label>want token</label><select id="sw-want-token" required></select></div>
+        <div><label>want amount</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
         <div><button type="submit" disabled id="op-swap">1 · Build offer</button></div>
       </div></form>
       <div id="swap-built" style="display:none;margin-top:12px">
@@ -251,7 +255,7 @@
   <section class="wide">
     <h2>Accounts on the Manager <button id="refresh" class="ghost" style="float:right;padding:2px 10px;font-size:12px">refresh</button></h2>
     <div class="tablewrap"><table>
-      <thead><tr><th>account id</th><th>EVM owner</th><th>nonce</th><th>balance</th><th>shielded</th><th></th></tr></thead>
+      <thead id="accounts-head"><tr><th>account id</th><th>EVM owner</th><th>nonce</th><th></th></tr></thead>
       <tbody id="accounts"></tbody>
     </table></div>
   </section>

@@ -170,6 +170,9 @@ services:
       # Found live (T11.3 addendum): a publish returned INTERNAL "Unable to
       # connect" until this pointed at the batcher SERVICE.
       BATCHER_SUBMIT_URL: 'http://batcher:3334'
+      # Dev-only name registry (POST /v1/known-tokens): the demo registers the
+      # unified token names (wBTC/wETH/wUSD) for the offer-files mint colours.
+      ENABLE_TOKEN_REGISTRY: 'true'
     healthcheck:
       # bun, not curl: the oven/bun runtime image ships no curl/wget.
       test:

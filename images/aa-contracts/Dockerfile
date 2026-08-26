@@ -29,6 +29,8 @@ ARG COMPACT_VERSION=0.33.0-rc.2
 # 0: keep them — required by the E2E, which CALLS execute (scripts/aa-e2e.sh builds
 # that variant as the :e2e tag; expect ~1.2 GB extra in the image).
 ARG AA_PRUNE_MANAGER_PROVERS=1
+# The kernel image the offer-files contract artifact is copied from (stage 2c).
+ARG KERNEL_IMAGE=midnight-2-offers/offerfiles-kernel:local
 
 # ── stage 1: fetch the AA sources ────────────────────────────────────────────
 FROM debian:stable-slim AS source
@@ -122,6 +124,16 @@ RUN set -eux; \
     fi; \
     rm -rf /k18 /compact-keys
 
+# ── stage 2c: the offer-files contract, from the kernel image ────────────────
+# The console mints the demo's UNIFIED token set (wBTC/wETH shielded, wUSD
+# unshielded) through the offer-files contract's permissionless dev mint
+# circuits — the same tokens the kernel's own dev mint creates — instead of a
+# console-private minter. The compiled artifact (managed contract + [v6] keys,
+# proven on the PLAIN proof server) comes straight out of the kernel image, so
+# BUILDING aa-console REQUIRES midnight-2-offers/offerfiles-kernel:local to
+# exist locally first (./up.sh --all builds both; override with KERNEL_IMAGE).
+FROM ${KERNEL_IMAGE} AS kernel-src
+
 # ── stage 3: the deploy+mint runner ──────────────────────────────────────────
 # Same bun pin as the kernel image, same reason (1.3.14 breaks on graphql-17 ESM).
 FROM oven/bun:1.3.11
@@ -133,6 +145,7 @@ WORKDIR /aa
 # overlay lands as FINAL layers after the install (costs the image the k=18
 # files on top of the k=19 layer; acceptable for a dev image).
 COPY --from=compact /aa /aa
+COPY --from=kernel-src /app/packages/contracts-midnight/contract-offer-files/src/managed /aa/contract-offer-files/src/managed
 COPY --from=source /aa-commit /aa/.aa-commit
 # The AA repo's OWN test library — EIP-712 codec, MetaMask V4 signing, execute
 # payload builders. Imported verbatim by the E2E so the digest scheme is never

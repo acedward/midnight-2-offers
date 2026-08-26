@@ -46,6 +46,7 @@ import { recoverSigner, addressForPrivateKey } from "/aa/aalib/signature.js";
 import { metamaskSign } from "/aa/aalib/metamask.js";
 import type { Hex20, Hex32 } from "/aa/aalib/bytes.js";
 import { buildOpenSwapOffer } from "/aa/runner/aa-offer.ts";
+import { rawTokenType } from "@midnight-ntwrk/compact-runtime";
 
 const TAG = "[aa-console]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
@@ -73,9 +74,57 @@ const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
 // shielded-free (T7.5 rule) — that is the entire reason for the second seed.
 const FUNDER_SEED = process.env["MIDNIGHT_WALLET_SEED"]
   ?? "0000000000000000000000000000000000000000000000000000000000000003";
-// Shielded NIGHT — the native colour — is the demo want-leg: any wallet can get
-// it from the faucet (fund-wallet.sh --shielded-amount), no second minter needed.
-const NIGHT_COLOR_HEX = "0".repeat(64);
+// ── THE UNIFIED TOKEN SET (user direction 2026-08-26) ────────────────────────
+// The demo's tokens are the ones the OFFER-FILES contract mints — the same
+// colours the kernel's own dev mint creates (fixed domain separators → stable
+// colours per contract) — used for every shielded/unshielded flow here. The
+// console-private AA Minter token and the shielded-NIGHT want-leg workaround
+// are RETIRED (shielded NIGHT is not a real mintable token).
+// colour = rawTokenType(sep, offerFilesContractAddress), resolved at startup
+// from the kernel's /v1/midnight/config; names are registered in the kernel's
+// dev token registry so every UI shows the same wBTC/wETH/wUSD.
+const TOKEN_DEFS = [
+  { name: "wBTC", family: "shielded" as const, sep: 0xa1 },
+  { name: "wETH", family: "shielded" as const, sep: 0xb2 },
+  { name: "wUSD", family: "unshielded" as const, sep: 0xc3 },
+];
+type TokenInfo = { name: string; family: "shielded" | "unshielded"; sep: Uint8Array; color: string };
+const tokens: { list: TokenInfo[]; offerFilesAddress: string | null; error: string | null } = {
+  list: [], offerFilesAddress: null, error: null,
+};
+const tokenByName = (name: string): TokenInfo => {
+  const t = tokens.list.find((x) => x.name === name);
+  if (!t) throw new Error(`unknown token '${name}' — kernel not reachable at startup? (${tokens.error ?? "no error"})`);
+  return t;
+};
+async function resolveTokens() {
+  try {
+    const cfg: any = await (await fetch(`${KERNEL_URL}/v1/midnight/config`, { signal: AbortSignal.timeout(5000) })).json();
+    const addr = String(cfg.contractAddress).replace(/^0x/, "");
+    tokens.offerFilesAddress = addr;
+    tokens.list = TOKEN_DEFS.map((d) => ({
+      name: d.name, family: d.family,
+      sep: new Uint8Array(32).fill(d.sep),
+      color: rawTokenType(new Uint8Array(32).fill(d.sep), addr).toLowerCase(),
+    }));
+    tokens.error = null;
+    log(`tokens resolved against offer-files ${addr.slice(0, 12)}…: ` +
+      tokens.list.map((t) => `${t.name}=${t.color.slice(0, 8)}…`).join(" "));
+    // Best-effort name registration (needs ENABLE_TOKEN_REGISTRY on the kernel).
+    for (const t of tokens.list) {
+      try {
+        await fetch(`${KERNEL_URL}/v1/known-tokens`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ color: t.color, name: t.name, kind: t.family }),
+          signal: AbortSignal.timeout(3000),
+        });
+      } catch { /* registry off or kernel busy — names are cosmetic */ }
+    }
+  } catch (e) {
+    tokens.error = e instanceof Error ? e.message : String(e);
+    log(`token resolution FAILED (kernel down?): ${tokens.error} — token ops will error until it succeeds`);
+  }
+}
 // The TAKER wallet (T9.4/Q14): settles book offers as "a different wallet" —
 // deliberately distinct from the relay so maker account, relay, and taker are
 // three visible parties. Funded by up.sh WITH --shielded-amount (the want leg
@@ -87,7 +136,8 @@ const ARTIFACT_PATH = "/aa/out/aa-contracts.json";
 const artifact = JSON.parse(readFileSync(ARTIFACT_PATH, "utf-8"));
 const MANAGER = artifact.manager.address as string;
 const MINTER = artifact.minter.address as string;
-const COLOUR_HEX = artifact.mints.unshielded.color as string;
+// (The AA Minter's own TOKA colours in the artifact are RETIRED from this
+// console — the unified token set comes from the offer-files contract.)
 
 const toHex = (u: Uint8Array): string =>
   Array.from(u, (x) => x.toString(16).padStart(2, "0")).join("");
@@ -96,8 +146,6 @@ const hexToBytes = (h: string): Uint8Array => {
   return new Uint8Array(c.match(/.{2}/g)!.map((x) => parseInt(x, 16)));
 };
 const manager32 = (`0x` + MANAGER.replace(/^0x/, "").slice(0, 64)) as Hex32;
-const COLOUR = hexToBytes(COLOUR_HEX);
-const SHIELDED_COLOR_HEX = (artifact.mints.shielded.color as string).replace(/^0x/, "");
 
 const artifactDomain = (): Hex32 => {
   const b = new TextEncoder().encode(artifact.manager.domain);
@@ -174,7 +222,8 @@ const unshieldedTotal = (st: any): bigint => {
   return vals.reduce((a: bigint, v: any) => a + (v ?? 0n), 0n);
 };
 
-async function join(walletResult: any, name: string, address: string, witnesses: any, stateId: string) {
+async function join(walletResult: any, name: string, address: string, witnesses: any, stateId: string,
+                    proofServer?: string) {
   const Mod = await loadContract(name);
   const zkPath = resolve(AA_ROOT, name, "src", "managed");
   const compiled = CompiledContract.make(name, Mod.Contract as any).pipe(
@@ -191,7 +240,10 @@ async function join(walletResult: any, name: string, address: string, witnesses:
       indexer: midnightNetworkConfig.indexer,
       indexerWS: midnightNetworkConfig.indexerWS,
       node: midnightNetworkConfig.node,
-      proofServer: midnightNetworkConfig.proofServer,
+      // The AA contracts prove on the _experimental server (zkir-v3 / [v7]
+      // keys); the offer-files contract is a plain zkir-v2 / [v6] artifact and
+      // proves on the PLAIN server — the caller picks.
+      proofServer: proofServer ?? midnightNetworkConfig.proofServer,
     },
     `${stateId}-store`,
     zkPath,
@@ -204,6 +256,36 @@ async function join(walletResult: any, name: string, address: string, witnesses:
     initialPrivateState: {},
   });
   return { Mod, handle, providers, compiled };
+}
+
+// ── the offer-files contract: the unified token mint ────────────────────────
+// Its compiled artifact is baked from the kernel image at /aa/contract-offer-files
+// (empty witnesses; [v6] keys → PLAIN proof server).
+async function joinOfferFiles(walletResult: any) {
+  if (!tokens.offerFilesAddress) await resolveTokens();
+  if (!tokens.offerFilesAddress) throw new Error(`offer-files contract unknown: ${tokens.error}`);
+  return await join(walletResult, "contract-offer-files", tokens.offerFilesAddress, {},
+    "offerFilesPrivateState", WALLET_PROOF);
+}
+
+/** Mint `amount` of a SHIELDED token to the CALLING wallet (mint_shielded pays
+ * to the caller's own coin public key — that is the circuit's design). */
+async function mintShieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint) {
+  const of = await joinOfferFiles(walletResult);
+  const nonce = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
+  jlog(j, `mint_shielded ${amount} ${token.name} → this wallet…`);
+  const tx = await (of.handle.callTx as any).mint_shielded(token.sep, amount, nonce);
+  jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
+  return tx;
+}
+
+/** Mint `amount` of the UNSHIELDED token to an arbitrary 32-byte user address. */
+async function mintUnshieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint, userAddr32: Uint8Array) {
+  const of = await joinOfferFiles(walletResult);
+  jlog(j, `mint_unshielded ${amount} ${token.name} → ${toHex(userAddr32).slice(0, 12)}…`);
+  const tx = await (of.handle.callTx as any).mint_unshielded(token.sep, amount, { bytes: userAddr32 });
+  jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
+  return tx;
 }
 
 // ── walletless ledger reads (straight from the indexer) ──────────────────────
@@ -223,17 +305,25 @@ async function readLedger() {
 
 async function listAccounts() {
   const { ledger, Mod } = await readLedger();
+  if (!tokens.list.length) await resolveTokens();
   const out: Array<Record<string, unknown>> = [];
-  const shColour = hexToBytes(SHIELDED_COLOR_HEX);
   for (const [id, owner] of ledger.evmOwners) {
-    const key = Mod.pureCircuits.unshieldedKey(id, COLOUR);
-    const shKey = Mod.pureCircuits.shieldedKey(id, shColour);
+    const balances: Record<string, string> = {};
+    for (const t of tokens.list) {
+      const col = hexToBytes(t.color);
+      if (t.family === "unshielded") {
+        const key = Mod.pureCircuits.unshieldedKey(id, col);
+        balances[t.name] = String(ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n);
+      } else {
+        const key = Mod.pureCircuits.shieldedKey(id, col);
+        balances[t.name] = String(ledger.shieldedBalances.member(key) ? ledger.shieldedBalances.lookup(key) : 0n);
+      }
+    }
     out.push({
       accountId: "0x" + toHex(id),
       owner: "0x" + toHex(owner),
       nonce: String(ledger.evmNonces.member(id) ? ledger.evmNonces.lookup(id) : 0n),
-      balance: String(ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n),
-      shieldedBalance: String(ledger.shieldedBalances.member(shKey) ? ledger.shieldedBalances.lookup(shKey) : 0n),
+      balances,
     });
   }
   return out;
@@ -273,9 +363,9 @@ async function runPureFn(fn: string, args: string[]): Promise<unknown> {
     case "deriveAccountId":
       return { accountId: deriveAccountId(manager32, ("0x" + toHex(b20(args[0]))) as Hex20, ("0x" + toHex(b32(args[1]))) as Hex32) };
     case "shieldedKey":
-      return { key: "0x" + toHex(pc.shieldedKey(b32(args[0]), b32(args[1], SHIELDED_COLOR_HEX))) };
+      return { key: "0x" + toHex(pc.shieldedKey(b32(args[0]), b32(args[1], tokenByName("wBTC").color))) };
     case "unshieldedKey":
-      return { key: "0x" + toHex(pc.unshieldedKey(b32(args[0]), b32(args[1], COLOUR_HEX))) };
+      return { key: "0x" + toHex(pc.unshieldedKey(b32(args[0]), b32(args[1], tokenByName("wUSD").color))) };
   }
   const { ledger } = await readLedger();
   switch (fn) {
@@ -292,17 +382,17 @@ async function runPureFn(fn: string, args: string[]): Promise<unknown> {
       return { nonce: String(ledger.evmNonces.member(id) ? ledger.evmNonces.lookup(id) : 0n) };
     }
     case "unshieldedBalance": {
-      const key = managerMod.pureCircuits.unshieldedKey(b32(args[0]), b32(args[1], COLOUR_HEX));
+      const key = managerMod.pureCircuits.unshieldedKey(b32(args[0]), b32(args[1], tokenByName("wUSD").color));
       return { balance: String(ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n) };
     }
     case "shieldedBalance": {
-      const key = managerMod.pureCircuits.shieldedKey(b32(args[0]), b32(args[1], SHIELDED_COLOR_HEX));
+      const key = managerMod.pureCircuits.shieldedKey(b32(args[0]), b32(args[1], tokenByName("wBTC").color));
       return { balance: String(ledger.shieldedBalances.member(key) ? ledger.shieldedBalances.lookup(key) : 0n) };
     }
     case "poolHasColour":
-      return { pooled: ledger.pools.member(b32(args[0], SHIELDED_COLOR_HEX)) };
+      return { pooled: ledger.pools.member(b32(args[0], tokenByName("wBTC").color)) };
     case "poolValue": {
-      const col = b32(args[0], SHIELDED_COLOR_HEX);
+      const col = b32(args[0], tokenByName("wBTC").color);
       if (!ledger.pools.member(col)) return { pooled: false };
       const coin = ledger.pools.lookup(col);
       return { pooled: true, value: String(coin.value), nonce: "0x" + toHex(coin.nonce), mtIndex: String(coin.mt_index) };
@@ -466,12 +556,14 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
   if (kind === "transfer") {
     const toAccountId = String(body.toAccountId ?? "") as Hex32;
     if (!/^0x[0-9a-f]{64}$/i.test(toAccountId)) throw new Error("toAccountId must be 0x…32 bytes");
+    const token = tokenByName(String(body.token ?? "wUSD"));
+    if (token.family !== "unshielded") throw new Error("transfer (selector 5) moves the UNSHIELDED balance — pick wUSD");
     const action = {
       primaryType: "TransferInternalUnshielded", manager: manager32, accountId, owner,
       validUntil: deadline(), nonce, toAccountId,
-      color: ("0x" + COLOUR_HEX) as Hex32, amount,
+      color: ("0x" + token.color) as Hex32, amount,
     };
-    return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce) } }, accountId };
+    return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce), token: token.name } }, accountId };
   }
   if (kind === "swap") {
     // Open-shape selector 6 (SHIELDED-ONLY by contract design): give the demo
@@ -483,14 +575,20 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     // Friendly pre-check: the give leg spends the account's SHIELDED balance,
     // and "balance 600000, give 1000 → account colour balance too low" has
     // already confused one demo user whose 600000 was all unshielded.
+    const giveToken = tokenByName(String(body.giveToken ?? "wBTC"));
+    const wantToken = tokenByName(String(body.wantToken ?? "wETH"));
+    if (giveToken.family !== "shielded" || wantToken.family !== "shielded")
+      throw new Error("open swaps are SHIELDED-only by contract design — pick shielded tokens for both legs");
+    if (giveToken.name === wantToken.name)
+      throw new Error("give and want must be different tokens (same-colour legs net out: NOT_A_SWAP)");
     {
       const { ledger, Mod } = await readLedger();
-      const shKey = Mod.pureCircuits.shieldedKey(hexToBytes(accountId), hexToBytes(SHIELDED_COLOR_HEX));
+      const shKey = Mod.pureCircuits.shieldedKey(hexToBytes(accountId), hexToBytes(giveToken.color));
       const shBal = ledger.shieldedBalances.member(shKey) ? ledger.shieldedBalances.lookup(shKey) : 0n;
       if (shBal < amount) {
         throw new Error(
-          `the swap's give leg spends the account's SHIELDED balance, which is ${shBal} ` +
-          `(the unshielded balance does not count here) — run "Fund shielded" first, ` +
+          `the swap's give leg spends the account's SHIELDED ${giveToken.name} balance, which is ${shBal} ` +
+          `(unshielded balances do not count here) — run "Fund shielded" with ${giveToken.name} first, ` +
           `then give at most that amount`,
         );
       }
@@ -502,14 +600,14 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     const action = {
       primaryType: "OpenSwapShielded", manager: manager32, accountId, owner,
       validUntil: deadline(), nonce,
-      giveColor: ("0x" + SHIELDED_COLOR_HEX) as Hex32, giveAmount,
+      giveColor: ("0x" + giveToken.color) as Hex32, giveAmount,
       recipientKind: 0n, recipient: ("0x" + "0".repeat(64)) as Hex32,
-      wantNonce, wantColor: ("0x" + NIGHT_COLOR_HEX) as Hex32, wantAmount,
+      wantNonce, wantColor: ("0x" + wantToken.color) as Hex32, wantAmount,
       creditAccountId: accountId,
     };
     return {
       prep: { action, owner, kind, createdAt: Date.now(),
-        summary: { nonce: String(nonce), give: String(giveAmount), want: String(wantAmount), wantNonce } },
+        summary: { nonce: String(nonce), give: `${giveAmount} ${giveToken.name}`, want: `${wantAmount} ${wantToken.name}`, giveToken: giveToken.name, wantToken: wantToken.name, wantNonce } },
       accountId,
     };
   }
@@ -526,10 +624,12 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
       const parsed = MidnightBech32m.parse(r);
       recipient32 = toHex(Uint8Array.prototype.slice.call(parsed.data, 0, 32));
     }
+    const wdToken = tokenByName(String(body.token ?? "wUSD"));
+    if (wdToken.family !== "unshielded") throw new Error("withdraw (selector 3) pays the UNSHIELDED balance — pick wUSD");
     const action = {
       primaryType: "WithdrawUnshielded", manager: manager32, accountId, owner,
       validUntil: deadline(), nonce,
-      color: ("0x" + COLOUR_HEX) as Hex32, amount,
+      color: ("0x" + wdToken.color) as Hex32, amount,
       recipientKind: 0n, recipient: ("0x" + recipient32) as Hex32,
     };
     return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce), recipient: recipient32 } }, accountId };
@@ -642,9 +742,9 @@ function offerJob(prep: Prepared, signature: string): Job {
         compiledContract: mgr.compiled,
         managerAddress: MANAGER,
         args: [p.payload, p.signature, p.point],
-        giveColorHex: SHIELDED_COLOR_HEX,
+        giveColorHex: String(prep.action.giveColor).replace(/^0x/, ""),
         giveAmount: prep.action.giveAmount as bigint,
-        wantColorHex: NIGHT_COLOR_HEX,
+        wantColorHex: String(prep.action.wantColor).replace(/^0x/, ""),
         wantAmount: prep.action.wantAmount as bigint,
         log: (line) => jlog(j, line),
       });
@@ -672,25 +772,21 @@ function offerJob(prep: Prepared, signature: string): Job {
 /** Shielded funding runs on the FUNDER (genesis-3) wallet so the relay stays
  * shielded-free: mint the demo token's shielded colour, then deposit it into
  * the account's shielded Manager balance (what an open swap's give leg spends). */
-function fundShieldedJob(accountId: Hex32, amount: bigint): Job {
+function fundShieldedJob(accountId: Hex32, amount: bigint, tokenName = "wBTC"): Job {
   return enqueue("fund-shielded", async (j) => {
+    const token = tokenByName(tokenName);
+    if (token.family !== "shielded") throw new Error(`'${tokenName}' is not a shielded token`);
+    // mint_shielded pays the CALLER, so the funder wallet mints to itself…
     await withProveRetry(j, "fund-shielded-mint", () => session("fund-shielded-mint", async (walletResult) => {
-      const mnt = await join(walletResult, "contract-minter", MINTER, {}, "aaMinterPrivateState");
-      const coinPk = hexToBytes(String(walletResult.zswapSecretKeys.coinPublicKey));
-      jlog(j, `minting ${amount} SHIELDED to the funding wallet…`);
-      const tx = await (mnt.handle.callTx as any).mintShieldedTo(
-        amount,
-        crypto.getRandomValues(new Uint8Array(32)),
-        { is_left: true, left: { bytes: coinPk }, right: { bytes: new Uint8Array(32) } },
-      );
-      jlog(j, `minted — tx=${tx.public?.txId ?? "?"}`);
+      await mintShieldedTo(walletResult, j, token, amount);
     }, { seed: FUNDER_SEED }));
+    // …then deposits the fresh coins into the account's Manager credit.
     await withProveRetry(j, "fund-shielded-deposit", () => session("fund-shielded-deposit", async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      jlog(j, `depositShielded(${amount}) → ${accountId.slice(0, 18)}…`);
+      jlog(j, `depositShielded(${amount} ${token.name}) → ${accountId.slice(0, 18)}…`);
       const coin = {
         nonce: crypto.getRandomValues(new Uint8Array(32)),
-        color: hexToBytes(SHIELDED_COLOR_HEX),
+        color: hexToBytes(token.color),
         value: amount,
       };
       const tx = await (mgr.handle.callTx as any).depositShielded(coin, hexToBytes(accountId));
@@ -700,22 +796,41 @@ function fundShieldedJob(accountId: Hex32, amount: bigint): Job {
   });
 }
 
-function fundJob(accountId: Hex32, amount: bigint): Job {
+/** Mint straight to a WALLET (no Manager deposit): the taker side of the demo.
+ * Shielded mints go to the target wallet itself (the circuit pays its caller);
+ * unshielded mints go to the target's 32-byte user address. */
+function faucetJob(tokenName: string, amount: bigint, target: "relay" | "taker" | "funder"): Job {
+  return enqueue("faucet", async (j) => {
+    const token = tokenByName(tokenName);
+    const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
+    await withProveRetry(j, "faucet", () => session(`faucet-${target}`, async (walletResult) => {
+      if (token.family === "shielded") {
+        const tx = await mintShieldedTo(walletResult, j, token, amount);
+        j.txId = tx.public?.txId ?? null;
+      } else {
+        const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+        const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
+        const tx = await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
+        j.txId = tx.public?.txId ?? null;
+      }
+      jlog(j, `faucet done: ${amount} ${token.name} → the ${target} wallet`);
+    }, { seed }));
+  });
+}
+
+function fundJob(accountId: Hex32, amount: bigint, tokenName = "wUSD"): Job {
   return enqueue("fund", async (j) => {
+    const token = tokenByName(tokenName);
+    if (token.family !== "unshielded") throw new Error(`fund deposits the UNSHIELDED balance — '${tokenName}' is shielded (use Fund shielded)`);
     await withProveRetry(j, "fund-mint", () => session("fund-mint", async (walletResult) => {
-      const mnt = await join(walletResult, "contract-minter", MINTER, {}, "aaMinterPrivateState");
       const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
       const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-      jlog(j, `minting ${amount} to the relay wallet…`);
-      const tx = await (mnt.handle.callTx as any).mintUnshieldedTo(amount, {
-        is_left: false, left: { bytes: new Uint8Array(32) }, right: { bytes: userAddr },
-      });
-      jlog(j, `minted — tx=${tx.public?.txId ?? "?"}`);
+      await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
     }));
     await withProveRetry(j, "fund-deposit", () => session("fund-deposit", async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      jlog(j, `depositUnshielded(${amount}) → ${accountId.slice(0, 18)}…`);
-      const tx = await (mgr.handle.callTx as any).depositUnshielded(COLOUR, amount, hexToBytes(accountId));
+      jlog(j, `depositUnshielded(${amount} ${token.name}) → ${accountId.slice(0, 18)}…`);
+      const tx = await (mgr.handle.callTx as any).depositUnshielded(hexToBytes(token.color), amount, hexToBytes(accountId));
       j.txId = tx.public?.txId ?? null;
       jlog(j, `deposited — tx=${j.txId ?? "?"}`);
     }));
@@ -897,14 +1012,11 @@ Bun.serve({
         return json({
           network: midnightNetworkConfig.id,
           manager: MANAGER, minter: MINTER, domain: artifact.manager.domain,
-          color: COLOUR_HEX, minterTag: artifact.minter.tag ?? null,
+          minterTag: artifact.minter.tag ?? null,
           relay,
           taker,
-          swap: {
-            giveColor: SHIELDED_COLOR_HEX,
-            wantColor: NIGHT_COLOR_HEX,
-            note: "open swap gives the demo token's SHIELDED colour and wants shielded NIGHT; fund the shielded balance first",
-          },
+          tokens: tokens.list.map((t) => ({ name: t.name, family: t.family, color: t.color })),
+          tokensError: tokens.error,
           kernelUrl: KERNEL_URL,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
           // Withdraw's node-rejection (Custom error 214, recipient Either arm
@@ -980,7 +1092,7 @@ Bun.serve({
         if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
-        const job = fundShieldedJob(accountId, amount);
+        const job = fundShieldedJob(accountId, amount, String(body.token ?? "wBTC"));
         return json({ jobId: job.id });
       }
       if (path === "/api/offers") {
@@ -999,7 +1111,16 @@ Bun.serve({
         if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
-        const job = fundJob(accountId, amount);
+        const job = fundJob(accountId, amount, String(body.token ?? "wUSD"));
+        return json({ jobId: job.id });
+      }
+      if (path === "/api/faucet" && req.method === "POST") {
+        const body = await req.json();
+        const amount = BigInt(body.amount ?? 0);
+        if (amount <= 0n) return bad("amount must be a positive integer");
+        const target = String(body.target ?? "taker");
+        if (!["relay", "taker", "funder"].includes(target)) return bad("target must be relay|taker|funder");
+        const job = faucetJob(String(body.token ?? "wETH"), amount, target as any);
         return json({ jobId: job.id });
       }
       if (path === "/api/dev-sign" && req.method === "POST") {
@@ -1034,5 +1155,6 @@ Bun.serve({
 setNetworkId(midnightNetworkConfig.id as any);
 log(`serving on :${PORT} — manager=${MANAGER.slice(0, 16)}… minter=${MINTER.slice(0, 16)}…`);
 if (DEV_SIGNER) log(`dev signer ENABLED — address ${DEV_ADDR} (testing only)`);
+await resolveTokens();
 await checkRelayWallet();
 await checkTakerWallet();
