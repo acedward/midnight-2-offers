@@ -163,7 +163,13 @@ services:
     volumes:
       - 'celestia-auth:/celestia/auth:ro'
       - 'offerfiles-deploy:/deploy-out:ro'   # read the address, never write it
-    environment: *offerfiles_midnight_env
+    environment:
+      <<: *offerfiles_midnight_env
+      # The split's one cross-container wire: POST /v1/offers forwards blobs to
+      # the batcher, whose env default is the one-container era's 127.0.0.1.
+      # Found live (T11.3 addendum): a publish returned INTERNAL "Unable to
+      # connect" until this pointed at the batcher SERVICE.
+      BATCHER_SUBMIT_URL: 'http://batcher:3334'
     healthcheck:
       # bun, not curl: the oven/bun runtime image ships no curl/wget.
       test:
