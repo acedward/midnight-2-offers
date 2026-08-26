@@ -2,17 +2,21 @@
 #
 #   ./up.sh --with offerfiles     (up.sh/down.sh pick this fragment up by filename)
 #
-# ─── THIS FRAGMENT IS PARTIAL, ON PURPOSE ────────────────────────────────────────────────────
-# Today it contains ONE service: the local Celestia devnet (plan T4.4). The offer-files kernel
-# (sync node :9999) and the batcher (:3334) join it in P4b — see the marked block at the bottom.
+# ─── FOUR SERVICES, ONE CONCERN EACH (restructured in Phase 11) ──────────────────────────────
+#   celestia           the local Celestia DA devnet (T4.4)
+#   offerfiles-deploy  ONE-SHOT: deploys the offer-files contract once per stack and persists the
+#                      address; mints dev tokens (non-fatal) on the same run
+#   kernel             the sync node :9999 + its embedded PGLite store
+#   batcher            the balancing batcher :3334, on its own
 #
-# Celestia was built first because it is the only part of the offer-files stack that does not
-# touch the Midnight SDK: it is two Go binaries and a chain of its own. The kernel and batcher
-# are blocked on the `@effectstream/*` ledger-v9 migration (project Effectstream/00016) and
-# Celestia is not, so building it now means P4b is wiring rather than wiring *plus* a devnet.
-# A consequence worth stating: `--with offerfiles` brings up a working DA layer with nothing
-# publishing to it. That is a useful thing to have (verify.sh proves the round trip the kernel
-# will do) but it is not the offer-files demo.
+# WHAT THIS REPLACED, and why it mattered. All of it used to be one `kernel` container running
+# `bunx orchestrator start start.external.ts` — six processes under a dev orchestrator. Two
+# consequences: restarting any one process meant restarting all of them, and the contract deploy
+# re-ran on every container recreate. That deploy script begins with
+# `rm -f contract-offer-files.<network>.json`, so a `--force-recreate` MINTED A NEW CONTRACT and
+# reset the order book's identity — measured at three different addresses in one day. Persisting
+# the address on a volume and skipping the deploy when it is present fixes that at the source;
+# kernel and batcher now restart independently of each other and of the deploy.
 #
 # `profiles:` is deliberately NOT used here — this repo's notion of a profile is the FRAGMENT
 # FILENAME, and up.sh never passes `--profile`, so a service carrying a compose profile key
@@ -100,60 +104,66 @@ services:
     restart: 'unless-stopped'
 
 
-  # ── the kernel itself (T4.2/T4.3/T4.5) ──────────────────────────────────────
-  # One container runs the kernel's own processes — pglite, one-shot contract
-  # deploy (T4.5: the offer-files contract lands on the demo chain at first
-  # bring-up; /v1/midnight/config serves its address), dev-token mint, sync
-  # node (:9999) and balancing batcher (:3334) — via the kernel repo's
-  # start.external.ts, which launches NO Midnight/Celestia infrastructure and
-  # fail-fast-probes this stack's services instead. See the design notes below
-  # (they were written by T4.4 before this service existed, and every one of
-  # them is honoured here).
+  # ── offerfiles-deploy (T11.2) ───────────────────────────────────────────────
+  # ONE-SHOT: deploys the offer-files contract once per stack, persists the
+  # address on a volume, and mints the dev test tokens (non-fatal) on the same
+  # run. Every later start finds the artifact and JOINS the existing contract.
   #
-  # OFFER HISTORY IS IN-MEMORY (T4.6): the kernel stores offers in PGLite
-  # inside the container, so `docker compose restart kernel` (or any container
-  # recreation) resets the offer book — while the CHAIN keeps the settled
-  # state. That is a spec'd edge case of the demo, not a bug; the contract is
-  # re-read and re-indexed from genesis on the next start.
-  kernel:
+  # This service exists because the old single kernel container re-ran
+  # `midnight-contract:deploy` on every start, and that script begins with
+  # `rm -f contract-offer-files.<network>.json` — so a `--force-recreate`
+  # silently minted a NEW contract and reset the book's identity (measured:
+  # three addresses in one day).
+  offerfiles-deploy:
     image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
-    build:
+    build: &offerfiles_build
       context: '../images/offerfiles-kernel'
       args:
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
         KERNEL_REF: '${KERNEL_REF:-00001-ledger-v9}'
-    ports:
-      - '${BIND_ADDR:-127.0.0.1}:${KERNEL_HOST_PORT:-9999}:9999'
-      - '${BIND_ADDR:-127.0.0.1}:${BATCHER_HOST_PORT:-3334}:3334'
+    entrypoint: ['/usr/local/bin/entrypoint-deploy.sh']
+    restart: 'no'            # a one-shot that "restarts" is a redeploy loop
     volumes:
-      - 'celestia-auth:/celestia/auth:ro'   # the token handoff, READ-ONLY (note 1)
-    environment:
+      - 'celestia-auth:/celestia/auth:ro'
+      - 'offerfiles-deploy:/deploy-out'
+    environment: &offerfiles_midnight_env
       MIDNIGHT_NETWORK_ID: 'undeployed'
       MIDNIGHT_NODE_HTTP: 'http://node:9944'
-      # Explicit v4 (K4.2) — the kernel and its SDK line moved off the v3 alias.
       MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v4/graphql'
       MIDNIGHT_INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
       MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
-      # genesis-1 deploys/mints; genesis-2 is the batcher fee wallet — the seed
-      # wallets.json reserves for exactly this role. Both are prefunded with
-      # DUST registered at genesis, so no funding step gates the bring-up.
       MIDNIGHT_WALLET_SEED: '${KERNEL_WALLET_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
       BATCHER_WALLET_SEED: '${BATCHER_WALLET_SEED:-0000000000000000000000000000000000000000000000000000000000000002}'
-      CELESTIA_RPC_URL: 'http://celestia:26658'           # container port, not CELESTIA_HOST_PORT
-      CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'  # SAME var as above
+      CELESTIA_RPC_URL: 'http://celestia:26658'
+      CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'
       CELESTIA_NETWORK: '${CELESTIA_NETWORK:-devnet}'
-      CELESTIA_START_HEIGHT: '1'                          # devnet history is not worth skipping (note 2)
-      # Accept offers whose maker is a CONTRACT CALL (the AA console's open
-      # swaps). Kernel commit eb5f872: strict wellFormed first; only the exact
-      # missing-contract failure widens into a retry that still verifies native
-      # zswap proofs + signatures (the contract-call proof is verified by the
-      # node at settlement). Off by default upstream; the demo turns it on.
+      CELESTIA_START_HEIGHT: '1'
       ALLOW_CONTRACT_MAKER_OFFERS: '${ALLOW_CONTRACT_MAKER_OFFERS:-1}'
-      # The solver-branch kernel (00001-solver-v9) adds an HTTP rate limiter
-      # (default 60/min) — too tight for the solver's book mirror + the console
-      # + a browser all polling one dev kernel. No effect on the plain
-      # 00001-ledger-v9 build, which has no limiter.
-      API_RATE_LIMIT_MAX: '${API_RATE_LIMIT_MAX:-600}'
+    depends_on:
+      celestia: { condition: service_healthy }   # guarantees a valid token on the volume
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+
+
+  # ── kernel (T11.2) ──────────────────────────────────────────────────────────
+  # The SYNC NODE and its embedded PGLite store — two processes, no orchestrator,
+  # no contract deploy. Recreating this container now rejoins the contract the
+  # one-shot deployed instead of minting a new one.
+  #
+  # OFFER HISTORY IS STILL IN-MEMORY (T4.6): the book lives in PGLite inside this
+  # container, so a recreate re-indexes from Celestia height 1 rather than
+  # resuming. What Phase 11 changed is that the CONTRACT no longer moves under
+  # it — the identity survives, the projection rebuilds.
+  kernel:
+    image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+    build: *offerfiles_build
+    entrypoint: ['/usr/local/bin/entrypoint-kernel.sh']
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${KERNEL_HOST_PORT:-9999}:9999'
+    volumes:
+      - 'celestia-auth:/celestia/auth:ro'
+      - 'offerfiles-deploy:/deploy-out:ro'   # read the address, never write it
+    environment: *offerfiles_midnight_env
     healthcheck:
       # bun, not curl: the oven/bun runtime image ships no curl/wget.
       test:
@@ -163,73 +173,74 @@ services:
         - 'const r = await fetch("http://127.0.0.1:9999/v1/health"); process.exit(r.ok ? 0 : 1)'
       interval: 5s
       timeout: 4s
-      # Bring-up does real chain work before the API answers: probe, contract
-      # deploy (proving a deploy tx), mint, first sync. start_period absorbs it.
+      # No contract deploy on this path any more, but first sync still indexes
+      # from Celestia height 1 before the API answers.
       retries: 30
-      start_period: 180s
+      start_period: 120s
     depends_on:
-      celestia: { condition: service_healthy }            # guarantees a valid token on the volume
+      offerfiles-deploy: { condition: service_completed_successfully }
+      celestia: { condition: service_healthy }
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+    restart: 'unless-stopped'
+
+
+  # ── batcher (T11.2) ─────────────────────────────────────────────────────────
+  # Its own container, and genuinely independent: nothing in packages/batcher
+  # reads the contract address or touches a database. It restarts without
+  # disturbing the kernel, and vice versa.
+  #
+  # depends_on offerfiles-deploy is NOT an address dependency — it is the
+  # wallet-serialization rule the orchestrator encoded as
+  # `dependsOn: [CONTRACT_DEPLOY, MINT]`: two wallet facades bootstrapping
+  # against one Midnight node force each other's connection down, and the mint
+  # wallet runs inside that one-shot.
+  batcher:
+    image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+    build: *offerfiles_build
+    entrypoint: ['/usr/local/bin/entrypoint-batcher.sh']
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${BATCHER_HOST_PORT:-3334}:3334'
+    volumes:
+      - 'celestia-auth:/celestia/auth:ro'
+      # The batcher's FileStorage queue. Its own volume so a restart does not
+      # lose inputs that have been accepted but not yet submitted.
+      - 'offerfiles-batcher:/app/packages/batcher/batcher-data'
+    environment: *offerfiles_midnight_env
+    healthcheck:
+      # The batcher exposes no health route, so this asserts only that the HTTP
+      # listener is up — the same thing scripts/verify-kernel.sh asserts.
+      test:
+        - 'CMD'
+        - 'bun'
+        - '-e'
+        - 'try { await fetch("http://127.0.0.1:3334/"); process.exit(0); } catch { process.exit(1); }'
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 60s
+    depends_on:
+      offerfiles-deploy: { condition: service_completed_successfully }
+      celestia: { condition: service_healthy }
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
     restart: 'unless-stopped'
 
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # P4b GOES HERE — the offer-files kernel (T4.2, T4.3, T4.5) and the batcher.
+  # The P4b design notes that used to sit here are now IMPLEMENTED above and in
+  # images/offerfiles-kernel/. Two are load-bearing enough to keep:
   #
-  # Everything below is a note for that runner, not configuration. It is written down here
-  # because this is where it will be needed and because each line was established by building
-  # and verifying the Celestia half (see the plan's T4.4 findings).
+  # 1. THE AUTH TOKEN cannot be a compose `environment:`/`env_file:` value — it does not exist
+  #    until the bridge store is initialised inside the celestia container, long after compose
+  #    evaluated those on the host. Every offerfiles service mounts `celestia-auth` read-only and
+  #    sources /celestia/auth/celestia.env as its first act (entrypoint-common.sh).
+  #    `condition: service_healthy` on celestia is what makes the file's presence a guarantee
+  #    rather than a race: that healthcheck reads the token and makes an authenticated call.
   #
-  #   kernel:                                  # sync node, container :9999
-  #     image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
-  #     build: { context: ../images/offerfiles-kernel }
-  #     ports: ['${BIND_ADDR:-127.0.0.1}:${KERNEL_HOST_PORT:-9999}:9999']
-  #     volumes: ['celestia-auth:/celestia/auth:ro']      # <- the token handoff, READ-ONLY
-  #     environment:
-  #       CELESTIA_RPC_URL:  'http://celestia:26658'      # container port, not CELESTIA_HOST_PORT
-  #       CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'  # SAME var as above
-  #       CELESTIA_NETWORK:  '${CELESTIA_NETWORK:-devnet}'
-  #       CELESTIA_START_HEIGHT: '1'                      # a devnet's history is not worth skipping
-  #       MIDNIGHT_NODE_HTTP: 'http://node:9944'
-  #       MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v3/graphql'   # v3 aliases v4 (verified)
-  #       MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
-  #     depends_on:
-  #       celestia: { condition: service_healthy }        # guarantees a valid token on the volume
-  #       node:     { condition: service_healthy }
-  #       indexer:  { condition: service_healthy }
-  #
-  # 1. THE AUTH TOKEN. It cannot be a compose `environment:`/`env_file:` value: it does not exist
-  #    until the bridge store is initialised, which happens inside the celestia container long
-  #    after compose has finished evaluating those on the host. Mount `celestia-auth` read-only
-  #    and have the kernel's entrypoint source the handoff file as its first act:
-  #
-  #        set -a; . /celestia/auth/celestia.env; set +a
-  #        exec bun run …
-  #
-  #    That file sets CELESTIA_RPC_URL, CELESTIA_AUTH_TOKEN, CELESTIA_NAMESPACE, CELESTIA_NETWORK
-  #    and CELESTIA_CHAIN_ID — the exact names `packages/node/env.ts` reads — so the kernel needs
-  #    no new configuration surface. Anything already in the environment can win by exporting it
-  #    after the source, if a service ever needs to override one.
-  #    `condition: service_healthy` is what makes the file's presence a guarantee rather than a
-  #    race: the healthcheck reads the token and makes an authenticated call with it, so a healthy
-  #    celestia container means "the file exists and the token in it works".
-  #    Alternative if a shim is unwanted: set CELESTIA_SKIP_AUTH=true and drop the mount. That is
-  #    what the kernel's own dev orchestrator does (`--rpc.skip-auth`), at the cost of never
-  #    exercising the token path locally.
-  #
-  # 2. START HEIGHT. The kernel defaults CELESTIA_START_HEIGHT to unset and preview sets it to
-  #    10,620,000 (a Mocha height). Against this devnet it must be 1 or unset — a start height
-  #    above the devnet's head means the sync node waits forever and reports nothing wrong.
-  #
-  # 3. FEES. The bridge wallet is funded with 1e8 utia at bootstrap, which is a few thousand
-  #    blob submissions at devnet prices. It is the BRIDGE that pays (it signs its own
-  #    submissions), so the batcher needs no TIA of its own — only the Midnight side needs a
-  #    funded wallet (and that one needs 1e7 NIGHT; see the plan's DUST-accrual finding).
-  #
-  # 4. THE MIDNIGHT SIDE OF THE BATCHER still needs `wait_finalized_height >= 1` before it
-  #    transacts (the OnlyGenesisFinalized finding) — up.sh already gates on that for the whole
-  #    stack, so nothing extra is needed here, but do not "optimise" that wait away.
+  # 2. START HEIGHT must be 1 (or unset) against this devnet. The kernel defaults it unset and
+  #    preview pins a Mocha height; a start height above the devnet's head makes the sync node
+  #    wait forever and report nothing wrong.
   # ═══════════════════════════════════════════════════════════════════════════
 
 volumes:
@@ -241,3 +252,10 @@ volumes:
   # longer exists is worse than no history at all.
   celestia-data:
   celestia-auth:
+  # The deployed offer-files contract's address (T11.2) — what makes a kernel recreate JOIN the
+  # existing contract instead of minting a new one. It belongs to the CHAIN, so it must die with
+  # the Midnight volumes: an address surviving `./down.sh -v` would point the next stack at a
+  # contract its genesis never had.
+  offerfiles-deploy:
+  # The batcher's FileStorage queue — inputs accepted but not yet submitted.
+  offerfiles-batcher:

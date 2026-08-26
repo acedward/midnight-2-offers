@@ -1,6 +1,10 @@
-# offerfiles-kernel — the zswap offer-files kernel (sync node :9999 + balancing
-# batcher :3334) running in EXTERNAL-STACK mode against this compose stack's
-# node/indexer/proof-server and Celestia devnet.
+# offerfiles-kernel — the zswap offer-files kernel running in EXTERNAL-STACK
+# mode against this compose stack's node/indexer/proof-server and Celestia
+# devnet.
+#
+# ONE IMAGE, THREE CONTAINERS (demo-infra Phase 11): the sync node (:9999), the
+# balancing batcher (:3334) and a deploy one-shot each run this image with their
+# own entrypoint. See the entrypoint block near the bottom.
 #
 # Source: effectstream/zswap-offerfiles-kernel, branch `00001-ledger-v9` (the
 # ledger-v9 migration). Like images/umbra-evm, built from a REMOTE clone so
@@ -10,12 +14,21 @@
 # pin KERNEL_REF to a sha to pick up new commits. The resolved commit is baked
 # at /app/.kernel-commit.
 #
-# WHY start.external.ts AND NOT the kernel's own `bun run dev`: the dev
-# orchestrator's launchMidnight() launches its own devnet unconditionally AND
-# declares stopProcessAtPort [9944, 8088, 6300] — pointed at a live stack it
-# would first kill the listeners it was meant to use (measured 2026-08-25,
-# master-plan T4.3 finding). start.external.ts launches only the kernel's own
-# processes and fail-fast-probes the external endpoints instead.
+# WHY NO ORCHESTRATOR AT ALL. `bun run dev`'s launchMidnight() launches its own
+# devnet unconditionally AND declares stopProcessAtPort [9944, 8088, 6300] —
+# pointed at a live stack it would first kill the listeners it was meant to use
+# (measured 2026-08-25, master-plan T4.3). `start.external.ts` fixed that by
+# launching only the kernel's own processes, but kept the orchestrator shape:
+# six processes in one container, and a contract re-deploy on every recreate.
+# Phase 11 drops the orchestrator entirely. The repo's real entrypoints —
+# `packages/node/main.dev.ts`, `packages/batcher/batcher.dev.ts`,
+# `packages/node/pglite.dev.ts` — are each a single-process `bun run`, and
+# preflight-external runs per container instead of once as a service.
+#
+# `*.dev.ts` and not `*.mainnet.ts`: the mainnet variants are hard-gated —
+# config.mainnet.ts and batcher.mainnet.ts both throw unless
+# CELESTIA_NETWORK=mainnet — and this stack is a devnet. "dev" in those names
+# is the target network, not a multi-process launcher.
 #
 # THE CONTRACT IS COMPILED AT BUILD TIME, in a dedicated stage running the
 # pinned compactc 0.33.0-rc.2 fetched from LFDT-Minokawa/compact release
@@ -95,24 +108,42 @@ COPY --from=compact /contract/src/managed /app/packages/contracts-midnight/contr
 # Workspace install. Frozen: the lockfile in the branch IS the tested set.
 RUN bun install --frozen-lockfile
 
-# The Celestia auth-token handoff (offerfiles.yml note #1): the token does not
-# exist until the celestia container initialises its bridge store, so it cannot
-# be a compose environment value. The entrypoint sources the handoff file first
-# — it sets CELESTIA_RPC_URL, CELESTIA_AUTH_TOKEN, CELESTIA_NAMESPACE,
-# CELESTIA_NETWORK, CELESTIA_CHAIN_ID — then lets anything already exported by
-# compose win, then execs the orchestrator on start.external.ts.
-RUN printf '%s\n' \
-      '#!/bin/bash' \
-      'set -euo pipefail' \
-      'if [ -f /celestia/auth/celestia.env ]; then' \
-      '  saved="$(export -p)"' \
-      '  set -a; . /celestia/auth/celestia.env; set +a' \
-      '  eval "$saved"   # compose-provided env wins over the handoff file' \
-      'fi' \
-      'exec bunx orchestrator start "${KERNEL_ENTRY:-start.external.ts}"' \
-      > /usr/local/bin/kernel-entrypoint \
- && chmod +x /usr/local/bin/kernel-entrypoint
+# ── one image, three entrypoints (demo-infra Phase 11) ───────────────────────
+# This image no longer runs the orchestrator. `bunx orchestrator start
+# start.external.ts` put six processes in one container AND re-deployed the
+# offer-files contract on every recreate — three different contract addresses
+# in one day, with the order book's identity resetting under it.
+#
+# compose/offerfiles.yml now runs the SAME image three times, one concern each:
+#
+#   offerfiles-deploy  one-shot. Deploys the contract ONCE per stack and
+#                      persists the address on a volume; mints dev tokens
+#                      (non-fatal) riding the same run. Skips when the artifact
+#                      is already there, so recreates JOIN the contract.
+#   kernel             the sync node (:9999) + its embedded PGLite store.
+#   batcher            the balancing batcher (:3334), alone.
+#
+# All three share entrypoint-common.sh: the Celestia token handoff, then
+# preflight-external (T11.1 — a per-container fail-fast, not a service), then
+# the contract address for the two that need one.
+#
+# The Celestia auth-token handoff (offerfiles.yml note #1) is unchanged: the
+# token does not exist until the celestia container initialises its bridge
+# store, so it arrives on a read-only volume and anything compose already set
+# wins over it.
+COPY entrypoint-common.sh /usr/local/lib/offerfiles/entrypoint-common.sh
+COPY entrypoint-kernel.sh entrypoint-batcher.sh entrypoint-deploy.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint-kernel.sh \
+             /usr/local/bin/entrypoint-batcher.sh \
+             /usr/local/bin/entrypoint-deploy.sh \
+ # Kept as an alias so an older compose fragment (or a habit) still lands on
+ # something that works — it is the sync node, which is what `kernel` meant.
+ && ln -s /usr/local/bin/entrypoint-kernel.sh /usr/local/bin/kernel-entrypoint
 
-# :9999 sync-node API (GET /v1/health), :3334 batcher.
+# :9999 sync-node API (GET /v1/health), :3334 batcher. Which one a container
+# serves depends on the entrypoint compose selects.
 EXPOSE 9999 3334
-ENTRYPOINT ["/usr/local/bin/kernel-entrypoint"]
+
+# No default: each service in compose/offerfiles.yml names its own entrypoint,
+# and a container that starts the wrong process is worse than one that refuses.
+ENTRYPOINT ["/usr/local/bin/entrypoint-kernel.sh"]

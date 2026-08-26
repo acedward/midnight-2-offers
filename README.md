@@ -8,7 +8,7 @@ A single Docker Compose project that brings up a complete local Midnight 2.x dem
 | Wallet funding tooling | `core` | **shipped** | Genesis-prefunded NIGHT+DUST dev wallets, three Lace-importable mnemonic wallets, and a CLI to fund arbitrary extra ones |
 | umbra-evm | `evm` | **shipped** | Ethereum JSON-RPC **read-only** façade over Midnight (chainId 2400): HTTP `:8545` + WS `:10021`, backed by Postgres |
 | Celestia DA devnet | `offerfiles` | **shipped** | Local single-node Celestia (consensus + bridge), DA JSON-RPC `:26658`, funded bridge wallet, blob round trip verified |
-| offer-files kernel + batcher | `offerfiles` | **shipped** | zswap offer-files sync node `:9999` + balancing batcher `:3334`, contract deployed at bring-up |
+| offer-files kernel + batcher | `offerfiles` | **shipped** | zswap offer-files sync node `:9999` and balancing batcher `:3334` as separate services, with a deploy one-shot that lands the contract once per stack |
 | zswap-da frontend | `frontend` | **shipped** (needs the local template checkout) | React/Vite make→take swap SPA `:10600` |
 | AA Manager + Minter | `aa` | **shipped** | one-shot deploy + mint; internal `_experimental` proof server; receipt in the `aa-out` volume |
 
@@ -92,6 +92,19 @@ volume at `/aa/out/offers/<offerId>.swapoffer`.
 the container: restarting or recreating the `kernel` container resets the indexed offers, while
 the chain keeps the settled state — the book is re-indexed from genesis on the next start. A
 demo edge case, not a bug.
+
+**The contract, however, no longer moves.** The `offerfiles` profile is three services, not one:
+`offerfiles-deploy` (a one-shot that deploys the offer-files contract **once per stack** and
+persists its address on a volume), `kernel` (the sync node `:9999` plus its embedded PGLite),
+and `batcher` (the balancing batcher `:3334`, on its own). Before this split everything ran
+under one dev orchestrator, and the contract deploy re-ran on every container recreate — its
+script begins by deleting the address file, so a `--force-recreate` silently minted a **new
+contract** and reset the book's identity. Now a recreate rejoins the existing contract; only the
+projection rebuilds. `./down.sh -v` drops the address along with the chain it belongs to, which
+is when a fresh deploy is correct.
+
+Practical consequences: `kernel` and `batcher` restart independently of each other, and
+`docker compose logs batcher` is the batcher's log alone rather than six processes interleaved.
 
 ## Quickstart
 
@@ -178,7 +191,7 @@ stacks on one machine possible.
 | — (not published) | — | 26657 | `celestia` (consensus RPC) | the bridge, over container-loopback | `offerfiles` |
 | — (not published) | — | 9090 | `celestia` (consensus gRPC) | the bridge, over container-loopback | `offerfiles` |
 | `KERNEL_HOST_PORT` | 9999 | 9999 | `kernel` (sync node API) | the frontend's order book + ZK assets, `verify.sh` | `offerfiles` |
-| `BATCHER_HOST_PORT` | 3334 | 3334 | `kernel` (batcher) | the frontend's `send-input` | `offerfiles` |
+| `BATCHER_HOST_PORT` | 3334 | 3334 | `batcher` (own service) | the frontend's `send-input` | `offerfiles` |
 | `FRONTEND_HOST_PORT` | 10600 | 10600 | `frontend` (nginx) | your browser | `frontend` |
 | `AA_CONSOLE_HOST_PORT` | 10700 | 8090 | `aa-console` (web console + relay) | your browser | `aa` |
 
