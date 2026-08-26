@@ -344,7 +344,7 @@ const REPOS = [
     notes: [["PR #5", "https://github.com/acedward/UmbraDB/pull/5", "home of the JSON-RPC work — everything merged into it"]],
   },
   {
-    repo: "shieldedtech/midnight-intents-swaps", url: "https://github.com/shieldedtech/midnight-intents-swaps",
+    repo: "shieldedtech/midnight-intents-swaps", muted: true, url: "https://github.com/shieldedtech/midnight-intents-swaps",
     role: "the Midnight Intents relay the solver would execute through",
     ref: "pinned d444c83 — DROPPED (observation-only solver)",
     notes: [],
@@ -368,25 +368,25 @@ const REPOS = [
     notes: [["PR #2", "https://github.com/acedward/midnight-ledger/pull/2", "the memo format lives on a ledger fork, not upstream"]],
   },
   {
-    repo: "midnightntwrk/midnight-node", url: "https://hub.docker.com/r/midnightntwrk/midnight-node",
+    repo: "midnightntwrk/midnight-node", muted: true, url: "https://hub.docker.com/r/midnightntwrk/midnight-node",
     role: "the Midnight node (core)",
     ref: "image 2.0.0-rc.4",
     notes: [],
   },
   {
-    repo: "midnightntwrk/indexer-standalone", url: "https://hub.docker.com/r/midnightntwrk/indexer-standalone",
+    repo: "midnightntwrk/indexer-standalone", muted: true, url: "https://hub.docker.com/r/midnightntwrk/indexer-standalone",
     role: "the chain indexer (core; GraphQL v4)",
     ref: "image 4.4.0-rc.1 (linux/amd64 only)",
     notes: [],
   },
   {
-    repo: "midnightntwrk/proof-server", url: "https://hub.docker.com/r/midnightntwrk/proof-server",
+    repo: "midnightntwrk/proof-server", muted: true, url: "https://hub.docker.com/r/midnightntwrk/proof-server",
     role: "proving — TWO instances: plain (kernel's v6 keys) + _experimental (the aa profile's zkir-v3/v7 keys)",
     ref: "images 9.0.0-rc.5 and 9.0.0-rc.5_experimental",
     notes: [],
   },
   {
-    repo: "midnightntwrk/midnight-node-toolkit", url: "https://hub.docker.com/r/midnightntwrk/midnight-node-toolkit",
+    repo: "midnightntwrk/midnight-node-toolkit", muted: true, url: "https://hub.docker.com/r/midnightntwrk/midnight-node-toolkit",
     role: "wallet funding / address derivation (scripts)",
     ref: "image 2.0.0-rc.4 (must match the node)",
     notes: [],
@@ -400,6 +400,12 @@ function renderRepos() {
   const tbody = document.getElementById("repos-table");
   for (const r of REPOS) {
     const tr = document.createElement("tr");
+    if (r.muted) {
+      // Upstream / third-party rows we consume but do not change (we manage
+      // the acedward/* and effectstream/* repos).
+      tr.style.opacity = "0.45";
+      tr.title = "upstream dependency — no code changes of ours";
+    }
     const tdRepo = document.createElement("td");
     const a = document.createElement("a");
     a.href = r.url; a.target = "_blank"; a.rel = "noopener";
