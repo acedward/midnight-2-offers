@@ -196,7 +196,8 @@ const INFRA_NODES = [
   { id: "solverSink",    label: "Solver sink + feed",        sub: ":10800 · solver",    x: 600, y: 100, w: 200, h: 56 },
   { id: "evmRpc",        label: "umbra-evm JSON-RPC",        sub: ":8545 · evm",        x: 870, y: 100, w: 195, h: 56 },
   { id: "aaProofServer", label: "aa-proof-server",           sub: "experimental · internal", x: 55, y: 225, w: 205, h: 50 },
-  { id: "kernel",        label: "offer-files kernel+batcher", sub: ":9999 / :3334 · offerfiles", x: 330, y: 225, w: 200, h: 60 },
+  { id: "kernel",        label: "offer-files kernel (sync node)", sub: ":9999 · contract deployed ONCE (persisted)", x: 330, y: 225, w: 200, h: 60 },
+  { id: "batcher",       label: "offer-files batcher",       sub: ":3334 · own container",  x: 870, y: 225, w: 195, h: 50 },
   { id: "solver",        label: "COW solver",                sub: "observation mode",   x: 600, y: 225, w: 200, h: 50 },
   { id: "proofServer",   label: "proof-server (plain)",      sub: ":6300 · core",       x: 55,  y: 350, w: 205, h: 50 },
   { id: "celestia",      label: "Celestia DA devnet",        sub: ":26658 · offerfiles", x: 330, y: 350, w: 200, h: 50 },
@@ -206,16 +207,18 @@ const INFRA_NODES = [
 const INFRA_EDGES = [
   ["browser", "console"], ["browser", "frontend"], ["browser", "solverSink"], ["browser", "evmRpc"],
   ["console", "aaProofServer"], ["console", "proofServer"], ["console", "kernel"], ["console", "node"], ["console", "indexer"],
-  ["frontend", "kernel"],
+  ["frontend", "kernel"], ["frontend", "batcher"],
   ["solver", "kernel"], ["solver", "solverSink"],
-  ["kernel", "celestia"], ["kernel", "node"], ["kernel", "indexer"],
+  ["kernel", "batcher"], ["kernel", "celestia"], ["kernel", "node"], ["kernel", "indexer"],
+  ["batcher", "celestia"], ["batcher", "node"],
   ["evmRpc", "indexer"],
   ["indexer", "node"],
 ];
 const INFRA_LABELS = {
   console: "aa-console backend — the relay: serves the page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this very table", node: "midnight node", indexer: "indexer",
   proofServer: "proof-server (plain)", aaProofServer: "aa-proof-server (experimental)",
-  kernel: "offer-files kernel", kernelSync: "kernel sync", batcher: "batcher",
+  kernel: "offer-files kernel (sync node :9999; contract deployed once per stack, address persisted)",
+  kernelSync: "kernel sync", batcher: "offer-files batcher (:3334, own container since the split)",
   celestia: "celestia", evmRpc: "umbra-evm RPC", frontend: "zswap-da frontend",
   solverSink: "solver sink", solver: "cow-solver",
 };

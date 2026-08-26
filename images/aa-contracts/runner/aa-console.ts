@@ -1019,7 +1019,8 @@ async function infraStatus() {
         const s = (await fetchJson(`${KERNEL_URL}/v1/health/sync`)) as any;
         return { current: s.current ?? s.isCurrent ?? null, offers: s.offers ?? null };
       }),
-      probe(async () => (await fetchJson("http://kernel:3334/health")) as any),
+      // Its OWN container since the Phase 11 split — not a port on the kernel.
+      probe(async () => (await fetchJson("http://batcher:3334/health")) as any),
       probe(() => fetchAlive("http://celestia:26658/")),
       probe(async () => {
         const r = (await fetchJson("http://evm-rpc:8545", {
