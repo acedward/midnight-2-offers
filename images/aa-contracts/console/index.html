@@ -63,6 +63,10 @@
   }
   .seg button + button { border-left: 1px solid var(--edge); }
   .seg button.active { background: var(--accent); color: #0b1018; }
+  .seg.small { margin: 2px 0 12px; }
+  .seg.small button { padding: 5px 12px; font-size: 12px; }
+  .actpane { display: none; }
+  .actpane.active { display: block; }
   main.view { display: none; }
   main.view.active { display: grid; }
   #infra-canvas { width: 100%; max-width: 1120px; height: auto; display: block; }
@@ -83,6 +87,7 @@
      through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.</p>
   <nav class="seg" id="seg">
     <button data-view="aa" class="active">Account Abstraction + EVM</button>
+    <button data-view="aamid">AA + Midnight</button>
     <button data-view="solver">COW Solver Web Socket</button>
     <button data-view="infra">Infrastructure</button>
     <button data-view="memos">Memos</button>
@@ -134,45 +139,79 @@
     </div></form>
   </section>
 
-  <section>
-    <h2>Transfer</h2>
-    <p class="note">Internal transfer between AA accounts, signed by the sender's EVM wallet.</p>
-    <form id="f-transfer"><div class="row">
-      <div><label>from (yours)</label><select id="tr-from" required></select></div>
-      <div><label>to</label><select id="tr-to" required></select></div>
-      <div><label>amount</label><input id="tr-amount" value="250000" pattern="[0-9]+" required></div>
-      <div><button type="submit" disabled id="op-transfer">Transfer</button></div>
-    </div></form>
-  </section>
-
-  <section>
-    <h2>Withdraw</h2>
-    <p class="note warn" id="withdraw-note">—</p>
-    <form id="f-withdraw"><div class="row">
-      <div><label>account (yours)</label><select id="wd-from" required></select></div>
-      <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
-      <div style="flex:2"><label>recipient (mn_addr… or 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
-      <div><button type="submit" disabled id="op-withdraw">Withdraw</button></div>
-    </div></form>
-  </section>
-
   <section class="wide">
-    <h2>Swap — publish an offer</h2>
-    <p class="note">Opens a shielded swap on the Manager (selector 6), signed by your EVM wallet. The
-    proven transaction is <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the
-    offer, published to the offer-files kernel as a <code>swapoffer1…</code> blob for a taker (or
-    the solver) to settle. The give leg spends the account's <b>shielded</b> balance — fund it first.</p>
-    <form id="f-fundsh"><div class="row">
-      <div><label>account</label><select id="fs-account" required></select></div>
-      <div><label>shielded amount</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
-      <div><button type="submit" class="ghost">Fund shielded</button></div>
-    </div></form>
-    <form id="f-swap"><div class="row">
-      <div><label>account (yours)</label><select id="sw-from" required></select></div>
-      <div><label id="sw-give-label">give (shielded token)</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
-      <div><label>want (shielded NIGHT)</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
-      <div><button type="submit" disabled id="op-swap">Publish offer</button></div>
-    </div></form>
+    <h2>Actions — the Manager's <code>execute</code></h2>
+    <nav class="seg small" id="act-seg">
+      <button data-act="transfer" class="active">Transfer</button>
+      <button data-act="transfer-sh">Transfer (shielded)</button>
+      <button data-act="withdraw">Withdraw</button>
+      <button data-act="withdraw-sh">Withdraw (shielded)</button>
+      <button data-act="swap">Swap — publish offer</button>
+    </nav>
+
+    <div id="act-transfer" class="actpane active">
+      <p class="note">Selector 5 — internal transfer between AA accounts, signed by the sender's EVM wallet.</p>
+      <form id="f-transfer"><div class="row">
+        <div><label>from (yours)</label><select id="tr-from" required></select></div>
+        <div><label>to</label><select id="tr-to" required></select></div>
+        <div><label>amount</label><input id="tr-amount" value="250000" pattern="[0-9]+" required></div>
+        <div><button type="submit" disabled id="op-transfer">Transfer</button></div>
+      </div></form>
+    </div>
+
+    <div id="act-transfer-sh" class="actpane">
+      <p class="note warn">Selector 4 — internal SHIELDED transfer between AA accounts. Supported by
+      the contract; <b>not wired in this console yet</b> (UI preview).</p>
+      <form><div class="row">
+        <div><label>from (yours)</label><select disabled><option>—</option></select></div>
+        <div><label>to</label><select disabled><option>—</option></select></div>
+        <div><label>amount (shielded)</label><input value="100000" disabled></div>
+        <div><button type="button" disabled>Transfer shielded</button></div>
+      </div></form>
+    </div>
+
+    <div id="act-withdraw" class="actpane">
+      <p class="note">Selector 3 — withdraw the account's unshielded balance to any standard Midnight
+      address (a 32-byte user address; contract recipients are refused by design).</p>
+      <p class="note warn" id="withdraw-note">—</p>
+      <form id="f-withdraw"><div class="row">
+        <div><label>account (yours)</label><select id="wd-from" required></select></div>
+        <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
+        <div style="flex:2"><label>recipient (mn_addr… or 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
+        <div><button type="submit" disabled id="op-withdraw">Withdraw</button></div>
+      </div></form>
+    </div>
+
+    <div id="act-withdraw-sh" class="actpane">
+      <p class="note warn">Selector 2 — withdraw the account's SHIELDED balance to a standard shielded
+      address (<code>mn_shield-addr…</code>: the coin public key rides the signed action, the
+      encryption key is supplied at build time). Supported by the contract, never yet run live
+      anywhere; <b>not wired in this console yet</b> (UI preview).</p>
+      <form><div class="row">
+        <div><label>account (yours)</label><select disabled><option>—</option></select></div>
+        <div><label>amount (shielded)</label><input value="50000" disabled></div>
+        <div style="flex:2"><label>recipient (mn_shield-addr…)</label><input disabled placeholder="mn_shield-addr_…"></div>
+        <div><button type="button" disabled>Withdraw shielded</button></div>
+      </div></form>
+    </div>
+
+    <div id="act-swap" class="actpane">
+      <p class="note">Selector 6 — opens a shielded swap on the Manager, signed by your EVM wallet. The
+      proven transaction is <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the
+      offer, published to the offer-files kernel as a <code>swapoffer1…</code> blob for a taker (or
+      the solver) to settle. The give leg spends the account's <b>shielded</b> balance — fund it first.</p>
+      <form id="f-fundsh"><div class="row">
+        <div><label>account</label><select id="fs-account" required></select></div>
+        <div><label>shielded amount</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
+        <div><button type="submit" class="ghost">Fund shielded</button></div>
+      </div></form>
+      <form id="f-swap"><div class="row">
+        <div><label>account (yours)</label><select id="sw-from" required></select></div>
+        <div><label id="sw-give-label">give (shielded token)</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
+        <div><label>want (shielded NIGHT)</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
+        <div><button type="submit" disabled id="op-swap">Publish offer</button></div>
+      </div></form>
+    </div>
   </section>
 
   <section class="wide">
@@ -194,6 +233,85 @@
   <section class="wide">
     <h2>Activity <span id="job-state"></span></h2>
     <div id="joblog">idle — actions appear here (proving a k=19 execute takes ~2 minutes; the log keeps you honest company)</div>
+  </section>
+</main>
+
+<main id="view-aamid" class="view">
+  <section class="wide" style="border-color:#8a6d2f">
+    <h2>UI preview — not wired yet</h2>
+    <p class="note warn">This is the layout for a <b>Midnight-wallet-controlled</b> AA account: the
+    same Manager, but the account's owner authorizes actions with a Midnight wallet (Lace /
+    dapp-connector or a local seed) instead of an EVM signature. Nothing on this tab performs any
+    operation yet — it exists so the UI can be adjusted before the logic is wired. Open questions
+    the wiring will settle: which authorization the Manager's Midnight-owner mode uses (the
+    contract tracks an <code>accountModes</code> map and has a <code>localOwnerSecret</code>
+    witness), and whether registration binds a wallet key or a secret-derived owner id.</p>
+  </section>
+
+  <section>
+    <h2>Midnight wallet</h2>
+    <div class="row">
+      <div><button type="button" disabled>Connect Lace (dapp connector)</button></div>
+      <div><button type="button" class="ghost" disabled>Use built-in dev wallet</button></div>
+    </div>
+    <dl class="kv" style="margin-top:10px">
+      <dt>wallet</dt><dd>—</dd>
+      <dt>status</dt><dd><span class="pill dim">not wired</span></dd>
+    </dl>
+    <p class="note">The wallet only ever authorizes AA actions — funds custody stays inside the
+    Manager, exactly like the EVM tab.</p>
+  </section>
+
+  <section>
+    <h2>Stack</h2>
+    <dl class="kv">
+      <dt>network</dt><dd>—</dd>
+      <dt>manager</dt><dd>— (same Manager as the EVM tab)</dd>
+      <dt>relay wallet</dt><dd>—</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Register account</h2>
+    <p class="note">Creates an AA account owned by the connected Midnight wallet (fresh random salt
+    → fresh account id).</p>
+    <div class="row" style="margin-top:8px"><div><button type="button" disabled>Register</button></div></div>
+  </section>
+
+  <section>
+    <h2>Fund account</h2>
+    <p class="note">Relay operation (no signature): mints demo tokens and deposits them into the
+    chosen account — identical to the EVM tab.</p>
+    <form><div class="row">
+      <div><label>account</label><select disabled><option>—</option></select></div>
+      <div><label>amount</label><input value="600000" disabled></div>
+      <div><button type="button" disabled>Fund</button></div>
+    </div></form>
+  </section>
+
+  <section class="wide">
+    <h2>Actions — the Manager's <code>execute</code></h2>
+    <nav class="seg small">
+      <button type="button" class="active">Transfer</button>
+      <button type="button">Transfer (shielded)</button>
+      <button type="button">Withdraw</button>
+      <button type="button">Withdraw (shielded)</button>
+      <button type="button">Swap — publish offer</button>
+    </nav>
+    <p class="note">Same five actions as the EVM tab, authorized by the Midnight wallet. The
+    selector above is inert in this preview; each pane will mirror the EVM tab's forms.</p>
+    <form><div class="row">
+      <div><label>from (yours)</label><select disabled><option>—</option></select></div>
+      <div><label>to</label><select disabled><option>—</option></select></div>
+      <div><label>amount</label><input value="250000" disabled></div>
+      <div><button type="button" disabled>Transfer</button></div>
+    </div></form>
+  </section>
+
+  <section class="wide">
+    <h2>Accounts on the Manager</h2>
+    <p class="note">Will show the same live table as the EVM tab, with "yours" resolved by the
+    connected Midnight wallet's owner id.</p>
   </section>
 </main>
 

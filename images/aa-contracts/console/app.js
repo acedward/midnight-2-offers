@@ -278,6 +278,16 @@ $("f-swap").onsubmit = busy(async () => {
 });
 $("refresh").onclick = busy(loadAccounts);
 
+// The Actions panel's sub-segments (one per Manager `execute` action). Purely
+// a view toggle — the wired forms keep their own submit handlers above, and
+// the two shielded panes are inert UI previews.
+$("act-seg").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-act]");
+  if (!b) return;
+  for (const x of document.querySelectorAll("#act-seg button")) x.classList.toggle("active", x === b);
+  for (const p of document.querySelectorAll(".actpane")) p.classList.toggle("active", p.id === `act-${b.dataset.act}`);
+});
+
 // ── boot ─────────────────────────────────────────────────────────────────────
 
 busy(async () => {
