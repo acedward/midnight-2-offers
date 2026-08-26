@@ -149,7 +149,7 @@
   <div class="wallet">
     <div class="wl-head">
       <div class="wl-mark">◈</div>
-      <div><div class="wl-name">AA Wallet</div><div class="wl-sub">account abstraction on Midnight</div></div>
+      <div><div class="wl-name">Midnight-EVM [AA] Wallet</div><div class="wl-sub">account abstraction on Midnight</div></div>
       <div id="w-addr" class="wl-addr" style="display:none" title="connected EVM signer">—</div>
     </div>
     <div id="w-status" class="wl-status"><span class="pill dim">disconnected</span></div>
@@ -168,6 +168,18 @@
         <span><b>Not registered</b> — this address owns no AA account yet. Register creates one
         (fresh salt → fresh account id), signed by your wallet.</span>
         <button id="op-register" disabled>Register</button>
+      </div>
+
+      <!-- Live contract reads — run automatically for the CONNECTED address the
+           moment the wallet connects; registration is NOT required (the rows
+           simply read empty). The disclosure at the page bottom stays for
+           running the same functions against arbitrary addresses. -->
+      <div class="wl-balcard">
+        <div class="wl-balhead" style="margin-bottom:2px">
+          <h2 style="margin:0">Contract reads</h2>
+          <span id="wl-reads-state" class="pill dim">…</span>
+        </div>
+        <dl class="kv" id="wl-readlist" style="margin-top:8px"></dl>
       </div>
 
       <div id="wl-balances" style="display:none">

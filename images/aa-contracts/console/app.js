@@ -440,6 +440,7 @@ function renderWallet() {
   const mine = state.accounts.filter((a) => a.owner.toLowerCase() === state.signer);
   $("wl-warn").style.display = mine.length ? "none" : "";
   $("wl-balances").style.display = mine.length ? "" : "none";
+  renderReads();
   if (!mine.length) return;
   const sel = $("wl-account");
   const prev = sel.value;
@@ -467,8 +468,51 @@ function renderWallet() {
     if ([...el.options].some((o) => o.value === acct.accountId)) el.value = acct.accountId;
   }
 }
-$("wl-account").onchange = renderWallet;
-$("wl-refresh").onclick = busy(loadAccounts);
+// Live contract reads — the Manager's read/pure surface executed for the
+// connected signer as soon as the wallet connects (no registration needed;
+// unregistered just reads empty). Re-runs on refresh, account switch, and the
+// background accounts poll.
+let readsBusy = false;
+async function renderReads() {
+  if (!state.signer || readsBusy) return;
+  readsBusy = true;
+  try {
+    const mine = state.accounts.filter((a) => a.owner.toLowerCase() === state.signer);
+    const acct = mine.find((a) => a.accountId === $("wl-account").value) ?? mine[0] ?? null;
+    const fmtAny = (v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v));
+    const run = async (fn, args, label, fmt) => {
+      try {
+        const r = await api("/api/pure", { fn, args });
+        return [label, r.result == null ? "empty" : (fmt ?? fmtAny)(r.result)];
+      } catch (e) { return [label, `error: ${e?.message ?? e}`]; }
+    };
+    const jobs = [run("deploymentDomain", [], "deploymentDomain", (v) => v.utf8 ?? fmtAny(v))];
+    if (acct) {
+      jobs.push(run("isRegistered", [acct.accountId], "isRegistered", (v) => String(v.registered ?? v)));
+      jobs.push(run("evmOwner", [acct.accountId], "evmOwner", (v) => short(String(v.owner ?? v))));
+      jobs.push(run("evmNonce", [acct.accountId], "evmNonce", (v) => String(v.nonce ?? v)));
+    }
+    for (const t of (state.info?.tokens ?? []).filter((t) => t.family === "shielded"))
+      jobs.push(run("poolValue", [t.color], `pool ${t.name}`, (v) =>
+        v && v.pooled ? `pooled — value ${v.value}, merkle idx ${v.mtIndex}` : "not pooled"));
+    const rows = await Promise.all(jobs);
+    if (!acct) rows.splice(1, 0,
+      ["isRegistered", "false — no account for this address yet"],
+      ["evmOwner", "—"], ["evmNonce", "—"]);
+    const dl = $("wl-readlist");
+    dl.innerHTML = "";
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    const st = $("wl-reads-state");
+    st.className = "pill ok";
+    st.textContent = `read ${new Date().toLocaleTimeString()}`;
+  } finally { readsBusy = false; }
+}
+$("wl-account").onchange = () => { renderWallet(); renderReads(); };
+$("wl-refresh").onclick = busy(async () => { await loadAccounts(); await renderReads(); });
 $("wl-more").onclick = busy(() => prepareSignSubmit({ kind: "register", owner: state.signer }));
 $("act-head").onclick = () => $("activity-aa").classList.toggle("collapsed");
 
