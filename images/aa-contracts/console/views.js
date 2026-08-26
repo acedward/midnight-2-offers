@@ -191,8 +191,8 @@ function renderSolver(s) {
 
 const INFRA_NODES = [
   { id: "browser",       label: "Your browser",              sub: "",                  x: 470, y: 14,  w: 180, h: 42, fixed: "up" },
-  { id: "console",       label: "AA Console (this page)",    sub: ":10700 · profile aa", x: 55,  y: 100, w: 205, h: 56 },
-  { id: "frontend",      label: "zswap-da frontend",         sub: ":10600 · frontend",  x: 330, y: 100, w: 200, h: 56 },
+  { id: "console",       label: "aa-console BACKEND (relay)", sub: "serves this page + API · :10700", x: 55,  y: 100, w: 205, h: 56 },
+  { id: "frontend",      label: "zswap-da frontend (static)", sub: ":10600 · backend = kernel", x: 330, y: 100, w: 200, h: 56 },
   { id: "solverSink",    label: "Solver sink + feed",        sub: ":10800 · solver",    x: 600, y: 100, w: 200, h: 56 },
   { id: "evmRpc",        label: "umbra-evm JSON-RPC",        sub: ":8545 · evm",        x: 870, y: 100, w: 195, h: 56 },
   { id: "aaProofServer", label: "aa-proof-server",           sub: "experimental · internal", x: 55, y: 225, w: 205, h: 50 },
@@ -213,7 +213,7 @@ const INFRA_EDGES = [
   ["indexer", "node"],
 ];
 const INFRA_LABELS = {
-  console: "AA console (relay + page)", node: "midnight node", indexer: "indexer",
+  console: "aa-console backend — the relay: serves the page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this very table", node: "midnight node", indexer: "indexer",
   proofServer: "proof-server (plain)", aaProofServer: "aa-proof-server (experimental)",
   kernel: "offer-files kernel", kernelSync: "kernel sync", batcher: "batcher",
   celestia: "celestia", evmRpc: "umbra-evm RPC", frontend: "zswap-da frontend",
