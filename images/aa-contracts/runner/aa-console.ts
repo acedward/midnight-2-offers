@@ -471,6 +471,27 @@ function enqueue(kind: string, run: (j: Job) => Promise<void>): Job {
 
 const jlog = (j: Job, line: string) => { j.log.push(`${new Date().toISOString().slice(11, 19)} ${line}`); log(`job ${j.id.slice(0, 8)} ${line}`); };
 
+// The aa-proof-server gets OOM-killed under host memory pressure (a k=19
+// execute uploads a 1.14 GB proving key per call; 19 container restarts
+// measured in one day) and the SDK surfaces the dropped socket as
+// "'prove' returned an error: The socket connection was closed". Nothing has
+// been submitted at that point, so ONE retry after the server's restart window
+// is safe and has succeeded every time it was tried by hand. Only this exact
+// transient class retries — real failures still surface immediately.
+const TRANSIENT_PROVE =
+  /socket connection was closed|'prove' returned an error|ConnectionRefused|Failed to connect|fetch failed/i;
+async function withProveRetry<T>(j: Job, what: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!TRANSIENT_PROVE.test(msg)) throw e;
+    jlog(j, `${what}: transient proving failure — the proof server likely restarted (OOM class); retrying once in 20 s`);
+    await new Promise((r) => setTimeout(r, 20_000));
+    return await fn();
+  }
+}
+
 async function work() {
   if (working) return;
   working = true;
@@ -502,14 +523,14 @@ function executeJob(prep: Prepared, signature: string): Job {
       throw new Error(`recovered signer ${recovered.address} is not the action owner ${prep.owner}`);
     const p = prepareEvmExecute(prep.action, artifactDomain(), signature as `0x${string}`);
     jlog(j, `signer verified (${recovered.address}) — opening a wallet session`);
-    await session(prep.kind, async (walletResult) => {
+    await withProveRetry(j, prep.kind, () => session(prep.kind, async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
       jlog(j, "proving execute (k=19 — expect ~2 minutes)…");
       const t0 = Date.now();
       const tx = await (mgr.handle.callTx as any).execute(p.payload, p.signature, p.point);
       j.txId = tx.public?.txId ?? null;
       jlog(j, `landed — tx=${j.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-    });
+    }));
   });
 }
 
@@ -523,7 +544,7 @@ function offerJob(prep: Prepared, signature: string): Job {
     if (recovered.address.toLowerCase() !== prep.owner.toLowerCase())
       throw new Error(`recovered signer ${recovered.address} is not the action owner ${prep.owner}`);
     const p = prepareEvmExecute(prep.action, artifactDomain(), signature as `0x${string}`);
-    const built = await session("swap-offer", async (walletResult) => {
+    const built = await withProveRetry(j, "swap-offer", () => session("swap-offer", async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
       return await buildOpenSwapOffer({
         providers: mgr.providers,
@@ -536,7 +557,7 @@ function offerJob(prep: Prepared, signature: string): Job {
         wantAmount: prep.action.wantAmount as bigint,
         log: (line) => jlog(j, line),
       });
-    }, { requireFunds: false }); // the maker contributes no coins and pays no fees
+    }, { requireFunds: false })); // the maker contributes no coins and pays no fees
     // Persist the blob BEFORE publishing — it is the product of two minutes of
     // proving, and it stays reproducible (settle-by-blob, kernel re-post) even
     // when the kernel rejects or is down.
@@ -577,7 +598,7 @@ function offerJob(prep: Prepared, signature: string): Job {
  * the account's shielded Manager balance (what an open swap's give leg spends). */
 function fundShieldedJob(accountId: Hex32, amount: bigint): Job {
   return enqueue("fund-shielded", async (j) => {
-    await session("fund-shielded-mint", async (walletResult) => {
+    await withProveRetry(j, "fund-shielded-mint", () => session("fund-shielded-mint", async (walletResult) => {
       const mnt = await join(walletResult, "contract-minter", MINTER, {}, "aaMinterPrivateState");
       const coinPk = hexToBytes(String(walletResult.zswapSecretKeys.coinPublicKey));
       jlog(j, `minting ${amount} SHIELDED to the funding wallet…`);
@@ -587,8 +608,8 @@ function fundShieldedJob(accountId: Hex32, amount: bigint): Job {
         { is_left: true, left: { bytes: coinPk }, right: { bytes: new Uint8Array(32) } },
       );
       jlog(j, `minted — tx=${tx.public?.txId ?? "?"}`);
-    }, { seed: FUNDER_SEED });
-    await session("fund-shielded-deposit", async (walletResult) => {
+    }, { seed: FUNDER_SEED }));
+    await withProveRetry(j, "fund-shielded-deposit", () => session("fund-shielded-deposit", async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
       jlog(j, `depositShielded(${amount}) → ${accountId.slice(0, 18)}…`);
       const coin = {
@@ -599,13 +620,13 @@ function fundShieldedJob(accountId: Hex32, amount: bigint): Job {
       const tx = await (mgr.handle.callTx as any).depositShielded(coin, hexToBytes(accountId));
       j.txId = tx.public?.txId ?? null;
       jlog(j, `deposited — tx=${j.txId ?? "?"}`);
-    }, { seed: FUNDER_SEED });
+    }, { seed: FUNDER_SEED }));
   });
 }
 
 function fundJob(accountId: Hex32, amount: bigint): Job {
   return enqueue("fund", async (j) => {
-    await session("fund-mint", async (walletResult) => {
+    await withProveRetry(j, "fund-mint", () => session("fund-mint", async (walletResult) => {
       const mnt = await join(walletResult, "contract-minter", MINTER, {}, "aaMinterPrivateState");
       const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
       const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
@@ -614,14 +635,14 @@ function fundJob(accountId: Hex32, amount: bigint): Job {
         is_left: false, left: { bytes: new Uint8Array(32) }, right: { bytes: userAddr },
       });
       jlog(j, `minted — tx=${tx.public?.txId ?? "?"}`);
-    });
-    await session("fund-deposit", async (walletResult) => {
+    }));
+    await withProveRetry(j, "fund-deposit", () => session("fund-deposit", async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
       jlog(j, `depositUnshielded(${amount}) → ${accountId.slice(0, 18)}…`);
       const tx = await (mgr.handle.callTx as any).depositUnshielded(COLOUR, amount, hexToBytes(accountId));
       j.txId = tx.public?.txId ?? null;
       jlog(j, `deposited — tx=${j.txId ?? "?"}`);
-    });
+    }));
   });
 }
 
