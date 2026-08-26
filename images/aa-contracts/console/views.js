@@ -189,27 +189,38 @@ function renderSolver(s) {
 
 // ── infrastructure view ──────────────────────────────────────────────────────
 
+const INFRA_LAYERS = [
+  { label: "Browser",        y: 12,  band: [12, 84] },
+  { label: "dApps",          y: 96,  band: [96, 196] },
+  { label: "Infrastructure", y: 208, band: [208, 452] },
+  { label: "Blockchain",     y: 464, band: [464, 590] },
+];
 const INFRA_NODES = [
-  { id: "browser",       label: "Your browser",              sub: "",                  x: 470, y: 14,  w: 180, h: 42, fixed: "up" },
-  { id: "console",       label: "aa-console BACKEND (relay)", sub: "serves this page + API · :10700", x: 55,  y: 100, w: 205, h: 56 },
-  { id: "frontend",      label: "zswap-da frontend (static)", sub: ":10600 · backend = kernel", x: 330, y: 100, w: 200, h: 56 },
-  { id: "solverSink",    label: "Solver sink + feed",        sub: ":10800 · solver",    x: 600, y: 100, w: 200, h: 56 },
-  { id: "evmRpc",        label: "umbra-evm JSON-RPC",        sub: ":8545 · evm",        x: 870, y: 100, w: 195, h: 56 },
-  { id: "aaProofServer", label: "aa-proof-server",           sub: "experimental · internal", x: 55, y: 225, w: 205, h: 50 },
-  { id: "kernel",        label: "offer-files kernel (sync node)", sub: ":9999 · contract deployed ONCE (persisted)", x: 330, y: 225, w: 200, h: 60 },
-  { id: "batcher",       label: "offer-files batcher",       sub: ":3334 · own container",  x: 870, y: 225, w: 195, h: 50 },
-  { id: "solver",        label: "COW solver",                sub: "observation mode",   x: 600, y: 225, w: 200, h: 50 },
-  { id: "proofServer",   label: "proof-server (plain)",      sub: ":6300 · core",       x: 55,  y: 350, w: 205, h: 50 },
-  { id: "celestia",      label: "Celestia DA devnet",        sub: ":26658 · offerfiles", x: 330, y: 350, w: 200, h: 50 },
-  { id: "indexer",       label: "indexer 4.4.0-rc.1",        sub: ":8088 · core",       x: 200, y: 480, w: 205, h: 56 },
-  { id: "node",          label: "midnight node 2.0.0-rc.4",  sub: ":9944 · core",       x: 480, y: 480, w: 210, h: 56 },
+  // Browser
+  { id: "browser",       label: "Your browser",              sub: "MetaMask + these pages", x: 460, y: 28,  w: 200, h: 46, fixed: "up" },
+  // dApps
+  { id: "console",       label: "aa-relay (console backend)", sub: "serves this page + API · :10700", x: 80,  y: 122, w: 220, h: 56 },
+  { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static, backend = kernel", x: 430, y: 122, w: 220, h: 56 },
+  { id: "solverSink",    label: "solver-sink (ladder feed)", sub: ":10800 · relay-WS receive half", x: 780, y: 122, w: 220, h: 56 },
+  // Infrastructure
+  { id: "indexer",       label: "indexer",                   sub: ":8088 · GraphQL v4", x: 55,  y: 240, w: 165, h: 52 },
+  { id: "evmRpc",        label: "umbra (eth JSON-RPC)",      sub: ":8545 · read-only",  x: 240, y: 240, w: 185, h: 52 },
+  { id: "kernel",        label: "offer-files kernel",        sub: ":9999 · contract deployed once", x: 445, y: 240, w: 200, h: 52 },
+  { id: "batcher",       label: "batcher",                   sub: ":3334 · own container", x: 665, y: 240, w: 155, h: 52 },
+  { id: "solver",        label: "cow (solver)",              sub: "observation mode",   x: 840, y: 240, w: 165, h: 52 },
+  { id: "proofServer",   label: "proof-server 9.0.0-rc.5",   sub: "plain · zkir-v2 / [v6] + wallet lane", x: 240, y: 356, w: 250, h: 52 },
+  { id: "aaProofServer", label: "proof-server 9.0.0-rc.5_experimental", sub: "zkir-v3 / [v7] — the AA circuits", x: 530, y: 356, w: 290, h: 52 },
+  // Blockchain
+  { id: "node",          label: "midnight-node 2.0.0-rc.4",  sub: ":9944 · the chain",  x: 280, y: 496, w: 240, h: 56 },
+  { id: "celestia",      label: "celestia (DA devnet)",      sub: ":26658 · the offer blobs", x: 600, y: 496, w: 240, h: 56 },
 ];
 const INFRA_EDGES = [
-  ["browser", "console"], ["browser", "frontend"], ["browser", "solverSink"], ["browser", "evmRpc"],
-  ["console", "aaProofServer"], ["console", "proofServer"], ["console", "kernel"], ["console", "node"], ["console", "indexer"],
+  ["browser", "console"], ["browser", "frontend"], ["browser", "solverSink"],
+  ["console", "kernel"], ["console", "proofServer"], ["console", "aaProofServer"],
+  ["console", "node"], ["console", "indexer"],
   ["frontend", "kernel"], ["frontend", "batcher"],
-  ["solver", "kernel"], ["solver", "solverSink"],
-  ["kernel", "batcher"], ["kernel", "celestia"], ["kernel", "node"], ["kernel", "indexer"],
+  ["solver", "solverSink"], ["solver", "kernel"],
+  ["kernel", "batcher"], ["kernel", "node"], ["kernel", "indexer"], ["kernel", "celestia"],
   ["batcher", "celestia"], ["batcher", "node"],
   ["evmRpc", "indexer"],
   ["indexer", "node"],
@@ -250,6 +261,28 @@ function renderInfra(r) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const byId = Object.fromEntries(INFRA_NODES.map((n) => [n.id, n]));
   const center = (n) => ({ cx: n.x + n.w / 2, cy: n.y + n.h / 2 });
+
+  // Layer bands: label on the left, a dashed separator above each band.
+  for (const [i, L] of INFRA_LAYERS.entries()) {
+    if (i > 0) {
+      ctx.strokeStyle = "#2c3542";
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(0, L.band[0] - 6);
+      ctx.lineTo(canvas.width, L.band[0] - 6);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = "#8b96a5";
+    ctx.font = "600 11px system-ui";
+    ctx.save();
+    ctx.translate(14, (L.band[0] + L.band[1]) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.fillText(L.label.toUpperCase(), 0, 0);
+    ctx.restore();
+    ctx.textAlign = "left";
+  }
 
   // Edges first (under the boxes): from the source's edge toward the target.
   ctx.strokeStyle = "#2c3542";
