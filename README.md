@@ -52,6 +52,39 @@ keccak/EIP-712-heavy), so the profile runs its **own internal
 NOT in the image — deploying needs only verifier keys, and bring-up never calls `execute`.
 The one-shot is idempotent across `up` runs and its state dies with `down.sh -v`.
 
+**The `aa` profile also serves the AA web console** at `http://127.0.0.1:10700`
+(`AA_CONSOLE_HOST_PORT`): a page where **any injected browser EVM wallet** (MetaMask, Rabby, …)
+drives the AA path — register an account, fund it, transfer between accounts, withdraw. The
+browser holds no Midnight wallet and no prover: it signs `eth_signTypedData_v4` requests that
+the console's relay builds with the AA repo's own EIP-712 codec, and the relay recovers the
+signer's secp256k1 point from the signature (the `pk` argument `execute` needs — no EVM wallet
+exposes it), proves the k=19 `execute` through the profile's internal proof server (~2 min per
+operation; the page shows the live job log) and submits, paying fees from its own relay wallet
+(`aa-console` in `wallets/wallets.json`, funded automatically by `up.sh` — unshielded NIGHT +
+DUST only, deliberately shielded-free). The console's image variant keeps the 1.1 GB
+`execute.prover` the deploy image prunes (`midnight-2-offers/aa-contracts:console`).
+`AA_CONSOLE_DEV_SIGNER=1` enables a built-in test signer for wallet-less CI runs; leave it off
+otherwise. Known limit inherited from upstream: **withdraw** currently lands a node rejection
+(`Custom error: 214`, a recipient-encoding defect in the Manager contract with a fix in flight)
+— the console submits it and reports the node's verdict honestly.
+
+**The console's Swap panel publishes real offer files.** An `OpenSwapShielded` action (signed by
+the browser wallet like every other op) is proven as a Manager `execute` and then **never
+submitted**: the proven transaction is unbalanced by exactly +give/−want, which makes it the
+offer itself — encoded as a MIP-0005 `swapoffer1…` blob and `POST`ed to the offer-files kernel
+(`--with offerfiles` required; the panel degrades gracefully without it). The demo pair is
+give = the demo token's shielded colour, want = **shielded NIGHT** (any wallet can obtain it via
+`fund-wallet.sh <seed> --shielded-amount <n>` and settle the offer with the kernel's own
+`api-examples/11-settle-offer.ts` flow). Two switches make this work, both ON in the demo and
+OFF upstream by default: `ALLOW_CONTRACT_MAKER_OFFERS` (kernel-side — contract-maker offers
+cannot pass `wellFormed` against the kernel's blank reference state, so the exact
+missing-contract failure retries without contract-proof verification; native zswap proofs and
+signatures are always verified, and the node verifies the contract proof at settlement) and
+`AA_OFFER_ALLOW_FALLIBLE` (console-side — the v5 Manager's k=19 transcript exceeds the ledger's
+guaranteed-section budget, so every AA offer's legs sit in the fallible section; measured live:
+a foreign taker settles them anyway, ledger-exact). Each blob is also saved under the `aa-out`
+volume at `/aa/out/offers/<offerId>.swapoffer`.
+
 **Offer history is in-memory (by design).** The kernel stores its offer book in PGLite inside
 the container: restarting or recreating the `kernel` container resets the indexed offers, while
 the chain keeps the settled state — the book is re-indexed from genesis on the next start. A
@@ -119,6 +152,7 @@ Default URLs, all overridable in `.env`:
 | **eth JSON-RPC** | `http://127.0.0.1:8545` (chainId 2400 = `0x960`) | `evm` |
 | **eth WS (`eth_subscribe`)** | `ws://127.0.0.1:10021` | `evm` |
 | **Celestia DA JSON-RPC** | `http://127.0.0.1:26658` (bearer token required) | `offerfiles` |
+| **AA web console** | `http://127.0.0.1:10700` | `aa` |
 
 `/api/v3/graphql` on the indexer aliases v4, so a client pinned to the v3 path still works.
 
@@ -143,6 +177,7 @@ stacks on one machine possible.
 | `KERNEL_HOST_PORT` | 9999 | 9999 | `kernel` (sync node API) | the frontend's order book + ZK assets, `verify.sh` | `offerfiles` |
 | `BATCHER_HOST_PORT` | 3334 | 3334 | `kernel` (batcher) | the frontend's `send-input` | `offerfiles` |
 | `FRONTEND_HOST_PORT` | 10600 | 10600 | `frontend` (nginx) | your browser | `frontend` |
+| `AA_CONSOLE_HOST_PORT` | 10700 | 8090 | `aa-console` (web console + relay) | your browser | `aa` |
 
 `BIND_ADDR` (default `127.0.0.1`) is the interface every published port binds to. Leave it as
 loopback on a shared machine; set it to `0.0.0.0` only when a browser on another host has to
@@ -159,7 +194,7 @@ ENV_FILE=.env.test ./up.sh --all
 
 That block is laid out at fixed offsets from its base, which is worth knowing when reading a CI
 log: base+0 node, +1 indexer, +2 proof-server, +3 evm RPC, +4 evm WS, +5 kernel, +6 batcher,
-+7 Celestia, +8 frontend.
++7 Celestia, +8 frontend, +9 AA console.
 
 ## Layout
 

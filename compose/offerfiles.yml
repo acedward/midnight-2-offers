@@ -143,6 +143,12 @@ services:
       CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'  # SAME var as above
       CELESTIA_NETWORK: '${CELESTIA_NETWORK:-devnet}'
       CELESTIA_START_HEIGHT: '1'                          # devnet history is not worth skipping (note 2)
+      # Accept offers whose maker is a CONTRACT CALL (the AA console's open
+      # swaps). Kernel commit eb5f872: strict wellFormed first; only the exact
+      # missing-contract failure widens into a retry that still verifies native
+      # zswap proofs + signatures (the contract-call proof is verified by the
+      # node at settlement). Off by default upstream; the demo turns it on.
+      ALLOW_CONTRACT_MAKER_OFFERS: '${ALLOW_CONTRACT_MAKER_OFFERS:-1}'
     healthcheck:
       # bun, not curl: the oven/bun runtime image ships no curl/wget.
       test:

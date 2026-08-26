@@ -100,6 +100,9 @@ COPY --from=source /aa-commit /aa/.aa-commit
 # reimplemented (golden vectors and frozen hashes included).
 COPY --from=source /src/tests/lib /aa/aalib/
 COPY runner/ /aa/runner/
+# The AA web console's static page (service `aa-console` serves it; see
+# runner/aa-console.ts — the relay that lets a browser EVM wallet drive the AA path).
+COPY console/ /aa/console/
 
 # Install at /aa, not /aa/runner: the compactc-generated contract modules live at
 # /aa/contract-*/src/managed/contract/ and import @midnight-ntwrk/compact-runtime —

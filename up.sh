@@ -238,6 +238,31 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" evm "* ]]; then
   fi
 fi
 
+if (( ! FAILED )) && [[ " $PROFILES " == *" aa "* ]]; then
+  # The web console (aa-console) starts only after the aa-deploy one-shot completes
+  # (compose gates it), so on a first bring-up this wait covers the deploy+mint
+  # proving (~3 min) plus the console's own start.
+  AA_CONSOLE_URL="http://${HOST_ADDR}:${AA_CONSOLE_HOST_PORT:-10700}"
+  wait_compose_healthy aa-console "${AA_CONSOLE_WAIT_TIMEOUT:-600}" || FAILED=1
+  if (( ! FAILED )) && ! curl -fsS --max-time 10 "$AA_CONSOLE_URL/healthz" | grep -q '"funded":true'; then
+    # SHIELDED-FREE relay wallet (master plan T7.5 rule): unshielded NIGHT + DUST
+    # only — never fund this seed with --shielded-amount. Skipped when /healthz
+    # already reports it funded, so re-runs cost nothing.
+    log "funding the aa-console relay wallet (unshielded NIGHT + DUST, no shielded)…"
+    AA_CONSOLE_SEED="${AA_CONSOLE_SEED:-aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0}"
+    if "$REPO_ROOT/scripts/fund-wallet.sh" "$AA_CONSOLE_SEED"; then
+      # Synchronous re-check server-side; tell the user the outcome either way.
+      if curl -fsS --max-time 120 -X POST "$AA_CONSOLE_URL/api/wallet/refresh" | grep -q '"funded":true'; then
+        log "aa-console relay wallet funded and verified"
+      else
+        warn "aa-console wallet funded but /healthz does not report it yet — it re-checks after the first operation"
+      fi
+    else
+      warn "funding the aa-console wallet failed — the console page works, operations will not; retry: ./scripts/fund-wallet.sh <aa-console seed>"
+    fi
+  fi
+fi
+
 if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
   celestia_defaults
   # The container healthcheck is already a real authenticated JSON-RPC call plus a wallet-balance
@@ -268,6 +293,9 @@ info "proof server      http://${HOST_ADDR}:${PROOF_HOST_PORT}"
 if [[ " $PROFILES " == *" evm "* ]]; then
   info "evm JSON-RPC      ${EVM_RPC_URL}   (chainId ${EVM_CHAIN_ID}, READ-ONLY)"
   info "evm WS            ws://${HOST_ADDR}:${EVM_WS_HOST_PORT}"
+fi
+if [[ " $PROFILES " == *" aa "* ]]; then
+  info "AA web console    http://${HOST_ADDR}:${AA_CONSOLE_HOST_PORT:-10700}   (browser EVM wallet → relay → Manager.execute)"
 fi
 if [[ " $PROFILES " == *" offerfiles "* ]]; then
   info "celestia DA RPC   ${CELESTIA_DA_URL}   (namespace ${CELESTIA_NAMESPACE})"

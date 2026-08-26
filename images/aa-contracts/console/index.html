@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AA Console — Midnight demo stack</title>
+<style>
+  :root {
+    --bg: #10141a; --panel: #171c24; --edge: #262d38; --ink: #dde4ee;
+    --dim: #8b96a5; --accent: #7fb4ff; --ok: #6fd18b; --warn: #e6b45a; --err: #e57373;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header { padding: 20px 24px 8px; border-bottom: 1px solid var(--edge); }
+  header h1 { margin: 0 0 2px; font-size: 20px; font-weight: 650; }
+  header p { margin: 0; color: var(--dim); font-size: 13px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px 32px; max-width: 1180px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--edge); border-radius: 8px; padding: 14px 16px; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 13px; }
+  .kv dt { color: var(--dim); } .kv dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  button {
+    background: var(--accent); color: #0b1018; border: 0; border-radius: 6px;
+    padding: 7px 14px; font: 600 14px system-ui; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--edge); }
+  button:disabled { opacity: .45; cursor: default; }
+  input, select {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--edge);
+    border-radius: 6px; padding: 7px 9px; font: 13px var(--mono); width: 100%;
+  }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 8px 0 3px; }
+  form { margin: 0; }
+  .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: #1d3327; color: var(--ok); } .pill.warn { background: #37301c; color: var(--warn); }
+  .pill.err { background: #3a2222; color: var(--err); } .pill.dim { background: #222a35; color: var(--dim); }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--edge); }
+  td { padding: 5px 10px 5px 0; border-bottom: 1px solid var(--edge); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; }
+  #joblog {
+    background: var(--bg); border: 1px solid var(--edge); border-radius: 6px;
+    font: 12px/1.6 var(--mono); padding: 10px 12px; min-height: 90px; max-height: 260px;
+    overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dim);
+  }
+  #joblog .hot { color: var(--ink); }
+  .note { font-size: 12.5px; color: var(--dim); margin: 8px 0 0; }
+  .note.warn { color: var(--warn); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>AA Console</h1>
+  <p>Your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (k=19, ~2 min)
+     through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.</p>
+</header>
+<main>
+  <section>
+    <h2>EVM wallet</h2>
+    <div class="row">
+      <div><button id="connect">Connect wallet</button></div>
+      <div id="devsigner-slot" style="display:none"><button id="use-dev" class="ghost">Use built-in dev signer</button></div>
+    </div>
+    <dl class="kv" style="margin-top:10px">
+      <dt>signer</dt><dd id="w-addr">—</dd>
+      <dt>status</dt><dd id="w-status"><span class="pill dim">disconnected</span></dd>
+    </dl>
+    <p class="note">Any injected EIP-1193 wallet works (MetaMask, Rabby, …). It only ever signs
+    typed data — no chain, no gas, no funds needed on the EVM side.</p>
+  </section>
+
+  <section>
+    <h2>Stack</h2>
+    <dl class="kv">
+      <dt>network</dt><dd id="s-net">—</dd>
+      <dt>manager</dt><dd id="s-manager">—</dd>
+      <dt>minter</dt><dd id="s-minter">—</dd>
+      <dt>token</dt><dd id="s-color">—</dd>
+      <dt>relay wallet</dt><dd id="s-relay">—</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Register account</h2>
+    <p class="note">Creates an AA account owned by the connected EVM address (fresh random salt →
+    fresh account id). Signed by your wallet, executed by the relay.</p>
+    <div class="row" style="margin-top:8px"><div><button id="op-register" disabled>Register</button></div></div>
+  </section>
+
+  <section>
+    <h2>Fund account</h2>
+    <p class="note">Relay operation (no signature): mints demo tokens to the relay wallet, then
+    deposits them into the chosen account.</p>
+    <form id="f-fund"><div class="row">
+      <div><label>account</label><select id="fund-account" required></select></div>
+      <div><label>amount</label><input id="fund-amount" value="600000" pattern="[0-9]+" required></div>
+      <div><button type="submit">Fund</button></div>
+    </div></form>
+  </section>
+
+  <section>
+    <h2>Transfer</h2>
+    <p class="note">Internal transfer between AA accounts, signed by the sender's EVM wallet.</p>
+    <form id="f-transfer"><div class="row">
+      <div><label>from (yours)</label><select id="tr-from" required></select></div>
+      <div><label>to</label><select id="tr-to" required></select></div>
+      <div><label>amount</label><input id="tr-amount" value="250000" pattern="[0-9]+" required></div>
+      <div><button type="submit" disabled id="op-transfer">Transfer</button></div>
+    </div></form>
+  </section>
+
+  <section>
+    <h2>Withdraw</h2>
+    <p class="note warn" id="withdraw-note">—</p>
+    <form id="f-withdraw"><div class="row">
+      <div><label>account (yours)</label><select id="wd-from" required></select></div>
+      <div><label>amount</label><input id="wd-amount" value="50000" pattern="[0-9]+" required></div>
+      <div style="flex:2"><label>recipient (mn_addr… or 32-byte hex; empty = relay wallet)</label><input id="wd-recipient" placeholder=""></div>
+      <div><button type="submit" disabled id="op-withdraw">Withdraw</button></div>
+    </div></form>
+  </section>
+
+  <section class="wide">
+    <h2>Swap — publish an offer</h2>
+    <p class="note">Opens a shielded swap on the Manager (selector 6), signed by your EVM wallet. The
+    proven transaction is <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the
+    offer, published to the offer-files kernel as a <code>swapoffer1…</code> blob for a taker (or
+    the solver) to settle. The give leg spends the account's <b>shielded</b> balance — fund it first.</p>
+    <form id="f-fundsh"><div class="row">
+      <div><label>account</label><select id="fs-account" required></select></div>
+      <div><label>shielded amount</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
+      <div><button type="submit" class="ghost">Fund shielded</button></div>
+    </div></form>
+    <form id="f-swap"><div class="row">
+      <div><label>account (yours)</label><select id="sw-from" required></select></div>
+      <div><label id="sw-give-label">give (shielded token)</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
+      <div><label>want (shielded NIGHT)</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
+      <div><button type="submit" disabled id="op-swap">Publish offer</button></div>
+    </div></form>
+  </section>
+
+  <section class="wide">
+    <h2>Offer book <span id="book-state"></span></h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>offer id</th><th>gives</th><th>wants</th><th>status</th></tr></thead>
+      <tbody id="book"></tbody>
+    </table></div>
+  </section>
+
+  <section class="wide">
+    <h2>Accounts on the Manager <button id="refresh" class="ghost" style="float:right;padding:2px 10px;font-size:12px">refresh</button></h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>account id</th><th>EVM owner</th><th>nonce</th><th>balance</th><th>shielded</th><th></th></tr></thead>
+      <tbody id="accounts"></tbody>
+    </table></div>
+  </section>
+
+  <section class="wide">
+    <h2>Activity <span id="job-state"></span></h2>
+    <div id="joblog">idle — actions appear here (proving a k=19 execute takes ~2 minutes; the log keeps you honest company)</div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

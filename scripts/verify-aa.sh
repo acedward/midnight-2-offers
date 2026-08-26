@@ -82,6 +82,42 @@ else
   fi
 fi
 
+# The web console, presence-detected: only asserted when the aa-console service
+# has a container (older bring-ups of the profile predate it).
+console_cid=$(docker ps -q \
+  --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+  --filter "label=com.docker.compose.service=aa-console" | head -1)
+if [[ -n "$console_cid" ]]; then
+  CONSOLE_URL="http://${HOST_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}"
+  health=$(curl -fsS --max-time 10 "$CONSOLE_URL/healthz" 2>/dev/null) || health=""
+  if printf '%s' "$health" | grep -q '"ok":true'; then
+    ok "aa-console serving on ${CONSOLE_URL}"
+  else
+    err "aa-console /healthz not answering on ${CONSOLE_URL}"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  if printf '%s' "$health" | grep -q '"funded":true'; then
+    ok "aa-console relay wallet funded"
+  else
+    err "aa-console relay wallet UNFUNDED — operations will fail (./scripts/fund-wallet.sh with the aa-console seed)"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  if curl -fsS --max-time 10 "$CONSOLE_URL/" 2>/dev/null | grep -q "AA Console"; then
+    ok "aa-console page serves"
+  else
+    err "aa-console page did not serve HTML"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  # The console and the deploy artifact must agree on the Manager address.
+  mgr=$(printf '%s' "$artifact" | grep -oE '"address": *"[0-9a-fx]+"' | head -1 | grep -oE '[0-9a-f]{32,}' | head -1) || mgr=""
+  if [[ -n "$mgr" ]] && curl -fsS --max-time 10 "$CONSOLE_URL/api/info" 2>/dev/null | grep -q "$mgr"; then
+    ok "aa-console reports the deployed Manager (${mgr:0:16}…)"
+  else
+    err "aa-console /api/info does not match the deployed Manager address"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+fi
+
 if (( FAILURES == 0 )); then
   ok "aa assertions passed"
   exit 0

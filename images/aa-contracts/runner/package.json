@@ -22,7 +22,8 @@
     "@noble/curves": "2.2.0",
     "@noble/hashes": "2.2.0",
     "@midnight-ntwrk/midnight-js-types": "5.0.0-beta.6",
-    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "5.0.0-beta.6"
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "5.0.0-beta.6",
+    "@effectstream/mip-zswap-offer": "0.4.0-v9.0"
   },
   "overrides": {
     "@midnightntwrk/ledger-v9": "1.0.0-rc.3"

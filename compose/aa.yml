@@ -71,6 +71,63 @@ services:
       aa-proof-server: { condition: service_started }
     restart: 'no'
 
+  # aa-console — the AA web console (Phase 8): a static page where a browser EVM
+  # wallet (EIP-1193) signs EIP-712 actions, plus the relay API that proves them
+  # through aa-proof-server and submits. The browser holds no Midnight wallet.
+  #
+  # Its OWN image variant keeps the Manager's 1.1 GB execute.prover
+  # (AA_PRUNE_MANAGER_PROVERS=0) because the relay CALLS execute — same build
+  # args as the e2e's :e2e tag, so docker reuses those layers when both exist.
+  #
+  # Its relay wallet (`aa-console` in wallets/wallets.json, seed aac0…aac0) must
+  # be funded SHIELDED-FREE (unshielded NIGHT + DUST only — the T7.5 rule);
+  # up.sh does it on bring-up when /healthz reports the wallet empty.
+  aa-console:
+    image: 'midnight-2-offers/aa-contracts:console'
+    build:
+      context: '../images/aa-contracts'
+      args:
+        AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
+        AA_REF: '${AA_REF:-main}'
+        AA_PRUNE_MANAGER_PROVERS: '0'
+    entrypoint: ['bun', 'run', '/aa/runner/aa-console.ts']
+    environment:
+      MIDNIGHT_NETWORK_ID: 'undeployed'
+      MIDNIGHT_NODE_HTTP: 'http://node:9944'
+      MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v4/graphql'
+      MIDNIGHT_INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
+      MIDNIGHT_PROOF_SERVER_URL: 'http://aa-proof-server:6300'
+      MIDNIGHT_STORAGE_PASSWORD: 'YourPasswordMy1!'
+      # The wallet facade proves its own (standard-lane) pieces on the PLAIN core
+      # server; only the v7 contract circuits go to aa-proof-server. Same split
+      # the e2e measured.
+      AA_WALLET_PROOF_SERVER_URL: 'http://proof-server:6300'
+      AA_CONSOLE_SEED: '${AA_CONSOLE_SEED:-aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0}'
+      AA_CONSOLE_DEV_SIGNER: '${AA_CONSOLE_DEV_SIGNER:-}'
+      # Publish offers whose legs land in the FALLIBLE section. Demo default ON,
+      # measured (T9.2): the v5 Manager's k=19 execute exceeds the ledger's
+      # guaranteed budget, so every AA offer is fallible-placement — and a
+      # foreign taker settled one on-chain anyway (ledger-exact). Unset to fail
+      # closed at the FR-302 gate (see runner/aa-offer.ts).
+      AA_OFFER_ALLOW_FALLIBLE: '${AA_OFFER_ALLOW_FALLIBLE:-1}'
+    ports:
+      - '${HOST_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
+    volumes:
+      - 'aa-out:/aa/out'
+    healthcheck:
+      # bun-fetch probe: the oven/bun image has no curl (same as the kernel image).
+      test: ['CMD', 'bun', '-e', 'const r = await fetch("http://127.0.0.1:8090/healthz"); if (!r.ok) process.exit(1)']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      aa-proof-server: { condition: service_started }
+      aa-deploy: { condition: service_completed_successfully }
+    restart: 'unless-stopped'
+
 volumes:
   # Compose-declared so it carries the project label and down.sh -v removes it —
   # deliberately: the artifact records contract addresses on THIS chain, and a
