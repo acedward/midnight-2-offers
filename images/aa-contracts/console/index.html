@@ -354,6 +354,19 @@
     </div></form>
   </section>
 
+  <section>
+    <h2>Send to an address</h2>
+    <p class="note">Relay operation (no signature): mints the token and sends it to <b>any</b>
+    standard Midnight address — <code>mn_shield-addr…</code> for shielded tokens (the address
+    carries the coin + encryption keys), <code>mn_addr…</code> for unshielded.</p>
+    <form id="f-send"><div class="row">
+      <div><label>token</label><select id="sd-token" required></select></div>
+      <div><label>amount</label><input id="sd-amount" value="100000" pattern="[0-9]+" required></div>
+      <div style="flex:3"><label>recipient address (mn_addr… / mn_shield-addr…)</label><input id="sd-to" placeholder="mn_shield-addr_undeployed1…" required></div>
+      <div><button type="submit">Send</button></div>
+    </div></form>
+  </section>
+
   <section class="wide">
     <h2>Accounts on the Manager <button id="refresh" class="ghost" style="float:right;padding:2px 10px;font-size:12px">refresh</button></h2>
     <div class="tablewrap"><table>

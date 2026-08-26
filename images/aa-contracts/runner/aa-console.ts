@@ -38,7 +38,7 @@ import {
 import { Transaction } from "@midnightntwrk/ledger-v9";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
-import { MidnightBech32m } from "@midnightntwrk/wallet-sdk-address-format";
+import { MidnightBech32m, ShieldedAddress, UnshieldedAddress } from "@midnightntwrk/wallet-sdk-address-format";
 
 import { deriveAccountId, buildEthSignTypedDataV4Request, computeDigest } from "/aa/aalib/codec.js";
 import { prepareEvmExecute } from "/aa/aalib/manager.js";
@@ -915,6 +915,62 @@ function faucetJob(tokenName: string, amount: bigint, target: "relay" | "taker" 
   });
 }
 
+/** Send tokens to ANY standard Midnight address (user request): the funder
+ * wallet mints the token to itself, then does a plain wallet transfer to the
+ * pasted address. Shielded tokens need a mn_shield-addr… (it carries BOTH the
+ * coin and encryption public keys — this is the general form of what the
+ * withdraw-shielded dropdown special-cases); unshielded tokens a mn_addr…. */
+function sendJob(tokenName: string, amount: bigint, to: string): Job {
+  return enqueue("send", async (j) => {
+    const token = tokenByName(tokenName);
+    const netId = midnightNetworkConfig.id as any;
+    let receiver: any;
+    if (token.family === "shielded") {
+      if (!to.startsWith("mn_shield-addr")) throw new Error(`${token.name} is SHIELDED — the recipient must be a mn_shield-addr… address`);
+      receiver = MidnightBech32m.parse(to).decode(ShieldedAddress as any, netId);
+    } else {
+      if (!to.startsWith("mn_addr")) throw new Error(`${token.name} is UNSHIELDED — the recipient must be a mn_addr… address`);
+      receiver = MidnightBech32m.parse(to).decode(UnshieldedAddress as any, netId);
+    }
+    await withProveRetry(j, "send", () => session("send", async (walletResult) => {
+      // 1. mint to the funder wallet itself…
+      if (token.family === "shielded") {
+        await mintShieldedTo(walletResult, j, token, amount);
+      } else {
+        const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+        const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
+        await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
+      }
+      // 2. …then a standard wallet transfer to the pasted address. The wallet's
+      // local view of the fresh mint can lag the chain by a few blocks, so an
+      // insufficient-balance error here means "not indexed yet" — retry.
+      const wallet = walletResult.wallet as any;
+      const keys = { shieldedSecretKeys: walletResult.zswapSecretKeys, dustSecretKey: walletResult.dustSecretKey };
+      jlog(j, `transferring ${amount} ${token.name} → ${to.slice(0, 30)}…`);
+      let recipe: any = null;
+      let lastErr: unknown = null;
+      for (let i = 0; i < 10 && !recipe; i++) {
+        if (i) await new Promise((r) => setTimeout(r, 6000));
+        try {
+          recipe = await wallet.transferTransaction(
+            [{ type: token.family, outputs: [{ type: token.color, receiverAddress: receiver, amount }] }],
+            keys, { ttl: new Date(Date.now() + 30 * 60_000) },
+          );
+          lastErr = null;
+        } catch (e) {
+          lastErr = e;
+          jlog(j, `transfer not ready (${e instanceof Error ? e.message : e}) — waiting for the mint to index…`);
+        }
+      }
+      if (!recipe) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+      const tx = await wallet.finalizeRecipe(recipe);
+      await wallet.submitTransaction(tx);
+      j.txId = tx.transactionHash?.().toString?.() ?? null;
+      jlog(j, `sent — tx=${j.txId ?? "?"}`);
+    }, { seed: FUNDER_SEED }));
+  });
+}
+
 function fundJob(accountId: Hex32, amount: bigint, tokenName = "wUSD"): Job {
   return enqueue("fund", async (j) => {
     const token = tokenByName(tokenName);
@@ -1267,6 +1323,15 @@ Bun.serve({
         const target = String(body.target ?? "taker");
         if (!["relay", "taker", "funder"].includes(target)) return bad("target must be relay|taker|funder");
         const job = faucetJob(String(body.token ?? "wETH"), amount, target as any);
+        return json({ jobId: job.id });
+      }
+      if (path === "/api/send" && req.method === "POST") {
+        const body = await req.json();
+        const amount = BigInt(body.amount ?? 0);
+        if (amount <= 0n) return bad("amount must be a positive integer");
+        const to = String(body.to ?? "").trim();
+        if (!to) return bad("to must be a bech32m Midnight address (mn_addr… or mn_shield-addr…)");
+        const job = sendJob(String(body.token ?? "wBTC"), amount, to);
         return json({ jobId: job.id });
       }
       if (path === "/api/dev-sign" && req.method === "POST") {

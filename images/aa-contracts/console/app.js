@@ -100,6 +100,12 @@ async function loadInfo() {
   fillTokens("sw-want-token", "shielded", "wETH");
   fillTokens("trs-token", "shielded", "wBTC");
   fillTokens("tr-token", "unshielded", "wUSD");
+  { // send-to-address: ALL tokens
+    const el = $("sd-token");
+    el.innerHTML = "";
+    for (const t of (i.tokens ?? [])) el.append(new Option(`${t.name} (${t.family})`, t.name));
+    if ([...el.options].some((o) => o.value === "wBTC")) el.value = "wBTC";
+  }
   { // faucet: ALL tokens
     const el = $("fc-token");
     el.innerHTML = "";
@@ -370,6 +376,12 @@ $("f-wd").onsubmit = busy(() => {
         amount: $("wd-amount").value, token: tok.name, target: $("wd-target").value }
     : { kind: "withdraw", owner: state.signer, accountId: acct.accountId,
         amount: $("wd-amount").value, token: tok.name, recipient: $("wd-recipient").value.trim() });
+});
+$("f-send").onsubmit = busy(async () => {
+  const { jobId } = await api("/api/send", {
+    token: $("sd-token").value, amount: $("sd-amount").value, to: $("sd-to").value.trim(),
+  });
+  await watchJob(jobId);
 });
 $("f-faucet").onsubmit = busy(async () => {
   const { jobId } = await api("/api/faucet", {
