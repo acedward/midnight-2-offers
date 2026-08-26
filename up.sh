@@ -261,6 +261,19 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" aa "* ]]; then
       warn "funding the aa-console wallet failed — the console page works, operations will not; retry: ./scripts/fund-wallet.sh <aa-console seed>"
     fi
   fi
+  # The TAKER wallet (T9.4): settles book offers from the page. Needs SHIELDED
+  # NIGHT too — the want leg of AA open-swap offers is the native shielded colour.
+  if (( ! FAILED )) && ! curl -fsS --max-time 10 "$AA_CONSOLE_URL/healthz" \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("taker",{}).get("funded") else 1)' 2>/dev/null; then
+    log "funding the aa-taker wallet (NIGHT + DUST + shielded NIGHT)…"
+    AA_TAKER_SEED="${AA_TAKER_SEED:-7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e}"
+    if "$REPO_ROOT/scripts/fund-wallet.sh" "$AA_TAKER_SEED" --shielded-amount "${AA_TAKER_SHIELDED_AMOUNT:-100000000}"; then
+      curl -fsS --max-time 120 -X POST "$AA_CONSOLE_URL/api/wallet/refresh" >/dev/null 2>&1 || true
+      log "aa-taker wallet funded"
+    else
+      warn "funding the aa-taker wallet failed — the book's Settle action will not work; retry: ./scripts/fund-wallet.sh <aa-taker seed> --shielded-amount 100000000"
+    fi
+  fi
 fi
 
 if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then

@@ -88,6 +88,11 @@ async function loadInfo() {
   pill.className = `pill ${i.relay.funded ? "ok" : "warn"}`;
   pill.textContent = i.relay.funded ? `funded (${i.relay.balance})` : "UNFUNDED — run scripts/fund-wallet.sh with the aa-console seed";
   $("s-relay").append(pill, ` ${short(i.relay.address ?? "")}`);
+  $("s-taker").innerHTML = "";
+  const tp = document.createElement("span");
+  tp.className = `pill ${i.taker?.funded ? "ok" : "warn"}`;
+  tp.textContent = i.taker?.funded ? `funded (${i.taker.balance})` : "UNFUNDED — fund-wallet.sh <aa-taker seed> --shielded-amount";
+  $("s-taker").append(tp, ` ${short(i.taker?.address ?? "")}`);
   $("withdraw-note").textContent = i.withdrawKnownIssue;
   $("devsigner-slot").style.display = i.devSigner ? "" : "none";
 }
@@ -162,12 +167,30 @@ async function loadBook() {
     .map((l) => `${l.amount ?? l.value ?? "?"} ${short(String(l.color ?? l.colour ?? l.token ?? "?"))}`)
     .join(", ");
   for (const o of offers) {
+    const computed = o.computed ?? {};
+    const status = computed.status ?? o.status ?? o.state ?? "open";
     const tr = document.createElement("tr");
-    for (const text of [short(o.offerId ?? "?"), leg(o.gives), leg(o.wants), o.status ?? o.state ?? "open"]) {
+    for (const text of [short(o.offerId ?? "?"), leg(computed.gives ?? o.gives), leg(computed.wants ?? o.wants), status]) {
       const td = document.createElement("td");
       td.textContent = String(text);
       tr.append(td);
     }
+    // T9.4 — complete the offer with the TAKER wallet (a different wallet from
+    // both the maker's EVM account and the relay).
+    const td = document.createElement("td");
+    if (status === "live" && o.offerId) {
+      const b = document.createElement("button");
+      b.className = "ghost";
+      b.style.cssText = "padding:2px 10px;font-size:12px";
+      b.textContent = "Settle (taker wallet)";
+      b.onclick = busy(async () => {
+        const { jobId } = await api("/api/take", { offerId: o.offerId });
+        await watchJob(jobId);
+        await loadBook();
+      });
+      td.append(b);
+    }
+    tr.append(td);
     tbody.append(tr);
   }
 }

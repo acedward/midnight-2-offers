@@ -31,9 +31,12 @@ import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
 import {
   buildWalletFacade,
+  buildWalletAndWaitForFunds,
   registerNightForDust,
   configureMidnightNodeProviders,
 } from "@effectstream/midnight-contracts";
+import { Transaction } from "@midnightntwrk/ledger-v9";
+import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
 import { MidnightBech32m } from "@midnightntwrk/wallet-sdk-address-format";
 
@@ -70,6 +73,12 @@ const FUNDER_SEED = process.env["MIDNIGHT_WALLET_SEED"]
 // Shielded NIGHT — the native colour — is the demo want-leg: any wallet can get
 // it from the faucet (fund-wallet.sh --shielded-amount), no second minter needed.
 const NIGHT_COLOR_HEX = "0".repeat(64);
+// The TAKER wallet (T9.4/Q14): settles book offers as "a different wallet" —
+// deliberately distinct from the relay so maker account, relay, and taker are
+// three visible parties. Funded by up.sh WITH --shielded-amount (the want leg
+// is shielded NIGHT). `aa-taker` in wallets/wallets.json.
+const TAKER_SEED = process.env["AA_TAKER_SEED"]
+  ?? "7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e";
 
 const ARTIFACT_PATH = "/aa/out/aa-contracts.json";
 const artifact = JSON.parse(readFileSync(ARTIFACT_PATH, "utf-8"));
@@ -243,6 +252,89 @@ const relay = {
   checkedAt: null as string | null,
   error: null as string | null,
 };
+
+const taker = {
+  address: null as string | null,
+  balance: "0",
+  funded: false,
+  checkedAt: null as string | null,
+  error: null as string | null,
+};
+
+async function checkTakerWallet() {
+  try {
+    await session("taker-check", async (walletResult) => {
+      const st = await Rx.firstValueFrom((walletResult.wallet as any).state());
+      taker.address = walletResult.unshieldedAddress;
+      taker.balance = String(unshieldedTotal(st));
+      // Unshielded NIGHT is the funding proxy: up.sh funds this seed with
+      // NIGHT + DUST + shielded NIGHT in one fund-wallet.sh run, so a nonzero
+      // unshielded balance implies the whole set arrived.
+      taker.funded = unshieldedTotal(st) > 0n;
+      taker.error = null;
+    }, { requireFunds: false, seed: TAKER_SEED });
+  } catch (e) {
+    taker.error = e instanceof Error ? e.message : String(e);
+  }
+  taker.checkedAt = new Date().toISOString();
+  log(`taker wallet: funded=${taker.funded} balance=${taker.balance}${taker.error ? ` error=${taker.error}` : ""}`);
+}
+
+/** T9.4 — settle a live book offer with the TAKER wallet (the Phase-9-proven
+ * path: fetch blob by offerId, balance, finalize, submit; the kernel's own
+ * nullifier fill-markers then flip the book row to `consumed`). */
+function takeJob(offerId: string): Job {
+  return enqueue("take", async (j) => {
+    jlog(j, `fetching offer ${offerId.slice(0, 16)}… from the kernel`);
+    const res = await fetch(`${KERNEL_URL}/v1/offers/${offerId}`, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error(`kernel: ${res.status} fetching the offer`);
+    const detail: any = await res.json();
+    const blob = String(detail.offerBech32 ?? "");
+    if (!blob.startsWith("swapoffer1")) throw new Error("offer blob missing from the kernel response");
+    jlog(j, "building the taker wallet (waits for funds — fund aa-taker if this times out)…");
+    const built: any = await buildWalletAndWaitForFunds(
+      {
+        id: midnightNetworkConfig.id,
+        indexer: midnightNetworkConfig.indexer,
+        indexerWS: midnightNetworkConfig.indexerWS,
+        node: midnightNetworkConfig.node,
+        proofServer: WALLET_PROOF,
+      } as any,
+      TAKER_SEED,
+      midnightNetworkConfig.id as any,
+    );
+    const wallet = built.wallet as any;
+    try {
+      const keys = { shieldedSecretKeys: built.zswapSecretKeys, dustSecretKey: built.dustSecretKey };
+      const offerTx = (Transaction as any).deserialize("signature", "proof", "binding", OfferFiles.decode(blob));
+      jlog(j, "balancing the settlement (taker funds the want leg, sweeps the give surplus)…");
+      const t0 = Date.now();
+      const recipe = await wallet.balanceFinalizedTransaction(offerTx, keys, {
+        ttl: new Date(Date.now() + 30 * 60_000),
+      });
+      const settleTx = await wallet.finalizeRecipe(recipe);
+      await wallet.submitTransaction(settleTx);
+      j.txId = settleTx.transactionHash?.().toString?.() ?? null;
+      jlog(j, `settlement submitted in ${((Date.now() - t0) / 1000).toFixed(0)}s — tx=${j.txId ?? "?"}`);
+    } finally {
+      await wallet.stop?.().catch(() => {});
+    }
+    // Confirm on the book — the kernel notices the consumed nullifiers.
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const s: any = await (await fetch(`${KERNEL_URL}/v1/offers/${offerId}/status`)).json();
+        if (s.status === "consumed") { jlog(j, "book status: CONSUMED — settlement confirmed"); return; }
+        if (["cancelled", "expired", "unknown", "not_found"].includes(s.status)) {
+          throw new Error(`offer ended with status ${s.status}`);
+        }
+      } catch (e) {
+        if (e instanceof Error && /ended with status/.test(e.message)) throw e;
+      }
+    }
+    jlog(j, "submitted, but the book has not flipped to consumed yet — check the offer status");
+  });
+}
 
 async function checkRelayWallet() {
   try {
@@ -553,7 +645,7 @@ Bun.serve({
       if (path === "/" || path === "/index.html") return staticFile("index.html", "text/html; charset=utf-8");
       if (path === "/app.js") return staticFile("app.js", "text/javascript; charset=utf-8");
       if (path === "/healthz") {
-        return json({ ok: true, relay, jobsQueued: queue.length, deployed: existsSync(ARTIFACT_PATH) });
+        return json({ ok: true, relay, taker, jobsQueued: queue.length, deployed: existsSync(ARTIFACT_PATH) });
       }
       if (path === "/api/info") {
         return json({
@@ -561,6 +653,7 @@ Bun.serve({
           manager: MANAGER, minter: MINTER, domain: artifact.manager.domain,
           color: COLOUR_HEX, minterTag: artifact.minter.tag ?? null,
           relay,
+          taker,
           swap: {
             giveColor: SHIELDED_COLOR_HEX,
             wantColor: NIGHT_COLOR_HEX,
@@ -596,6 +689,13 @@ Bun.serve({
         if (!/^0x[0-9a-f]{130}$/i.test(signature)) return bad("signature must be a 65-byte 0x hex string");
         prepared.delete(String(body.prepId));
         const job = prep.kind === "swap" ? offerJob(prep, signature) : executeJob(prep, signature);
+        return json({ jobId: job.id });
+      }
+      if (path === "/api/take" && req.method === "POST") {
+        const body = await req.json();
+        const offerId = String(body.offerId ?? "");
+        if (!/^[0-9a-f]{64}$/i.test(offerId)) return bad("offerId must be 64 hex chars");
+        const job = takeJob(offerId);
         return json({ jobId: job.id });
       }
       if (path === "/api/fund-shielded" && req.method === "POST") {
@@ -643,7 +743,8 @@ Bun.serve({
       }
       if (path === "/api/wallet/refresh" && req.method === "POST") {
         await checkRelayWallet();
-        return json({ relay });
+        await checkTakerWallet();
+        return json({ relay, taker });
       }
       return bad("not found", 404);
     } catch (e) {
@@ -658,3 +759,4 @@ setNetworkId(midnightNetworkConfig.id as any);
 log(`serving on :${PORT} — manager=${MANAGER.slice(0, 16)}… minter=${MINTER.slice(0, 16)}…`);
 if (DEV_SIGNER) log(`dev signer ENABLED — address ${DEV_ADDR} (testing only)`);
 await checkRelayWallet();
+await checkTakerWallet();

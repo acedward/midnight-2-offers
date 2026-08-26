@@ -207,6 +207,20 @@
         "dust": "mn_dust_undeployed1w0s4pnzffpqgczutq8dvwk58jrtrx50wgxejntscdczadrdqsysyy2hxxyc",
         "userAddress": "07ea2a92923d0a5e4257dcb088a024eb13e9d7220c9e3adaa768dcf322846bb3"
       }
+    },
+    {
+      "name": "aa-taker",
+      "role": "AA console taker wallet — settles book offers as \"a different wallet\" (Q14/T9.4)",
+      "$comment": "Needs SHIELDED NIGHT for the want leg of AA open-swap offers: fund with --shielded-amount (up.sh does). Distinct from the aa-console relay wallet on purpose — maker account, relay, and taker are three visibly different parties.",
+      "seed": "7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e",
+      "seedBytes": 32,
+      "funding": "fund-script",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed16xvk242ud6j8kyu53m6thwj79656h9hyr6veczt4tdxeqgu9fq6sednjuy",
+        "shielded": "mn_shield-addr_undeployed1tl2kfgkchfmgafqwx75pkr68m849hmuxnvrtvn8p467hxt5ceyvlazcyhlmtyzxc2prsumz3ga2srgv97j5tx80d64mmjcr0xe83jscd9hxeq",
+        "dust": "mn_dust_undeployed1wwam6m6qhzcxlcs0m2c56vez2jdlvvl2tc3rlcwpjq8tlekauhlxg7vczl9",
+        "userAddress": "d19965555c6ea47b13948ef4bbba5e2ea9ab96e41e999c09755b4d9023854835"
+      }
     }
   ]
 }

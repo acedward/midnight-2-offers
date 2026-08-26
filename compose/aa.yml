@@ -103,6 +103,7 @@ services:
       # the e2e measured.
       AA_WALLET_PROOF_SERVER_URL: 'http://proof-server:6300'
       AA_CONSOLE_SEED: '${AA_CONSOLE_SEED:-aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0}'
+      AA_TAKER_SEED: '${AA_TAKER_SEED:-7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e}'
       AA_CONSOLE_DEV_SIGNER: '${AA_CONSOLE_DEV_SIGNER:-}'
       # Publish offers whose legs land in the FALLIBLE section. Demo default ON,
       # measured (T9.2): the v5 Manager's k=19 execute exceeds the ledger's
