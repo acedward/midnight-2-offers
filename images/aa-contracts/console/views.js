@@ -391,12 +391,6 @@ const REPOS = [
     ref: "image 2.0.0-rc.4 (must match the node)",
     notes: [],
   },
-  {
-    repo: "LFDT-Minokawa/compact", url: "https://github.com/LFDT-Minokawa/compact/releases",
-    role: "the Compact compiler the AA contracts build with (--feature-zkir-v3)",
-    ref: "release asset compactc-v0.33.0-rc.2",
-    notes: [],
-  },
 ];
 
 let reposRendered = false;
