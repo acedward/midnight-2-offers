@@ -219,6 +219,7 @@ const INFRA_NODES = [
   { id: "solver",        label: "cow (solver)",              sub: "observation mode",   x: 840, y: 240, w: 165, h: 52 },
   { id: "proofServer",   label: "proof-server 9.0.0-rc.5",   sub: "plain · zkir-v2 / [v6] + wallet lane", x: 240, y: 356, w: 250, h: 52 },
   { id: "aaProofServer", label: "proof-server 9.0.0-rc.5_experimental", sub: "zkir-v3 / [v7] — the AA circuits", x: 530, y: 356, w: 290, h: 52 },
+  { id: "postgres",      label: "postgres (shared)",         sub: "offerfiles + umbra · one store", x: 845, y: 356, w: 200, h: 52 },
   // Blockchain
   { id: "node",          label: "midnight-node 2.0.0-rc.4",  sub: ":9944 · the chain",  x: 280, y: 496, w: 240, h: 56 },
   { id: "celestia",      label: "celestia (DA devnet)",      sub: ":26658 · the offer blobs", x: 600, y: 496, w: 240, h: 56 },
@@ -233,11 +234,14 @@ const INFRA_EDGES = [
   ["batcher", "celestia"], ["batcher", "node"],
   ["evmRpc", "indexer"],
   ["indexer", "node"],
+  // The one store (T11.4): the kernel's offer book and umbra's index.
+  ["kernel", "postgres"], ["evmRpc", "postgres"],
 ];
 const INFRA_LABELS = {
   console: "aa-console backend — the relay: serves the page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this very table", node: "midnight node", indexer: "indexer",
   proofServer: "proof-server (plain)", aaProofServer: "aa-proof-server (experimental)",
   kernel: "offer-files kernel (sync node :9999; contract deployed once per stack, address persisted)",
+  postgres: "postgres — the ONE store for the stack: the kernel's offer book (db offerfiles) and umbra's index (db umbra). No host port; probed at TCP level",
   kernelSync: "kernel sync", batcher: "offer-files batcher (:3334, own container since the split)",
   celestia: "celestia", evmRpc: "umbra-evm RPC", frontend: "zswap-da frontend",
   solverSink: "solver sink", solver: "cow-solver",

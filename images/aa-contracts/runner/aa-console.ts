@@ -997,7 +997,21 @@ async function infraStatus() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: [] }),
     });
-  const [node, indexer, proofServer, aaProofServer, kernel, kernelSync, batcher, celestia, evmRpc, frontend, sink] =
+  // TCP-level only, deliberately: the console has no postgres client and does
+  // not hold a credential for any of the per-consumer roles. "The shared server
+  // is accepting connections" is the whole claim, and it is the one that
+  // distinguishes "kernel/evm are down" from "their database is down".
+  const probePostgres = async () => {
+    const socket = await Bun.connect({
+      hostname: "postgres",
+      port: 5432,
+      socket: { data() {} },
+    });
+    socket.end();
+    return { reachable: true, host: "postgres:5432", databases: ["offerfiles", "umbra"] };
+  };
+
+  const [node, indexer, proofServer, aaProofServer, kernel, kernelSync, batcher, celestia, evmRpc, frontend, sink, postgres] =
     await Promise.all([
       probe(async () => {
         const health = (await rpc("system_health")) as any;
@@ -1044,6 +1058,7 @@ async function infraStatus() {
           framesAccepted: snap.frames?.accepted ?? 0,
         };
       }),
+      probe(probePostgres),
     ]);
   // The solver has no HTTP surface of its own — its liveness is what the sink
   // sees on the authenticated relay socket.
@@ -1060,6 +1075,9 @@ async function infraStatus() {
       node, indexer, proofServer, aaProofServer,
       kernel, kernelSync, batcher, celestia,
       evmRpc, frontend, solverSink: sink, solver,
+      // The one store for the whole stack (T11.4): the kernel's offer book
+      // (`offerfiles`) and umbra-evm's index (`umbra`) both live here.
+      postgres,
     },
   };
 }
