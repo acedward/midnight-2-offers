@@ -1,0 +1,137 @@
+# cow-solver — the ported COW posted-price solver in OBSERVATION mode, plus the
+# WS sink it pushes to.  Profile: `solver`
+#
+#   ./up.sh --with offerfiles --with solver
+#
+# The solver needs the offer-files kernel to mirror, so `--with offerfiles` is
+# not optional here — this fragment declares no kernel of its own.
+#
+# ─── WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT ──────────────────────────
+# The solver is architecturally a client of a "Midnight Intents relay": it
+# connects outbound with a shared Bearer, registers `solver-capabilities`, and
+# re-pushes `price-levels` once a second. The real relay
+# (`shieldedtech/midnight-intents-swaps`) is DROPPED from this demo — user
+# decision Q14 → option D — and SOLVER-EXECUTED SETTLEMENT WITH IT. Offers are
+# completed through the offer-files backend's console taker flow instead.
+#
+# `solver-sink` therefore implements the relay's RECEIVE half only. It never
+# sends the solver a `swap` job, and it contains no code that could: that is
+# what keeps the solver from ever building, proving, or submitting a
+# transaction. The property is structural, not a runtime switch — see
+# images/cow-solver/sink/server.ts.
+#
+# `profiles:` is deliberately NOT used — this repo's notion of a profile is the
+# FRAGMENT FILENAME, and up.sh never passes `--profile`, so a service carrying
+# a compose profile key would silently never start.
+
+services:
+  # ── solver-sink ─────────────────────────────────────────────────────────────
+  # Two listeners on purpose, so the authenticated ingress and the public
+  # read-only surface are separable:
+  #   :8081  solver-facing — Bearer-authenticated WS upgrade (401 otherwise),
+  #          plus `GET /jobs/:jobId`, which a live solver requires as
+  #          SOLVER_RELAY_HTTP_URL for durable recovery. No job can exist in
+  #          observation mode, so it answers an honest 404.
+  #   :8080  browsers — the page, GET /api/snapshot, /api/stream (SSE), /ws.
+  solver-sink:
+    image: '${SOLVER_SINK_IMAGE:-midnight-2-offers/cow-solver-sink:local}'
+    build:
+      context: '../images/cow-solver/sink'
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${SOLVER_SINK_HOST_PORT:-10800}:8080'
+      # Published for manual inspection only; the solver reaches it over the
+      # compose network. Bound to loopback like everything else in this repo.
+      - '${BIND_ADDR:-127.0.0.1}:${SOLVER_RELAY_HOST_PORT:-10801}:8081'
+    environment:
+      SINK_PUBLIC_PORT: '8080'
+      SINK_RELAY_PORT: '8081'
+      # The SAME shared secret the solver sends. The relay's own rule is a
+      # minimum of 32 characters and the sink enforces it at BOOT, so a short
+      # token fails loudly instead of silently refusing every upgrade.
+      SOLVER_RELAY_AUTH_TOKEN: '${SOLVER_RELAY_AUTH_TOKEN:-demo-cow-solver-relay-token-0000000000}'
+      # Container port, never the host port — the sink reads the kernel's book
+      # over the compose network.
+      ZSWAP_API: 'http://kernel:9999'
+      SINK_BOOK_POLL_MS: '${SOLVER_SINK_BOOK_POLL_MS:-4000}'
+    healthcheck:
+      # bun, not curl: the oven/bun runtime image ships no curl/wget.
+      test:
+        - 'CMD'
+        - 'bun'
+        - '-e'
+        - 'const r = await fetch("http://127.0.0.1:8080/health"); process.exit(r.ok ? 0 : 1)'
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 15s
+    restart: 'unless-stopped'
+
+  # ── solver ──────────────────────────────────────────────────────────────────
+  solver:
+    image: '${SOLVER_IMAGE:-midnight-2-offers/cow-solver:local}'
+    build:
+      # Small context (just the Dockerfile); the SOURCE arrives as the named
+      # context below. See images/cow-solver/Dockerfile for why this cannot
+      # clone from git like images/offerfiles-kernel does.
+      context: '../images/cow-solver'
+      additional_contexts:
+        # An absolute path is the honest default: this is a machine-local
+        # checkout on an unpushed branch, not something a fresh clone of this
+        # repo can produce. Override with SOLVER_KERNEL_SRC.
+        kernel: '${SOLVER_KERNEL_SRC:-/Users/edwardalvarado/todo/infra/experiments/00001-zswap-offerfiles-kernel}'
+    environment:
+      # solver.dev.ts REFUSES to start on anything but `undeployed`. That is
+      # the inherited NO-GO-for-real-funds posture, kept as a hard gate.
+      MIDNIGHT_NETWORK_ID: 'undeployed'
+      MIDNIGHT_NODE_HTTP: 'http://node:9944'
+      MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v4/graphql'
+      MIDNIGHT_INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
+      MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
+      # The kernel whose book the solver mirrors (its D0–D2 discovery reads
+      # GET /v1/offers, GET /v1/health/sync and the offer-updates websocket).
+      ZSWAP_API: 'http://kernel:9999'
+      # A DEDICATED seed, and it must stay dedicated: two wallet facades on one
+      # seed against one node force each other's connection down (the kernel
+      # branch's own DEV_SEED comment). ...0021 collides with none of
+      # wallets/wallets.json. It is deliberately UNFUNDED — observation mode
+      # needs a wallet that SYNCS, not one that holds value, and the solver's
+      # published ladders are derived from the kernel BOOK, not from inventory.
+      SOLVER_SEED: '${SOLVER_SEED:-0000000000000000000000000000000000000000000000000000000000000021}'
+      # The sink, over the compose network. Container ports, not host ports.
+      SOLVER_RELAY_WS_URL: 'ws://solver-sink:8081'
+      SOLVER_RELAY_HTTP_URL: 'http://solver-sink:8081'
+      SOLVER_RELAY_AUTH_TOKEN: '${SOLVER_RELAY_AUTH_TOKEN:-demo-cow-solver-relay-token-0000000000}'
+      # Durable wallet-operation journal. The branch fails CLOSED at startup if
+      # this is missing, unwritable, corrupt, locked or schema-incompatible —
+      # a documented BREAKING DEPLOYMENT REQUIREMENT (RF1/RF2), not a nicety.
+      # One persistent volume per solver instance; never shared.
+      SOLVER_JOURNAL_PATH: '/var/lib/cow-solver/operations.sqlite'
+      # EXACTLY "true"/"false" — the solver's parseBooleanEnv refuses "1"/"0"
+      # rather than guessing. (Note this differs from the kernel's own
+      # ALLOW_CONTRACT_MAKER_OFFERS, which accepts 1/true/yes.)
+      SOLVER_ENABLED: '${SOLVER_ENABLED:-true}'
+      # NOT true: dry-run would skip the relay client entirely, and the relay
+      # client is the thing being observed. Safety comes from the sink never
+      # dispatching a job, not from this flag.
+      SOLVER_DRY_RUN: '${SOLVER_DRY_RUN:-false}'
+    volumes:
+      - 'cow-solver-journal:/var/lib/cow-solver'
+    depends_on:
+      solver-sink: { condition: service_healthy }
+      kernel: { condition: service_healthy }
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+    # A solver fault must never tear the stack down — the same reasoning the
+    # kernel branch's own start.dev.ts records for not making it a
+    # system-dependency. The stack is fully usable without a solver.
+    restart: 'unless-stopped'
+
+volumes:
+  # Declared here rather than created ad hoc: only a compose-created volume
+  # carries the com.docker.compose.project label that `down.sh -v` filters on,
+  # so a volume made any other way survives teardown and silently feeds stale
+  # state to the next bring-up.
+  #
+  # It MUST die with the Midnight volumes: the journal keys operations to a
+  # chain state that a `./down.sh -v` reset destroys.
+  cow-solver-journal:
