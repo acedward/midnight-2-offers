@@ -130,12 +130,18 @@
 
   <section>
     <h2>Fund account</h2>
-    <p class="note">Relay operation (no signature): mints demo tokens to the relay wallet, then
-    deposits them into the chosen account.</p>
+    <p class="note">Relay operations (no signature): mint demo tokens and deposit them into the
+    chosen account. <b>Unshielded</b> feeds transfers and withdrawals; <b>shielded</b> feeds the
+    swap's give leg.</p>
     <form id="f-fund"><div class="row">
       <div><label>account</label><select id="fund-account" required></select></div>
-      <div><label>amount</label><input id="fund-amount" value="600000" pattern="[0-9]+" required></div>
+      <div><label>amount (unshielded)</label><input id="fund-amount" value="600000" pattern="[0-9]+" required></div>
       <div><button type="submit">Fund</button></div>
+    </div></form>
+    <form id="f-fundsh"><div class="row">
+      <div><label>account</label><select id="fs-account" required></select></div>
+      <div><label>amount (shielded)</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
+      <div><button type="submit" class="ghost">Fund shielded</button></div>
     </div></form>
   </section>
 
@@ -199,12 +205,8 @@
       <p class="note">Selector 6 — opens a shielded swap on the Manager, signed by your EVM wallet. The
       proven transaction is <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the
       offer, published to the offer-files kernel as a <code>swapoffer1…</code> blob for a taker (or
-      the solver) to settle. The give leg spends the account's <b>shielded</b> balance — fund it first.</p>
-      <form id="f-fundsh"><div class="row">
-        <div><label>account</label><select id="fs-account" required></select></div>
-        <div><label>shielded amount</label><input id="fs-amount" value="500000" pattern="[0-9]+" required></div>
-        <div><button type="submit" class="ghost">Fund shielded</button></div>
-      </div></form>
+      the solver) to settle. The give leg spends the account's <b>shielded</b> balance — fund it
+      first via <b>Fund account → Fund shielded</b> above.</p>
       <form id="f-swap"><div class="row">
         <div><label>account (yours)</label><select id="sw-from" required></select></div>
         <div><label id="sw-give-label">give (shielded token)</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
