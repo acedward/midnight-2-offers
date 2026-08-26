@@ -278,6 +278,49 @@ $("f-swap").onsubmit = busy(async () => {
 });
 $("refresh").onclick = busy(loadAccounts);
 
+// ── Read & pure functions panel ──────────────────────────────────────────────
+let pureFns = [];
+async function loadPureFns() {
+  try {
+    pureFns = (await api("/api/pure")).functions;
+  } catch { return; }
+  const sel = $("pure-fn");
+  sel.innerHTML = "";
+  for (const f of pureFns) sel.append(new Option(`${f.fn} (${f.kind})`, f.fn));
+  sel.onchange = renderPureForm;
+  renderPureForm();
+}
+function renderPureForm() {
+  const f = pureFns.find((x) => x.fn === $("pure-fn").value);
+  if (!f) return;
+  $("pure-doc").textContent = f.doc;
+  for (const i of [0, 1]) {
+    const wrap = $(`pure-arg${i}-wrap`);
+    if (f.params[i]) {
+      wrap.style.display = "";
+      $(`pure-arg${i}-label`).textContent = f.params[i];
+      // Convenience prefills: account ids from the table, the signer for owner.
+      const input = $(`pure-arg${i}`);
+      input.value = "";
+      if (/accountId/.test(f.params[i]) && state.accounts[0]) input.value = state.accounts[0].accountId;
+      if (/owner/.test(f.params[i]) && state.signer) input.value = state.signer;
+    } else {
+      wrap.style.display = "none";
+    }
+  }
+  $("pure-result").textContent = "—";
+}
+$("f-pure").onsubmit = busy(async () => {
+  const f = pureFns.find((x) => x.fn === $("pure-fn").value);
+  const args = [ $("pure-arg0").value, $("pure-arg1").value ].slice(0, f?.params.length ?? 0);
+  try {
+    const r = await api("/api/pure", { fn: $("pure-fn").value, args });
+    $("pure-result").textContent = JSON.stringify(r.result, null, 1);
+  } catch (e) {
+    $("pure-result").textContent = `ERROR: ${e?.message ?? e}`;
+  }
+});
+
 // The Actions panel's sub-segments (one per Manager `execute` action). Purely
 // a view toggle — the wired forms keep their own submit handlers above, and
 // the two shielded panes are inert UI previews.
@@ -294,6 +337,7 @@ busy(async () => {
   await loadInfo();
   await loadAccounts();
   loadBook().catch(() => {});
+  loadPureFns().catch(() => {});
   setInterval(() => {
     if (state.activeJob) return;
     loadAccounts().catch(() => {});

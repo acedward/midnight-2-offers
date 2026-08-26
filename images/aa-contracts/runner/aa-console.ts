@@ -239,6 +239,80 @@ async function listAccounts() {
   return out;
 }
 
+// ── pure / read-only functions against the Manager (no signature, no proof) ──
+// "Pure" ones run the compiled module's pureCircuits locally; "read" ones are
+// ledger lookups through the indexer. Nothing here mutates anything.
+const PURE_FN_DOCS = [
+  { fn: "deriveAccountId", kind: "pure", params: ["owner (0x…20 bytes)", "salt (0x…32 bytes)"], doc: "account id = hash(tag, manager, owner, salt)" },
+  { fn: "shieldedKey", kind: "pure", params: ["accountId (0x…32)", "colour (32-byte hex)"], doc: "the shieldedBalances map key for (account, colour)" },
+  { fn: "unshieldedKey", kind: "pure", params: ["accountId (0x…32)", "colour (32-byte hex)"], doc: "the unshieldedBalances map key for (account, colour)" },
+  { fn: "isRegistered", kind: "read", params: ["accountId (0x…32)"], doc: "accounts set membership" },
+  { fn: "evmOwner", kind: "read", params: ["accountId (0x…32)"], doc: "the EVM address bound to the account" },
+  { fn: "evmNonce", kind: "read", params: ["accountId (0x…32)"], doc: "next EIP-712 action nonce" },
+  { fn: "unshieldedBalance", kind: "read", params: ["accountId (0x…32)", "colour (32-byte hex, default demo token)"], doc: "unshielded credit for (account, colour)" },
+  { fn: "shieldedBalance", kind: "read", params: ["accountId (0x…32)", "colour (32-byte hex, default shielded token)"], doc: "shielded credit for (account, colour)" },
+  { fn: "poolHasColour", kind: "read", params: ["colour (32-byte hex, default shielded token)"], doc: "does the contract custody a pooled coin of this colour" },
+  { fn: "poolValue", kind: "read", params: ["colour (32-byte hex, default shielded token)"], doc: "the pooled coin for this colour (value, nonce, merkle index)" },
+  { fn: "deploymentDomain", kind: "read", params: [], doc: "the Manager's constructor domain (ledger field)" },
+];
+
+async function runPureFn(fn: string, args: string[]): Promise<unknown> {
+  const b32 = (v: string | undefined, def?: string): Uint8Array => {
+    const h = (v && v.trim() !== "" ? v : def ?? "").replace(/^0x/, "").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(h)) throw new Error("expected a 32-byte hex value");
+    return hexToBytes(h);
+  };
+  const b20 = (v: string | undefined): Uint8Array => {
+    const h = (v ?? "").replace(/^0x/, "").toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(h)) throw new Error("expected a 20-byte hex value");
+    return hexToBytes(h);
+  };
+  managerMod ??= await loadContract("contract-manager");
+  const pc = managerMod.pureCircuits;
+  switch (fn) {
+    case "deriveAccountId":
+      return { accountId: deriveAccountId(manager32, ("0x" + toHex(b20(args[0]))) as Hex20, ("0x" + toHex(b32(args[1]))) as Hex32) };
+    case "shieldedKey":
+      return { key: "0x" + toHex(pc.shieldedKey(b32(args[0]), b32(args[1], SHIELDED_COLOR_HEX))) };
+    case "unshieldedKey":
+      return { key: "0x" + toHex(pc.unshieldedKey(b32(args[0]), b32(args[1], COLOUR_HEX))) };
+  }
+  const { ledger } = await readLedger();
+  switch (fn) {
+    case "isRegistered":
+      return { registered: ledger.accounts.member(b32(args[0])) };
+    case "evmOwner": {
+      const id = b32(args[0]);
+      return ledger.evmOwners.member?.(id) === false
+        ? { owner: null }
+        : { owner: "0x" + toHex(ledger.evmOwners.lookup(id)) };
+    }
+    case "evmNonce": {
+      const id = b32(args[0]);
+      return { nonce: String(ledger.evmNonces.member(id) ? ledger.evmNonces.lookup(id) : 0n) };
+    }
+    case "unshieldedBalance": {
+      const key = managerMod.pureCircuits.unshieldedKey(b32(args[0]), b32(args[1], COLOUR_HEX));
+      return { balance: String(ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n) };
+    }
+    case "shieldedBalance": {
+      const key = managerMod.pureCircuits.shieldedKey(b32(args[0]), b32(args[1], SHIELDED_COLOR_HEX));
+      return { balance: String(ledger.shieldedBalances.member(key) ? ledger.shieldedBalances.lookup(key) : 0n) };
+    }
+    case "poolHasColour":
+      return { pooled: ledger.pools.member(b32(args[0], SHIELDED_COLOR_HEX)) };
+    case "poolValue": {
+      const col = b32(args[0], SHIELDED_COLOR_HEX);
+      if (!ledger.pools.member(col)) return { pooled: false };
+      const coin = ledger.pools.lookup(col);
+      return { pooled: true, value: String(coin.value), nonce: "0x" + toHex(coin.nonce), mtIndex: String(coin.mt_index) };
+    }
+    case "deploymentDomain":
+      return { domain: "0x" + toHex(ledger.deploymentDomain), utf8: new TextDecoder().decode(ledger.deploymentDomain).replace(/\0+$/, "") };
+  }
+  throw new Error(`unknown function '${fn}'`);
+}
+
 async function nextNonce(accountId: Hex32): Promise<bigint> {
   const { ledger } = await readLedger();
   const id = hexToBytes(accountId);
@@ -876,6 +950,13 @@ Bun.serve({
         prepared.delete(String(body.prepId));
         const job = prep.kind === "swap" ? offerJob(prep, signature) : executeJob(prep, signature);
         return json({ jobId: job.id });
+      }
+      if (path === "/api/pure") {
+        if (req.method !== "POST") return json({ functions: PURE_FN_DOCS });
+        const body = await req.json();
+        const fn = String(body.fn ?? "");
+        const args = Array.isArray(body.args) ? body.args.map(String) : [];
+        return json({ fn, result: await runPureFn(fn, args) });
       }
       if (path === "/api/take" && req.method === "POST") {
         const body = await req.json();

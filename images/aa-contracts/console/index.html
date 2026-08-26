@@ -217,6 +217,21 @@
   </section>
 
   <section class="wide">
+    <h2>Read &amp; pure functions</h2>
+    <p class="note">The Manager's non-mutating surface: <b>pure</b> functions run the compiled
+    circuit module locally, <b>read</b> functions are ledger lookups through the indexer. No
+    signature, no proof, instant.</p>
+    <form id="f-pure"><div class="row">
+      <div><label>function</label><select id="pure-fn"></select></div>
+      <div id="pure-arg0-wrap" style="flex:2"><label id="pure-arg0-label">arg 1</label><input id="pure-arg0"></div>
+      <div id="pure-arg1-wrap" style="flex:2"><label id="pure-arg1-label">arg 2</label><input id="pure-arg1"></div>
+      <div><button type="submit" class="ghost">Run</button></div>
+    </div></form>
+    <p class="note" id="pure-doc"></p>
+    <div id="pure-result" style="background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:8px 12px;margin-top:8px;overflow-wrap:anywhere;color:var(--dim)">—</div>
+  </section>
+
+  <section class="wide">
     <h2>Offer book <span id="book-state"></span></h2>
     <div class="tablewrap"><table>
       <thead><tr><th>offer id</th><th>gives</th><th>wants</th><th>status</th><th></th></tr></thead>
