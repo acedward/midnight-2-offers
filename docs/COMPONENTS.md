@@ -38,13 +38,16 @@ NOT in the image — deploying needs only verifier keys, and bring-up never call
 The one-shot is idempotent across `up` runs and its state dies with `down.sh -v`.
 
 **The `aa` profile also serves the AA web console** at `http://127.0.0.1:10700`
-(`AA_CONSOLE_HOST_PORT`): a page where **any injected browser EVM wallet** (MetaMask, Rabby, …)
-drives the AA path — register an account, fund it, transfer between accounts, withdraw. The
+(`AA_CONSOLE_HOST_PORT`): its face is the **Midnight-EVM [AA] Wallet**, where **any injected
+browser EVM wallet** (MetaMask, Rabby, …) drives the AA path — on connect the Manager's
+read/pure surface executes for the address (no registration needed), then register, balances,
+and token-first Withdraw / Transfer / Publish Offer. The
 browser holds no Midnight wallet and no prover: it signs `eth_signTypedData_v4` requests that
 the console's relay builds with the AA repo's own EIP-712 codec, and the relay recovers the
 signer's secp256k1 point from the signature (the `pk` argument `execute` needs — no EVM wallet
-exposes it), proves the k=19 `execute` through the profile's internal proof server (~2 min per
-operation; the page shows the live job log) and submits, paying fees from its own relay wallet
+exposes it), proves `execute` through the profile's internal proof server (~1 min with the
+k=18 MinoCrab overlay, ~2 min at stock k=19; the page shows the live job log) and submits,
+paying fees from its own relay wallet
 (`aa-console` in `wallets/wallets.json`, funded automatically by `up.sh` — unshielded NIGHT +
 DUST only, deliberately shielded-free). The console's image variant keeps the 1.1 GB
 `execute.prover` the deploy image prunes (`midnight-2-offers/aa-contracts:console`).
@@ -53,17 +56,22 @@ otherwise. The one-time withdraw limitation is GONE: the node's `Custom error: 2
 recipient-encoding defect in the Manager) was fixed upstream in
 [AA PR #10](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10) — pin `AA_REF`
 at or past its merge (`713a2021…`; key-breaking, so redeploy the contracts) and withdraw lands
-like every other operation. Withdraws go to a 32-byte user address only (`recipientKind 0`);
-the contract now refuses contract-recipient payout shapes by design.
+like every other operation. Unshielded withdraws (selector 3) go to a 32-byte user address only (`recipientKind 0`);
+the contract refuses contract-recipient payout shapes by design. Shielded withdraws
+(selector 2) go to **any pasted `mn_shield-addr…`** — the address decodes to the recipient's
+coin public key (which rides the signed action) and encryption public key (which feeds the
+build-time coin-encryption mapping); the stack's own wallets remain selectable shortcuts.
+The AA-infra tab's **Send to an address** is the relay-side sibling: it mints a demo token and
+wallet-transfers it to any pasted `mn_addr…`/`mn_shield-addr…`, no signature involved.
 
 **The console's Swap panel publishes real offer files.** An `OpenSwapShielded` action (signed by
 the browser wallet like every other op) is proven as a Manager `execute` and then **never
 submitted**: the proven transaction is unbalanced by exactly +give/−want, which makes it the
 offer itself — encoded as a MIP-0005 `swapoffer1…` blob and `POST`ed to the offer-files kernel
-(`--with offerfiles` required; the panel degrades gracefully without it). The demo pair is
-give = the demo token's shielded colour, want = **shielded NIGHT** (any wallet can obtain it via
-`fund-wallet.sh <seed> --shielded-amount <n>` and settle the offer with the kernel's own
-`api-examples/11-settle-offer.ts` flow). Two switches make this work, both ON in the demo and
+(`--with offerfiles` required; the panel degrades gracefully without it). Give and want are
+any two **distinct shielded demo tokens** (wBTC/wETH — the offer-files contract's own token
+set, unified across the stack in Phase 12); the console's taker flow or the kernel's own
+`api-examples/11-settle-offer.ts` settle it. Two switches make this work, both ON in the demo and
 OFF upstream by default: `ALLOW_CONTRACT_MAKER_OFFERS` (kernel-side — contract-maker offers
 cannot pass `wellFormed` against the kernel's blank reference state, so the exact
 missing-contract failure retries without contract-proof verification; native zswap proofs and

@@ -76,15 +76,21 @@ flags, teardown semantics and the CI harness details: [docs/OPERATIONS.md](docs/
 
 ## The web console
 
-`http://127.0.0.1:10700` (profile `aa`) is the demo's face. Any injected browser EVM wallet
-(MetaMask, Rabby, …) signs EIP-712 actions; the console's relay recovers the signer's public
-key, proves the Manager's `execute` through the stack's own proof server (~1–2 min per action)
-and submits — the browser never holds a Midnight key. Register / fund / transfer / withdraw all
-land on-chain; the Swap action builds a real MIP-0005 `swapoffer1…` offer (shown as bech32m,
-then published to the kernel with a second click), and the book panel settles live offers with
-a separate taker wallet. The other tabs: a live **COW solver** ladder feed, an
-**infrastructure** canvas probing every component, an embedded **Memos** app, and the
-**Repos** pin table. `AA_CONSOLE_DEV_SIGNER=1` adds a built-in signer for wallet-less runs.
+`http://127.0.0.1:10700` (profile `aa`) is the demo's face. The **Midnight-EVM [AA] Wallet**
+tab is a wallet-shaped product: connect any injected EVM wallet (MetaMask, Rabby, …) and the
+Manager's read surface executes immediately for that address — registration not required; the
+rows just read empty. An unregistered address gets a Register warning; a registered one gets
+its balances (every demo token, shielded/unshielded chips) and three operations — **Withdraw**
+and **Transfer** open on a typed, balance-annotated token list before asking amount/recipient,
+and **Publish Offer** builds a real MIP-0005 `swapoffer1…` (shown as bech32m, published to the
+kernel with a second click). Shielded withdrawals go to **any** `mn_shield-addr…` — the pasted
+address carries the recipient's coin + encryption keys. The relay recovers the signer's public
+key from each EIP-712 signature, proves `execute` (~1 min with the k=18 overlay) and submits —
+the browser never holds a Midnight key. **AA infra** holds the plumbing: funding, faucet,
+mint-and-send to any pasted Midnight address, and the accounts table. The other tabs: the
+offer book + the **COW solver** sink page embedded live, an **infrastructure** canvas probing
+every component, an embedded **Memos** app, and the **Repos** pin table.
+`AA_CONSOLE_DEV_SIGNER=1` adds a built-in signer for wallet-less runs.
 
 Full component write-ups (the AA/console/swap mechanics and their switches, umbra-evm's
 surface and error policy, the Celestia devnet, the offerfiles split):

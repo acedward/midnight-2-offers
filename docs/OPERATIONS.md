@@ -4,6 +4,20 @@ The operational details the README summarizes: what `up.sh` actually waits on an
 container healthchecks are not enough, what `verify.sh` proves, what a full reset removes,
 and how the CI harness stays safe on a shared machine.
 
+
+## Shipping console/runner changes
+
+The AA console's page (`images/aa-contracts/console/`) and relay
+(`images/aa-contracts/runner/`) are **baked into the aa images at build time** — a running
+container serves whatever the image was built from, and a recreate resets any files copied in
+by hand. After changing them, rebuild so the change is permanent on the stack:
+
+```
+./up.sh --with … --build        # rebuilds the local images, then brings the stack up
+```
+
+`docker cp … + docker restart` into the live console container is a dev-iteration shortcut
+only; the next `--force-recreate`/`down`/`up` discards it.
 ## What `up.sh` waits on
 
 `up.sh` returns only when the stack is genuinely usable, which is stricter than "docker says
