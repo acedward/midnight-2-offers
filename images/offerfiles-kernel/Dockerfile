@@ -6,13 +6,13 @@
 # balancing batcher (:3334) and a deploy one-shot each run this image with their
 # own entrypoint. See the entrypoint block near the bottom.
 #
-# Source: effectstream/zswap-offerfiles-kernel, branch `00001-ledger-v9` (the
-# ledger-v9 migration). Like images/umbra-evm, built from a REMOTE clone so
+# Source: effectstream/zswap-offerfiles-kernel, pinned PR #50 solver-v9 commit
+# (the ledger-v9 migration plus the offer-update WS route the solver consumes).
+# Like images/umbra-evm, built from a REMOTE clone so
 # `git clone <this repo> && ./up.sh --with offerfiles` works with nothing else
-# checked out. Same cache caveat too: KERNEL_REF defaults to a branch, and the
-# fetch layer stays cached until something above it changes — use --no-cache or
-# pin KERNEL_REF to a sha to pick up new commits. The resolved commit is baked
-# at /app/.kernel-commit.
+# checked out. KERNEL_REF defaults to exact commit
+# b1420c4af6ed8b2510140418e5138d282365f9c6; the resolved commit is baked at
+# /app/.kernel-commit and asserted by the provenance gate.
 #
 # WHY NO ORCHESTRATOR AT ALL. `bun run dev`'s launchMidnight() launches its own
 # devnet unconditionally AND declares stopProcessAtPort [9944, 8088, 6300] —
@@ -38,7 +38,7 @@
 # PLAIN proof-server:9.0.0-rc.5 proves.
 
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=00001-ledger-v9
+ARG KERNEL_REF=b1420c4af6ed8b2510140418e5138d282365f9c6
 ARG COMPACT_VERSION=0.33.0-rc.2
 
 # ── stage 1: fetch the kernel source ─────────────────────────────────────────

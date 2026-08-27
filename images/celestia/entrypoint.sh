@@ -67,8 +67,8 @@ CORE_RPC_PORT="${CELESTIA_CORE_RPC_PORT:-26657}"
 RPC_PORT="${CELESTIA_RPC_PORT:-26658}"
 # DIVERGENCE 1 (required by containers): celestia-node's --rpc.addr defaults to localhost, so a
 # bridge started the way the orchestrator starts it listens on container-loopback and refuses
-# every client that arrives through a published port — the identical defect P3 found and patched
-# in umbra-evm's WebSocket server. On a developer laptop the default is correct; in a container
+# every client that arrives through a published port — the identical defect P3 found in
+# umbra-evm's WebSocket server before its upstream fix. On a developer laptop the default is correct; in a container
 # it is unusable, and the failure mode (connection refused through a port that probes as open)
 # names nothing.
 RPC_ADDR="${CELESTIA_RPC_ADDR:-0.0.0.0}"
@@ -112,8 +112,8 @@ da_rpc() {
 
 # patch <file> <label> <sed-expression> <required|optional>
 # Asserts the edit actually changed the file. A silently-skipped patch is the failure mode this
-# repo has already been bitten by (see images/umbra-evm/patches/apply.mjs, which fails the build
-# when an anchor is missing) — a devnet whose RPC never got unbound from loopback, or whose ABCI
+# repo has already been bitten by when an upstream integration anchor moved — a devnet whose RPC
+# never got unbound from loopback, or whose ABCI
 # responses are still discarded, misbehaves much later and blames something else.
 patch() {
   local file="$1" label="$2" expr="$3" req="${4:-required}" before after

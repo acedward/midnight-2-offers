@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "//": [
-    "The exact pin set the rest of this stack runs on (kernel branch 00001-ledger-v9 /",
+    "The exact pin set the rest of this stack runs on (kernel PR #50 commit b1420c4 /",
     "@effectstream/*@0.200.1). The override collapses ledger-v9 to ONE wasm copy \u2014",
     "two copies in one process fail instanceof checks (the documented trap)."
   ],

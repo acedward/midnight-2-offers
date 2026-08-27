@@ -63,12 +63,17 @@ services:
       # Probe a REAL consumer database, not `postgres`: the default database
       # exists before initdb has created anything, so `pg_isready` against it
       # reports healthy while the databases the stack needs are still absent.
-      # (The retired evm-postgres carried this same note; it is still true.)
-      test: ['CMD-SHELL', 'pg_isready -U ${OFFERFILES_PG_USER:-offerfiles} -d ${OFFERFILES_PG_DB:-offerfiles} -q']
+      # Also require PID 1 to be the final server. The image starts a temporary
+      # Postgres during init, and reporting that process healthy lets dependent
+      # migrations race its shutdown on a slow or heavily loaded host.
+      test: ['CMD-SHELL', 'grep -qx postgres /proc/1/comm && pg_isready -U ${OFFERFILES_PG_USER:-offerfiles} -d ${OFFERFILES_PG_DB:-offerfiles} -q']
       interval: 5s
       timeout: 5s
-      retries: 20
-      start_period: 20s
+      retries: 24
+      # Exact rc3/indexer + Compact builds can leave a shared Docker host under
+      # sustained I/O pressure. Allow initdb three minutes without consuming
+      # retries, then another two minutes of probes (~300s total budget).
+      start_period: 180s
     restart: 'unless-stopped'
 
 
@@ -110,14 +115,22 @@ services:
       interval: 2s
       timeout: 5s
       retries: 45
-      start_period: 5s
+      # First boot measured ~140s under disk/load pressure; preserve 45 real
+      # probe attempts after a two-minute grace period (~210s total budget).
+      start_period: 120s
 
   # ── indexer ────────────────────────────────────────────────────────────────
   indexer:
-    image: 'midnightntwrk/indexer-standalone:${INDEXER_TAG:-4.4.0-rc.1}'
-    # 4.4.0-rc.1 is published for linux/amd64 ONLY (no arm64 manifest entry), so on Apple
-    # Silicon this one service runs emulated while node and proof-server run native.
-    # Expect it to be the slowest service to come up.
+    image: '${INDEXER_IMAGE:-midnight-2-offers/indexer:local}'
+    # The official rc3 source fixes rc1's single-connection SQLite deadlock, but no public
+    # Docker Hub rc3 manifest exists. Build that exact upstream commit locally instead of
+    # silently using the known-broken rc1 binary.
+    build:
+      context: '../images/indexer'
+      args:
+        INDEXER_REPO: '${INDEXER_REPO:-https://github.com/midnightntwrk/midnight-indexer.git}'
+        INDEXER_REF: '${INDEXER_REF:-56561b2f5cf5c6839f678257fc69bed1a8b9ba2c}'
+        RUST_VERSION: '${INDEXER_RUST_VERSION:-1.95.0}'
     platform: '${INDEXER_PLATFORM:-linux/amd64}'
     cap_drop:
       - ALL
@@ -132,6 +145,12 @@ services:
     environment:
       RUST_LOG: 'indexer=info,chain_indexer=info,indexer_api=info,wallet_indexer=info,indexer_common=info,fastrace_opentelemetry=off,info'
       APP__APPLICATION__NETWORK_ID: 'undeployed'
+      # Keep application fan-out bounded even though rc3's SQLite pool now has enough
+      # connections to prevent rc1's chain-write/active-wallet starvation deadlock.
+      APP__APPLICATION__CONCURRENCY_LIMIT: '1'
+      # Pin the upstream fix's pool size explicitly so a future image/config default cannot
+      # regress this demo to rc1's single-connection starvation behavior.
+      APP__INFRA__STORAGE__MAX_CONNECTIONS: '8'
       APP__INFRA__NODE__URL: 'ws://node:9944'
       # indexer >=4.3 opens a SECOND (SPO) connection with its own URL. Left at the
       # config default it dials ws://localhost:9944 inside this container, never connects,
@@ -145,6 +164,11 @@ services:
       APP__INFRA__SPO_NODE__RECONNECT_MAX_DELAY: '24h'
       # No default in the image's config.yaml — must be supplied. Dev value from .env.
       APP__INFRA__SECRET: '${INDEXER_SECRET:-303132333435363738393031323334353637383930313233343536373839303132}'
+    restart: 'unless-stopped'
+    logging:
+      options:
+        max-size: '25m'
+        max-file: '3'
     healthcheck:
       # The image has neither curl nor wget, so an HTTP /ready probe can never pass and the
       # container would sit "unhealthy" forever. Use the file the entrypoint manages.

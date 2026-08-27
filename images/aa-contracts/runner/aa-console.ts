@@ -262,8 +262,8 @@ async function join(walletResult: any, name: string, address: string, witnesses:
 }
 
 // ── the offer-files contract: the unified token mint ────────────────────────
-// Its compiled artifact is baked from the kernel image at /aa/contract-offer-files
-// (empty witnesses; [v6] keys → PLAIN proof server).
+// Its source is fetched at exact KERNEL_REF and compiled during this AA image's
+// build into /aa/contract-offer-files (empty witnesses; [v6] keys → PLAIN proof server).
 async function joinOfferFiles(walletResult: any) {
   if (!tokens.offerFilesAddress) await resolveTokens();
   if (!tokens.offerFilesAddress) throw new Error(`offer-files contract unknown: ${tokens.error}`);

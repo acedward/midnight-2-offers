@@ -15,14 +15,23 @@ batcher `:3334`, one-shot contract deploy + dev-token mint at bring-up) and the 
 profile** (the zswap-da make→take swap SPA on `:10600`). They were previously blocked on the
 `@effectstream/*` ledger-v8 → ledger-v9 migration; that migration published as
 `@effectstream/*@0.200.1` + `@effectstream/mip-zswap-offer@0.4.0-v9.0`, and the kernel's own
-migration rides branch `00001-ledger-v9` of `effectstream/zswap-offerfiles-kernel`, which is
-what `images/offerfiles-kernel/Dockerfile` builds.
+migration rides PR #49 of `effectstream/zswap-offerfiles-kernel`; the image pins PR #50 commit
+`b1420c4…`, which includes that migration plus the offer-update WS route required by the solver.
 
-**One caveat — the frontend build needs a local checkout.** The zswap-da template's ledger-v9
-migration is not published anywhere (upstream `effectstream/effectstream@templates/zswap-da` is
-frozen on ledger-v8), so `images/zswap-da/Dockerfile` consumes it as a local build context —
-`ZSWAP_DA_TEMPLATE_DIR`, defaulting to a sibling checkout. Without it, `--with frontend` fails
-at build with a clear error while every other profile is unaffected.
+**Cow solver source pin.** Cow solver source is not copied into this repository. Its image fetches
+[`effectstream/zswap-offerfiles-kernel` PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50)
+directly at build time at exact SHA `b1420c4af6ed8b2510140418e5138d282365f9c6`
+(`SOLVER_REF`). Compose supplies the separately built kernel image only for its generated Compact
+artifacts.
+
+**Frontend source pin.** The zswap-da template's ledger-v9 migration is not published upstream
+(`effectstream/effectstream@templates/zswap-da` remains on ledger-v8). The image therefore fetches
+[`effectstream/effectstream@332503c8`](https://github.com/effectstream/effectstream/tree/332503c8f9216143a8c805f2a0acbcfd39e5a21d/templates/zswap-da)
+directly, verifies the resolved full commit, and applies the fail-closed 10-file
+`images/zswap-da/ledger-v9.patch`. The patch carries only dependency/lockfile, compiler manifest,
+and six TypeScript/API migrations; 64 byte-identical upstream files are no longer copied here.
+Cold builds need GitHub and npm network access. The fetched upstream licenses are preserved in the
+runtime image, and `/.zswap-da-commit` makes the source pin part of CI provenance verification.
 
 **The `aa` profile deploys the AA contracts and mints a token.** `--with aa` deploys
 [`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3)'s
@@ -144,7 +153,7 @@ breaking change for that project, not a detail.
 | `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountBy*` | the **indexer** GraphQL v4, live |
 | `eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getTransactionByHash`, `eth_getTransactionReceipt` | **Postgres**, filled by `wallet-monitor` |
 | `eth_getLogs`, `eth_subscribe("logs")`, ERC20 `eth_call` views | **Postgres**, filled by the contract-event ingester from `config/watch.json` |
-| `eth_subscribe("newHeads")` | the indexer head (see the patch note below) |
+| `eth_subscribe("newHeads")` | the indexer head (see the provenance note below) |
 
 Two consequences worth knowing before you debug something:
 
@@ -219,7 +228,7 @@ value.
 ### How the image is built
 
 `images/umbra-evm/Dockerfile` fetches `acedward/UmbraDB` at `UMBRA_REF`
-(default `feat/00006-json-rpc-review`, PR #7) and installs it — the upstream repo ships no Docker
+(default full commit `5a463485…` from `evm-compat`) and installs it — the upstream repo ships no Docker
 packaging, so this is it. Three services share the one image: `evm-rpc`
 (`npm run evm-rpc:all`), `wallet-monitor` (`npm run monitor:wallet`) and the one-shot
 `evm-migrate` (`npx tsx tools/migrate.ts`).
@@ -232,21 +241,15 @@ packaging, so this is it. Three services share the one image: `evm-rpc`
   only `wallet-monitor` does — so without an explicit init step the two services race for the
   schema and `evm-rpc` dies on a missing relation whenever it wins. Both depend on it with
   `service_completed_successfully`. It is idempotent, so it re-runs as a no-op on every bring-up.
-- **Docker cannot tell that a branch moved.** `UMBRA_REF` defaults to a branch name, so a rebuild
-  reuses the cached fetch layer. Use `docker compose … build --no-cache evm-rpc`, or pin
-  `UMBRA_REF` to a commit sha. `docker run --rm midnight-2-offers/umbra-evm:local cat
-  /app/.umbra-commit` prints the commit actually baked in.
-- **Two upstream defects are patched at build time** (`images/umbra-evm/patches/apply.mjs`), both
-  in the `createSubscribeServer` call and both about the WebSocket surface. Neither touches the
-  write path. The patcher does exact-anchor rewrites and **fails the build** if an anchor moved,
-  printing it — a fuzzy patch that half-applies would be far worse than a broken build:
+- **Source provenance is explicit.** `UMBRA_REF` defaults to full commit `5a463485…`, and
+  `/app/.umbra-commit` is checked by CI. The two WebSocket fixes below are merged upstream:
   1. `evm-rpc/logs/ws.ts` defaults `listen(port, host = "127.0.0.1")` and `serve-all.ts` never
      passes a host, so the WS server binds container-loopback and refuses every client. It fails
      invisibly: the published port accepts TCP (docker-proxy), the client sees only close `1006`,
      and the server logs nothing.
   2. With no `blockSource`, `newHeads` falls back to a source that can only announce blocks
-     carrying a *watched contract log* — i.e. nothing at all with an empty `watch.json`. The patch
-     injects a source polling the same indexer head that answers `eth_blockNumber`.
+     carrying a *watched contract log* — i.e. nothing at all with an empty `watch.json`. The merged
+     upstream fix injects a source polling the same indexer head that answers `eth_blockNumber`.
 
 ## Celestia DA devnet (profile `offerfiles`)
 

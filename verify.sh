@@ -24,6 +24,7 @@ CELESTIA_MODE=auto
 KERNEL_MODE=auto
 AA_MODE=auto
 FRONTEND_MODE=auto
+SOLVER_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -43,6 +44,8 @@ Options:
   --no-kernel    skip the kernel section even if the service is up
   --frontend     require the frontend section (fail if the profile is not up)
   --no-frontend  skip the frontend section even if the profile is up
+  --solver       require the solver runtime section (fail if the profile is not up)
+  --no-solver    skip the solver section even if the profile is up
   -h, --help     this text
 
 By default each optional section runs if and only if that profile's containers exist for this
@@ -56,7 +59,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; shift ;;
+    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SOLVER_MODE=off; shift ;;
     --evm)       EVM_MODE=on; shift ;;
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
@@ -67,6 +70,8 @@ while [[ $# -gt 0 ]]; do
     --no-kernel)   KERNEL_MODE=off; shift ;;
     --frontend)    FRONTEND_MODE=on; shift ;;
     --no-frontend) FRONTEND_MODE=off; shift ;;
+    --solver)      SOLVER_MODE=on; shift ;;
+    --no-solver)   SOLVER_MODE=off; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -119,6 +124,51 @@ if wait_indexer_graphql "$INDEXER_GQL_URL" 60; then
   if [[ -n "${IH:-}" && -n "${BEST:-}" ]]; then
     GAP=$(( BEST - IH ))
     (( GAP > 20 )) && warn "indexer is ${GAP} blocks behind the node"
+  fi
+
+  # A restart policy makes an unattended demo recoverable, but a verification gate must not
+  # let that resilience mask a crash. The rc1 SQLite defect surfaced as both slow-acquire
+  # warnings and a fatal pool timeout. Reject fatal SQLite/pool errors over the whole process
+  # lifetime, and slow pool acquisition after indexing begins. rc3 may legitimately log one
+  # pre-index warning while first switching its separate ledger database to WAL; that is startup
+  # initialisation, not the active-wallet/main-pool starvation this gate is designed to catch.
+  #
+  # Do not use grep -q in these pipefail pipelines. Once grep finds a match it closes the pipe,
+  # docker logs can exit on SIGPIPE, and the pipeline then false-negatives the exact warning.
+  INDEXER_CID=$(docker ps -aq \
+    --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=indexer" | head -n 1)
+  INDEXER_RESTARTS=$(docker inspect -f '{{.RestartCount}}' "$INDEXER_CID" 2>/dev/null || echo unreadable)
+  if [[ "$INDEXER_RESTARTS" == "0" ]]; then
+    ok "indexer restart count is zero"
+  else
+    err "indexer restart count is ${INDEXER_RESTARTS}"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$INDEXER_CID" 2>/dev/null \
+      | grep -qx 'APP__INFRA__STORAGE__MAX_CONNECTIONS=8'; then
+    ok "indexer SQLite pool is explicitly configured for 8 connections"
+  else
+    err "indexer SQLite pool is not configured for 8 connections"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  if docker exec "$INDEXER_CID" sh -c 'test -f /data/indexer.sqlite-wal' >/dev/null 2>&1; then
+    ok "indexer main database is running in WAL mode"
+  else
+    err "indexer main database WAL file is absent"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  if docker logs "$INDEXER_CID" 2>&1 \
+      | grep -Ei 'pool timed out while waiting|database is locked|SQLITE_BUSY' >/dev/null; then
+    err "indexer emitted a fatal SQLite lock/pool-timeout warning"
+    FAILURES=$(( FAILURES + 1 ))
+  elif docker logs "$INDEXER_CID" 2>&1 \
+      | awk 'seen { print } /"message":"starting indexing"/ { seen=1 }' \
+      | grep -Ei 'slow.*acquir|acquir.*slow' >/dev/null; then
+    err "indexer emitted a slow-acquire warning after indexing began"
+    FAILURES=$(( FAILURES + 1 ))
+  else
+    ok "indexer logs contain no fatal SQLite/pool warning or post-start slow acquire"
   fi
 else
   FAILURES=$(( FAILURES + 1 ))
@@ -269,7 +319,39 @@ case "$KERNEL_MODE" in
     ;;
 esac
 
-# ── frontend (the zswap-da trading UI) ───────────────────────────────────────
+# ── solver (observation-mode runtime + authenticated relay wire) ─────────
+SOLVER_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=solver" 2>/dev/null)" ]]; then
+  SOLVER_PRESENT=1
+fi
+
+case "$SOLVER_MODE" in
+  off) ;;
+  on|auto)
+    if (( SOLVER_PRESENT )); then
+      echo
+      log "solver"
+      if "$REPO_ROOT/scripts/verify-solver.sh"; then
+        ok "solver assertions passed"
+      else
+        err "solver assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$SOLVER_MODE" == "on" ]]; then
+      echo
+      err "--solver was requested but no solver container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with offerfiles --with solver"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "solver profile not up — skipping (./up.sh --with offerfiles --with solver to include it)"
+    fi
+    ;;
+esac
+
+# ── frontend (the zswap-da trading UI) ──────────────────────
 FRONTEND_PRESENT=0
 if [[ -n "$(docker ps -aq \
       --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \

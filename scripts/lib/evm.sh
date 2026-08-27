@@ -84,8 +84,8 @@ wait_evm_rpc() {
 #
 # A TCP probe of that port PROVES NOTHING: docker's published-port proxy accepts the connection
 # before it dials the container, so `nc -z` succeeds even when nothing inside is listening. That
-# is exactly how the container-loopback bind bug hid (see images/umbra-evm/patches/apply.mjs) —
-# the port looked open and clients got an unexplained close 1006. curl can do the upgrade request
+# is exactly how the historical container-loopback bind bug hid before its upstream fix — the
+# port looked open and clients got an unexplained close 1006. curl can do the upgrade request
 # without a WebSocket library, which is all this needs.
 evm_ws_handshake() {
   local secs="${1:-30}"

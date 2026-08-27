@@ -1,0 +1,2 @@
+# This source-preserving nested patch includes upstream lockfile whitespace.
+images/zswap-da/ledger-v9.patch -whitespace

@@ -34,10 +34,9 @@ Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
                      A profile is a compose fragment in compose/, named after the profile. An
                      unknown name is an error, not a no-op.
-                     Available now: evm        (read-only Ethereum JSON-RPC)
-                                    offerfiles (Celestia DA devnet; kernel + batcher pending)
-  --all              bring up every profile that has a fragment in compose/. Profiles that
-                     are documented but not built yet are named and skipped, not an error.
+                     Available now: aa, evm, frontend, offerfiles, solver.
+  --all              bring up every shipped profile in compose/. All currently documented
+                     profiles have fragments and are included.
   --converge         the opposite of additive: bring up EXACTLY core + the named profiles and
                      STOP any other profile that is currently up. `./up.sh --converge` on its
                      own therefore means "core alone". Every profile it is about to stop is
@@ -56,13 +55,9 @@ service is no longer declared by ANY fragment is still removed. Only whole profi
 genuinely up are protected. To take a profile down, use ./down.sh (everything) or --converge
 without it (that profile only).
 
-`offerfiles` is PARTIAL: it brings up the local Celestia devnet (a DA layer the kernel will
-publish offers to), but not yet the offer-files kernel (:9999) or the batcher (:3334) — those
-need the Effectstream ledger-v9 migration (project 00016). up.sh says so on every bring-up.
-
-Profile not built yet: frontend (the zswap-da SPA), which follows the kernel. Its host port is
-reserved in .env.example. `--all` reports it; `--with` rejects it, because a silently-ignored
-`--with` is worse than a failed one.
+Every shipped profile is complete: offerfiles includes Celestia, the kernel and batcher;
+frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA; aa deploys and serves its console; solver is
+the observation-mode solver and authenticated sink. `--all` selects all of them.
 
 Environment:
   ENV_FILE=<path>    use a different env file than ./.env — this is how two stacks run
@@ -72,7 +67,8 @@ Environment:
 Examples:
   ./up.sh                       # core stack, plus whatever profiles are already up
   ./up.sh --with evm            # …and umbra-evm
-  ./up.sh --with offerfiles     # …and the Celestia DA devnet, without stopping evm
+  ./up.sh --with offerfiles     # …and Celestia + kernel + batcher, without stopping evm
+  ./up.sh --with frontend       # …and the zswap-da SPA
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
 EOF
@@ -142,7 +138,7 @@ done < <(running_profiles)
 export PROFILES
 
 log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
-info "images   node=${NODE_TAG}  indexer=${INDEXER_TAG} (${INDEXER_PLATFORM})  proof=${PROOF_TAG}"
+info "images   node=${NODE_TAG}  indexer=${INDEXER_REF:0:12}… (${INDEXER_PLATFORM})  proof=${PROOF_TAG}"
 info "ports    node=${HOST_ADDR}:${NODE_HOST_PORT}  indexer=${HOST_ADDR}:${INDEXER_HOST_PORT}  proof=${HOST_ADDR}:${PROOF_HOST_PORT}"
 [[ -n "${PROFILES// /}" ]] && info "profiles core${PROFILES// /, }"
 # Say what was carried over and what is about to be stopped. Both directions are named out loud:
@@ -184,13 +180,34 @@ if (( DO_PULL )); then
 fi
 if (( DO_BUILD )); then
   log "building local images"
-  dc build
+  if [[ "${COMPOSE_PARALLEL_LIMIT:-}" == "1" ]]; then
+    # Compose v5 delegates one multi-service `build` to a single Bake graph; its internal
+    # targets still execute concurrently even when COMPOSE_PARALLEL_LIMIT=1. Issue one
+    # service build at a time when strict serialisation was requested. Image-only services
+    # are harmless (`No services to build`, exit 0), while shared-image services become
+    # cheap cache hits after the first build.
+    while IFS= read -r service; do
+      [[ -n "$service" ]] || continue
+      info "build service ${service}"
+      dc build "$service"
+    done < <(dc config --services)
+  else
+    dc build
+  fi
 fi
 
-log "starting containers"
-dc up -d --remove-orphans
-
 FAILED=0
+log "starting containers"
+if ! dc up -d --remove-orphans; then
+  FAILED=1
+  echo
+  err "docker compose up failed. Container state and last 40 log lines follow:"
+  dc ps -a || true
+  dc logs --tail=40 || true
+  echo
+  info "the stack is left running for inspection — './down.sh' to stop it"
+  exit 1
+fi
 
 log "waiting for services"
 # Node first: the indexer cannot make progress before the chain produces blocks, and a
@@ -233,7 +250,7 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" evm "* ]]; then
   if (( ! FAILED )); then
     # A handshake, not a TCP probe: docker's port proxy accepts connections even when nothing in
     # the container is listening, so `nc -z` here would report a working WS surface that refuses
-    # every client (see images/umbra-evm/patches/apply.mjs).
+    # every client (the pinned Umbra commit contains the upstream bind fix).
     evm_ws_handshake 60 || FAILED=1
   fi
 fi
@@ -288,6 +305,12 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
   fi
 fi
 
+if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]]; then
+  # A running process is not enough: it must finish kernel discovery, connect
+  # to the observation sink, and publish capabilities + its first ladder.
+  wait_compose_healthy solver "${SOLVER_WAIT_TIMEOUT:-300}" || FAILED=1
+fi
+
 if (( FAILED )); then
   echo
   err "stack did not come up. Last 40 log lines per service:"
@@ -315,6 +338,9 @@ if [[ " $PROFILES " == *" offerfiles "* ]]; then
   if [[ "$CELESTIA_SKIP_AUTH" != "true" && "$CELESTIA_SKIP_AUTH" != "1" ]]; then
     info "celestia token    ./scripts/celestia-token.sh    (or: exec celestia celestia-token)"
   fi
+fi
+if [[ " $PROFILES " == *" solver "* ]]; then
+  info "solver feed        http://${HOST_ADDR}:${SOLVER_SINK_HOST_PORT:-10800}   (observation-only)"
 fi
 echo
 info "next: ./verify.sh    (health + prefunded wallet assertions)"

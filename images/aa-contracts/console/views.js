@@ -385,14 +385,14 @@ const REPOS = [
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
-    role: "offer-files kernel + batcher (profile offerfiles)",
-    ref: "branch 00001-ledger-v9",
-    notes: [["PR #49", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/49", "migrated from v8 to v9"]],
+    role: "offer-files kernel + batcher (profile offerfiles; pinned to the solver-compatible descendant)",
+    ref: "b1420c4… (branch 00001-solver-v9)",
+    notes: [["PR #50", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/50", "includes PR #49's v8→v9 migration plus the solver WS route"]],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel (solver)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/00001-solver-v9",
     role: "COW solver, observation mode (profile solver; the kernel also builds from this branch when the solver runs)",
-    ref: "branch 00001-solver-v9",
+    ref: "pinned b1420c4… from branch 00001-solver-v9",
     notes: [["PR #50", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/50", "the v9 port, pointing into PR #48"]],
   },
   {
@@ -404,7 +404,7 @@ const REPOS = [
   {
     repo: "acedward/UmbraDB", url: "https://github.com/acedward/UmbraDB",
     role: "umbra-evm read-only Ethereum JSON-RPC (profile evm)",
-    ref: "branch feat/00006-json-rpc-review",
+    ref: "pinned 5a463485… from evm-compat",
     notes: [["PR #5", "https://github.com/acedward/UmbraDB/pull/5", "home of the JSON-RPC work — everything merged into it"]],
   },
   {
@@ -416,8 +416,8 @@ const REPOS = [
   {
     repo: "effectstream templates/zswap-da", url: "https://github.com/effectstream/effectstream",
     role: "the swap frontend (profile frontend)",
-    ref: "LOCAL v9-migrated checkout (ZSWAP_DA_TEMPLATE_DIR)",
-    notes: [["", "", "checked 2026-08-26: upstream v-next has @effectstream 0.200.1 but still ledger-v8 + midnight-js 4 — the local checkout is still required"]],
+    ref: "effectstream/effectstream @ 332503c8 + local ledger-v9 patch",
+    notes: [["", "", "upstream templates/zswap-da is fetched at the immutable commit; images/zswap-da/ledger-v9.patch carries the 10 required v9 adaptations, with no copied SPA tree"]],
   },
   {
     repo: "acedward/web-memo", url: "https://github.com/acedward/web-memo",
@@ -444,10 +444,10 @@ const REPOS = [
     notes: [],
   },
   {
-    repo: "midnightntwrk/indexer-standalone", muted: true, url: "https://hub.docker.com/r/midnightntwrk/indexer-standalone",
+    repo: "midnightntwrk/midnight-indexer", muted: true, url: "https://github.com/midnightntwrk/midnight-indexer",
     role: "the chain indexer (core; GraphQL v4)",
-    ref: "image 4.4.0-rc.1 (linux/amd64 only)",
-    notes: [],
+    ref: "4.4.0-rc.3 source @ 56561b2f (local image build)",
+    notes: [["", "", "rc3 fixes rc1's standalone SQLite deadlock; its Docker Hub manifest was not published"]],
   },
   {
     repo: "midnightntwrk/proof-server", muted: true, url: "https://hub.docker.com/r/midnightntwrk/proof-server",

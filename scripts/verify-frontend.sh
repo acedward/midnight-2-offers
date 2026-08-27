@@ -12,9 +12,9 @@
 #   wired       index.html references config.js BEFORE the bundle, so window.API_BASE /
 #               window.BATCHER_URL are set when src/config.ts evaluates.
 #
-# Deliberately NOT asserted here: anything against the kernel API. The frontend profile is
-# standalone by design (see compose/frontend.yml) — its wiring to a live kernel is exercised by
-# the kernel section plus a browser, not by this script.
+# The frontend profile remains standalone by design. When runtime endpoint overrides are present
+# (as they are in every pick-ports/CI env), this script asserts their exact injected values;
+# kernel reachability itself is covered by verify-kernel.sh.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,9 +22,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 
 load_env
-BIND="${BIND_ADDR:-127.0.0.1}"
 FPORT="${FRONTEND_HOST_PORT:-10600}"
-BASE="http://${BIND}:${FPORT}"
+BASE="http://${HOST_ADDR}:${FPORT}"
 
 FAILURES=0
 
@@ -36,11 +35,30 @@ else
   FAILURES=$(( FAILURES + 1 ))
 fi
 
-if curl -fsS --max-time 10 "$BASE/config.js" >/dev/null 2>&1; then
+if config_js=$(curl -fsS --max-time 10 "$BASE/config.js" 2>/dev/null); then
   ok "frontend serves /config.js (runtime-config injection point)"
 else
+  config_js=""
   err "/config.js missing — the image entrypoint did not generate it"
   FAILURES=$(( FAILURES + 1 ))
+fi
+
+if [[ -n "${FRONTEND_API_BASE:-}" ]]; then
+  if printf '%s' "$config_js" | grep -Fq "window.API_BASE = \"${FRONTEND_API_BASE}\";"; then
+    ok "config.js injects API_BASE=${FRONTEND_API_BASE}"
+  else
+    err "config.js does not inject expected FRONTEND_API_BASE=${FRONTEND_API_BASE}"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+fi
+
+if [[ -n "${FRONTEND_BATCHER_URL:-}" ]]; then
+  if printf '%s' "$config_js" | grep -Fq "window.BATCHER_URL = \"${FRONTEND_BATCHER_URL}\";"; then
+    ok "config.js injects BATCHER_URL=${FRONTEND_BATCHER_URL}"
+  else
+    err "config.js does not inject expected FRONTEND_BATCHER_URL=${FRONTEND_BATCHER_URL}"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
 fi
 
 if [[ "$html" == *"config.js"* ]]; then

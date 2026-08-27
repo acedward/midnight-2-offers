@@ -70,15 +70,17 @@ services:
   solver:
     image: '${SOLVER_IMAGE:-midnight-2-offers/cow-solver:local}'
     build:
-      # Small context (just the Dockerfile); the SOURCE arrives as the named
-      # context below. See images/cow-solver/Dockerfile for why this cannot
-      # clone from git like images/offerfiles-kernel does.
+      # Small context (just the Dockerfile). Cow solver source is not copied here:
+      # it is fetched directly from effectstream/zswap-offerfiles-kernel PR #50
+      # at the exact SOLVER_REF below. The separate SPA uses FRONTEND_REPO/REF.
+      # generated Compact artifacts arrive from the kernel service's image so
+      # they are compiled only once.
       context: '../images/cow-solver'
+      args:
+        SOLVER_REPO: '${SOLVER_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
+        SOLVER_REF: '${SOLVER_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
       additional_contexts:
-        # An absolute path is the honest default: this is a machine-local
-        # checkout on an unpushed branch, not something a fresh clone of this
-        # repo can produce. Override with SOLVER_KERNEL_SRC.
-        kernel: '${SOLVER_KERNEL_SRC:-/Users/edwardalvarado/todo/infra/experiments/00001-zswap-offerfiles-kernel}'
+        kernel-image: 'service:kernel'
     environment:
       # solver.dev.ts REFUSES to start on anything but `undeployed`. That is
       # the inherited NO-GO-for-real-funds posture, kept as a hard gate.
@@ -121,6 +123,19 @@ services:
       kernel: { condition: service_healthy }
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
+    healthcheck:
+      # Runtime readiness, not process existence: the solver must connect to the
+      # sink, publish capabilities and at least one ladder, and preserve the
+      # observation-only safety invariants.
+      test:
+        - 'CMD'
+        - 'bun'
+        - '-e'
+        - 'const r=await fetch("http://solver-sink:8080/api/snapshot"); const j=await r.json(); const s=j.safety??{}; process.exit(r.ok&&j.solver?.connected&&j.capabilities&&j.ladders&&(j.frames?.accepted??0)>=2&&s.framesSentToSolver===0&&s.swapJobsDispatched===0&&s.jobFramesReceived===0?0:1)'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
     # A solver fault must never tear the stack down — the same reasoning the
     # kernel branch's own start.dev.ts records for not making it a
     # system-dependency. The stack is fully usable without a solver.

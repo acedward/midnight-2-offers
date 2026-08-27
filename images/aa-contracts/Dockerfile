@@ -23,14 +23,14 @@
 # `execute` is actually exercised.
 
 ARG AA_REPO=https://github.com/acedward/AA-midnight-evm-experiment-v3.git
-ARG AA_REF=main
+ARG AA_REF=713a20215f33e02904ea5bd699b7de7f76562e1b
+ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
+ARG KERNEL_REF=b1420c4af6ed8b2510140418e5138d282365f9c6
 ARG COMPACT_VERSION=0.33.0-rc.2
 # 1 (default): prune the Manager's .prover files — deploys need only verifier keys.
 # 0: keep them — required by the E2E, which CALLS execute (scripts/aa-e2e.sh builds
 # that variant as the :e2e tag; expect ~1.2 GB extra in the image).
 ARG AA_PRUNE_MANAGER_PROVERS=1
-# The kernel image the offer-files contract artifact is copied from (stage 2c).
-ARG KERNEL_IMAGE=midnight-2-offers/offerfiles-kernel:local
 
 # ── stage 1: fetch the AA sources ────────────────────────────────────────────
 FROM debian:stable-slim AS source
@@ -41,6 +41,8 @@ RUN apt-get update \
 
 ARG AA_REPO
 ARG AA_REF
+ARG KERNEL_REPO
+ARG KERNEL_REF
 
 WORKDIR /src
 RUN git init -q . \
@@ -48,6 +50,17 @@ RUN git init -q . \
  && git fetch -q --depth 1 origin "$AA_REF" \
  && git checkout -q FETCH_HEAD \
  && git rev-parse HEAD > /aa-commit \
+ && rm -rf .git
+
+# The AA console also exposes offer-file mint/offer actions. Fetch only the
+# pinned kernel source needed to compile that matching contract; this keeps the
+# documented core+aa profile standalone on a clean clone.
+WORKDIR /kernel-src
+RUN git init -q . \
+ && git remote add origin "$KERNEL_REPO" \
+ && git fetch -q --depth 1 origin "$KERNEL_REF" \
+ && git checkout -q FETCH_HEAD \
+ && git rev-parse HEAD > /kernel-commit \
  && rm -rf .git
 
 # ── stage 2: compile + keygen with the pinned compactc ───────────────────────
@@ -75,6 +88,7 @@ RUN set -eux; \
     test -x /opt/compactc/zkir || { echo "asset lacks the zkir backend" >&2; exit 1; }
 
 COPY --from=source /src/contracts /contracts
+COPY --from=source /kernel-src/packages/contracts-midnight/contract-offer-files/src/offer-files.compact /contracts/offer-files.compact
 
 # Keys need the universal SRS from srs.midnight.network (a build-time network
 # fetch, like the git clone). Layout matches what deployMidnightContract expects:
@@ -82,9 +96,10 @@ COPY --from=source /src/contracts /contracts
 ARG AA_PRUNE_MANAGER_PROVERS
 RUN set -eux; \
     export HOME=/tmp XDG_CACHE_HOME=/tmp/zk-cache; \
-    mkdir -p /aa/contract-manager/src /aa/contract-minter/src; \
+    mkdir -p /aa/contract-manager/src /aa/contract-minter/src /aa/contract-offer-files/src; \
     /opt/compactc/compactc --feature-zkir-v3 /contracts/manager.compact /aa/contract-manager/src/managed/; \
     /opt/compactc/compactc --feature-zkir-v3 /contracts/test-support/minter.compact /aa/contract-minter/src/managed/; \
+    /opt/compactc/compactc /contracts/offer-files.compact /aa/contract-offer-files/src/managed/; \
     if [ "${AA_PRUNE_MANAGER_PROVERS:-1}" = "1" ]; then \
       find /aa/contract-manager/src/managed/keys -name '*.prover' -print -delete; \
     fi; \
@@ -103,8 +118,8 @@ RUN set -eux; \
 # KEY-BREAKING like any execute change: redeploy the contracts after enabling.
 FROM debian:stable-slim AS k18-overlay
 
-COPY --from=compact /aa/contract-manager/src/managed/keys /compact-keys
 ARG AA_EXECUTE_K18=0
+ARG AA_PRUNE_MANAGER_PROVERS=1
 # The `k18` named context: the handoff folder when enabled, k18-stub/ otherwise.
 COPY --from=k18 / /k18/
 # Stage only the DELTA under /delta — empty when the overlay is off, so the
@@ -116,37 +131,41 @@ RUN set -eux; \
       cp /k18/execute.zkir /delta/zkir/execute.zkir; \
       cp /k18/execute.bzkir /delta/zkir/execute.bzkir; \
       cp /k18/execute.verifier /delta/keys/execute.verifier; \
-      if [ -f /compact-keys/execute.prover ]; then cp /k18/execute.prover /delta/keys/execute.prover; fi; \
+      if [ "${AA_PRUNE_MANAGER_PROVERS:-1}" = "0" ]; then cp /k18/execute.prover /delta/keys/execute.prover; fi; \
       chmod -R u+rw,a+r /delta; \
       echo "k18 overlay staged (manifest is re-stamped in the runtime stage)"; \
     else \
       echo "k18 overlay disabled (AA_EXECUTE_K18=0)"; \
     fi; \
-    rm -rf /k18 /compact-keys
+    rm -rf /k18
 
-# ── stage 2c: the offer-files contract, from the kernel image ────────────────
+# The offer-files artifact was compiled in stage 2 with the AA contracts.
 # The console mints the demo's UNIFIED token set (wBTC/wETH shielded, wUSD
 # unshielded) through the offer-files contract's permissionless dev mint
 # circuits — the same tokens the kernel's own dev mint creates — instead of a
-# console-private minter. The compiled artifact (managed contract + [v6] keys,
-# proven on the PLAIN proof server) comes straight out of the kernel image, so
-# BUILDING aa-console REQUIRES midnight-2-offers/offerfiles-kernel:local to
-# exist locally first (./up.sh --all builds both; override with KERNEL_IMAGE).
-FROM ${KERNEL_IMAGE} AS kernel-src
+# console-private minter. Its managed contract + [v6] keys are compiled from
+# the pinned public kernel source and proven on the PLAIN proof server.
 
 # ── stage 3: the deploy+mint runner ──────────────────────────────────────────
 # Same bun pin as the kernel image, same reason (1.3.14 breaks on graphql-17 ESM).
-FROM oven/bun:1.3.11
+# Inherit the Compact stage rather than COPYing its ~1.2 GB key tree into a
+# second filesystem snapshot. Generated artifacts remain at /aa; Bun's pinned
+# binary is glibc-only and runs on this Debian base. Keeping compactc (~64 MB)
+# in the dev image is the small price for eliminating a duplicate key snapshot
+# during clean builds on small/shared Docker hosts.
+FROM oven/bun:1.3.11 AS bun-runtime
+FROM compact
+
+COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
 
 WORKDIR /aa
-# From `compact`, NOT from the overlay stage: keeps every layer below —
-# including the network-dependent `bun install` — byte-identical to a non-k18
-# build, so flipping AA_EXECUTE_K18 can never force a registry fetch. The
-# overlay lands as FINAL layers after the install (costs the image the k=18
-# files on top of the k=19 layer; acceptable for a dev image).
-COPY --from=compact /aa /aa
-COPY --from=kernel-src /app/packages/contracts-midnight/contract-offer-files/src/managed /aa/contract-offer-files/src/managed
+# The runtime inherits `compact`, NOT the overlay stage. Everything below the
+# final overlay remains byte-identical to a non-k18 build, so flipping
+# AA_EXECUTE_K18 cannot force a registry fetch. The overlay lands as FINAL
+# layers after the install (and costs the image its delta on top of k=19).
 COPY --from=source /aa-commit /aa/.aa-commit
+COPY --from=source /kernel-commit /aa/.kernel-commit
 # The AA repo's OWN test library — EIP-712 codec, MetaMask V4 signing, execute
 # payload builders. Imported verbatim by the E2E so the digest scheme is never
 # reimplemented (golden vectors and frozen hashes included).

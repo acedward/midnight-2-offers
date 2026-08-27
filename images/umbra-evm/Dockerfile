@@ -1,7 +1,7 @@
 # umbra-evm — the read-only Ethereum JSON-RPC façade over the Midnight demo stack.
 #
-# Source: acedward/UmbraDB, branch `evm-compat` (PR #7 and the demo's WS-fixes PR #8 are both
-# MERGED into it as of 2026-08-25; the branch rides toward `main` as PR #5).
+# Source: acedward/UmbraDB, pinned commit 5a463485… from `evm-compat` (PR #7 and
+# the demo's WS-fixes PR #8 are both merged into that lineage).
 # That repo ships NO Docker packaging, so this file IS the packaging. It is deliberately built
 # from a REMOTE clone rather than a vendored copy so `git clone <this repo> && ./up.sh --with evm`
 # works with nothing else checked out.
@@ -9,11 +9,8 @@
 #   docker compose ... build evm-rpc          # honours the cache
 #   docker compose ... build --no-cache evm-rpc
 #
-# NOTE ON THE CACHE: UMBRA_REF defaults to a BRANCH, and Docker cannot know when a branch has
-# moved — the `git fetch` layer stays cached until something above it changes. Use `--no-cache`
-# (or pin UMBRA_REF to a commit sha) when you need to pick up new upstream commits. The resolved
-# commit is baked into the image at /app/.umbra-commit, so what you are actually running is
-# always recoverable:
+# UMBRA_REF defaults to a full commit SHA so clean builds cannot silently move.
+# The resolved commit is also baked into the image at /app/.umbra-commit:
 #
 #   docker run --rm <image> cat /app/.umbra-commit
 #
@@ -27,7 +24,7 @@
 ARG UMBRA_REPO=https://github.com/acedward/UmbraDB.git
 # A branch name, a tag, or a commit sha — `git fetch <ref>` accepts all three (GitHub allows
 # fetching any commit reachable from a ref).
-ARG UMBRA_REF=evm-compat
+ARG UMBRA_REF=5a46348585ae23994cc408a06f6ef18a78b06273
 
 # ── stage 1: fetch the source ────────────────────────────────────────────────────────────────
 FROM node:24-bookworm-slim AS source

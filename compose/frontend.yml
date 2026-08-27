@@ -8,10 +8,10 @@
 # shows a disconnected state until `--with offerfiles` is up.
 
 services:
-  # Built from the LOCAL ledger-v9 migration of templates/zswap-da — upstream
-  # is still on ledger-v8 and frozen, so there is no remote to clone (see
-  # images/zswap-da/Dockerfile). Without that local copy the build fails at
-  # `COPY --from=template` — set ZSWAP_DA_TEMPLATE_DIR to where yours lives.
+  # Fetches effectstream/effectstream at an immutable commit, extracts
+  # templates/zswap-da, and applies images/zswap-da/ledger-v9.patch. The
+  # upstream template remains on ledger-v8; no third-party SPA tree is stored
+  # in this repository. A cold build needs GitHub + npm network access.
   #
   # Wallet story (T5.3, spec Q5 note): the in-page JS wallet works against any
   # host ports; the LACE path needs the stack on the default 9944/8088/6300.
@@ -19,8 +19,9 @@ services:
     image: '${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}'
     build:
       context: '../images/zswap-da'
-      additional_contexts:
-        template: '${ZSWAP_DA_TEMPLATE_DIR:-../../00001-zswap-da-template}'
+      args:
+        FRONTEND_REPO: '${FRONTEND_REPO:-https://github.com/effectstream/effectstream.git}'
+        FRONTEND_REF: '${FRONTEND_REF:-332503c8f9216143a8c805f2a0acbcfd39e5a21d}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${FRONTEND_HOST_PORT:-10600}:10600'
     environment:
@@ -37,4 +38,3 @@ services:
       retries: 12
       start_period: 10s
     restart: 'unless-stopped'
-

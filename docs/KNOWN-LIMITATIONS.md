@@ -20,14 +20,10 @@
 - **`eth_getBalance` only knows the wallets it is told to watch,** and reports `0x0` (not an
   error) for anything else. Reorgs are not handled either: `eth_getLogs` rows are never marked
   `removed`.
-- **The umbra-evm image is built from a moving branch.** `UMBRA_REF` defaults to
-  `feat/00006-json-rpc-review`, and Docker cannot detect that a branch advanced — a rebuild reuses
-  the cached fetch layer until you pass `--no-cache`. Pin `UMBRA_REF` to a commit sha for a
-  reproducible build; `docker run --rm midnight-2-offers/umbra-evm:local cat /app/.umbra-commit`
-  reports what is actually in the image. Two upstream defects are patched during that build (the
-  WS server's container-loopback bind, and `newHeads` having no chain-head source) — if upstream
-  moves those lines, the build **fails loudly** and the patch anchors need re-deriving; see
-  `images/umbra-evm/patches/apply.mjs`.
+- **The umbra-evm source is commit-pinned.** `UMBRA_REF` defaults to full commit
+  `5a46348585ae23994cc408a06f6ef18a78b06273` from `evm-compat`, and
+  `/app/.umbra-commit` is verified by the CI provenance gate. The WS bind and `newHeads`
+  fixes are merged upstream; this image applies no source patches.
 - **Both locally-built images are large**: `celestia` ~860 MB (two Go binaries, 285 MB and 190 MB
   unpacked — there is nothing to trim), `umbra-evm` ~990 MB.
 - **The umbra-evm image is large (~1 GB).** It installs UmbraDB's full dev dependency tree because
@@ -50,9 +46,11 @@
 - **The proof-server tag `9.0.0-rc.5` is the zkir-v2 build.** Circuits compiled to zkir-v3
   (per-primitive native crypto gates) need the `9.0.0-rc.5_experimental` variant instead; set
   `PROOF_TAG` in `.env` if you hit that.
-- **The indexer image is published for `linux/amd64` only** at `4.4.0-rc.1`. On Apple Silicon it
-  runs under emulation (compose pins `platform: linux/amd64`); expect it to be the slowest service
-  to become healthy.
+- **Indexer `4.4.0-rc.3` has no public Docker Hub manifest.** The repository therefore builds the
+  official source at full commit `56561b2f5cf5c6839f678257fc69bed1a8b9ba2c`; that release contains
+  the upstream standalone SQLite deadlock fix missing from rc1. Compose currently pins
+  `platform: linux/amd64`, so Apple Silicon runs this build under emulation and should expect it to
+  be the slowest service to build and become healthy.
 - **A healthy stack is not immediately transactable.** The node answers RPC and produces blocks
   several seconds before finality moves off genesis, and until it does the toolkit refuses to
   build transactions (`OnlyGenesisFinalized`). `up.sh` waits for finalized height ≥ 1 so this is
@@ -66,4 +64,3 @@
 - **`toolkit version` under-reports.** It prints `Ledger: =7.0.3` / `Compactc: 0.31.0` for a
   toolkit that transacts happily against a ledger-v9 chain, so only its `Node:` line is used as a
   compatibility signal.
-

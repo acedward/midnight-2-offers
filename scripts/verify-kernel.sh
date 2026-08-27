@@ -31,7 +31,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 
 load_env
-BIND="${BIND_ADDR:-127.0.0.1}"
+BIND="${HOST_ADDR:-127.0.0.1}"
 KPORT="${KERNEL_HOST_PORT:-9999}"
 BPORT="${BATCHER_HOST_PORT:-3334}"
 API="http://${BIND}:${KPORT}"
