@@ -1,0 +1,10 @@
+{
+  "name": "proof-params-real-proof-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal offline real-proof fixture for the shared proof-data cache. No wallet, node, indexer, or contract.",
+  "dependencies": {
+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
+  }
+}

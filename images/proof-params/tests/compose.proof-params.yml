@@ -1,0 +1,96 @@
+# Self-contained Phase-3 proof-data cache topology.
+#
+# This file is the reviewable REFERENCE SHAPE for the wiring Phase 4 lands in
+# compose/core.yml (plain reader) and compose/aa.yml (experimental reader). It is kept
+# under images/proof-params/tests/ so Phase 3 can prove the topology end to end without
+# touching the production fragments while another phase is editing them.
+#
+# What it demonstrates, and what Phase 4 must preserve:
+#
+#   * ONE named volume `proof-params`, read-write in exactly one place (the initializer)
+#     and read-only in both readers.
+#   * Both readers pin MIDNIGHT_PP to the exact fixed generation directory, never to
+#     /proof-params and never to the /proof-params/current symlink, so a pointer swap can
+#     never move a running reader onto different bytes.
+#   * Both readers gate on `service_completed_successfully`, so a reader can only start
+#     after verification and atomic activation actually succeeded.
+#   * `command` / `entrypoint` are never overridden on the proof images. They have no
+#     Entrypoint and their Cmd is a single argv string containing `--port $PORT`, so all
+#     configuration is injected through `environment:` and `volumes:` only.
+#   * The readers sit on an `internal: true` network and therefore have no route to
+#     srs.midnight.network or anywhere else. Only the initializer joins the egress
+#     network, and only long enough to fetch the 21 warehouse payloads once.
+#   * No host port is published. The AA proof server is internal-only in production; the
+#     test client reaches both servers from inside the offline network.
+
+name: '${P3_PROJECT:-demo-infra-00003-50250-p3}'
+
+x-proof-reader: &proof-reader
+  # Neither `command:` nor `entrypoint:` — see the header note.
+  healthcheck:
+    disable: true
+  restart: 'no'
+  networks: ['offline']
+  volumes:
+    - 'proof-params:/proof-params:ro'
+  depends_on:
+    proof-params-init:
+      condition: 'service_completed_successfully'
+
+services:
+  # The single writer. Exits 0 once the expected generation is active and byte-exact;
+  # a rerun with the generation already active downloads nothing and touches nothing.
+  proof-params-init:
+    image: '${PROOF_PARAMS_IMAGE:-midnight-2-offers/proof-params:local}'
+    build:
+      context: '..'
+      args:
+        PROOF_DATA_GENERATION: '${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+    environment:
+      PROOF_DATA_GENERATION: '${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+      PROOF_PARAMS_DIR: '/proof-params'
+    volumes:
+      - 'proof-params:/proof-params'
+    networks: ['warehouse']
+    restart: 'no'
+
+  # Plain rc.5 — the [v6]/ZKIR-v2 lane the kernel proves against.
+  proof-server:
+    <<: *proof-reader
+    image: '${PROOF_IMAGE:-docker.io/midnightntwrk/proof-server@sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9}'
+    environment:
+      PORT: '6300'
+      MIDNIGHT_PP: '/proof-params/generations/${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+      MIDNIGHT_PARAM_SOURCE: 'https://srs.midnight.network/'
+
+  # Experimental rc.5 — the [v7]/ZKIR-v3 lane the AA contracts prove against. Different
+  # image digest, different executable, same one read-only proof-data generation.
+  aa-proof-server:
+    <<: *proof-reader
+    image: '${AA_PROOF_IMAGE:-docker.io/midnightntwrk/proof-server@sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1}'
+    environment:
+      PORT: '6300'
+      MIDNIGHT_PP: '/proof-params/generations/${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+      MIDNIGHT_PARAM_SOURCE: 'https://srs.midnight.network/'
+
+  # Test-only probe. Lives on the offline network so every request it makes proves the
+  # servers answered without any route to the origin. Reuses the initializer image so the
+  # gate pulls nothing extra.
+  proof-client:
+    image: '${PROOF_PARAMS_IMAGE:-midnight-2-offers/proof-params:local}'
+    entrypoint: ['python3', '-c', 'import time; time.sleep(3600)']
+    networks: ['offline']
+    restart: 'no'
+    depends_on:
+      proof-params-init:
+        condition: 'service_completed_successfully'
+
+networks:
+  # Egress, for the one-shot warehouse download only.
+  warehouse: {}
+  # No route off the host bridge: readers cannot reach srs.midnight.network at all.
+  offline:
+    internal: true
+
+volumes:
+  proof-params: {}
