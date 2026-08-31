@@ -142,8 +142,13 @@ for service in proof-server aa-proof-server; do
 done
 
 log "no covered-data origin request in either reader log"
+# Log assertions capture the stream first and grep the string: `docker logs | grep -q`
+# dies of SIGPIPE under pipefail whenever the match precedes the end of a chunk —
+# Docker Desktop on macOS delivers logs in multiple chunks, so grep's early exit kills
+# the still-writing producer (141) and pipefail reports the MATCHED pipeline as failed.
 for service in proof-server aa-proof-server; do
-  if docker logs "${project}-${service}-1" 2>&1 | grep -Eiq 'srs\.midnight\.network|Downloading|Fetching param'; then
+  reader_log="$(docker logs "${project}-${service}-1" 2>&1)"
+  if grep -Eiq 'srs\.midnight\.network|Downloading|Fetching param' <<<"$reader_log"; then
     printf '[gate] FAIL: %s logged a covered-data origin attempt\n' "$service" >&2
     exit 1
   fi
@@ -219,7 +224,8 @@ if real_proof empty-cache-control "$control" >/dev/null 2>&1; then
   docker rm -f "$control" >/dev/null 2>&1 || true
   exit 1
 fi
-docker logs "$control" 2>&1 | grep -q 'Missing zero-knowledge proving key' \
+control_log="$(docker logs "$control" 2>&1)"
+grep -q 'Missing zero-knowledge proving key' <<<"$control_log" \
   || { printf '[gate] FAIL: empty-cache control did not report the missing key\n' >&2; exit 1; }
 printf '[gate] control confirmed: empty cache -> "Missing zero-knowledge proving key ... Attempting to download"\n'
 docker rm -f "$control" >/dev/null 2>&1 || true
@@ -319,11 +325,12 @@ printf '[gate] ZKIR lanes confirmed: only the experimental build parses ir-sourc
 
 log "neither real proof triggered an origin request, and neither mutated the generation"
 for service in proof-server aa-proof-server; do
-  if docker logs "${project}-${service}-1" 2>&1 | grep -Eq 'Missing zero-knowledge proving key|Attempting to download|srs\.midnight\.network'; then
+  reader_log="$(docker logs "${project}-${service}-1" 2>&1)"
+  if grep -Eq 'Missing zero-knowledge proving key|Attempting to download|srs\.midnight\.network' <<<"$reader_log"; then
     printf '[gate] FAIL: %s attempted a covered-data origin fetch while proving\n' "$service" >&2
     exit 1
   fi
-  docker logs "${project}-${service}-1" 2>&1 | grep -q 'POST /prove' \
+  grep -q 'POST /prove' <<<"$reader_log" \
     || { printf '[gate] FAIL: %s never served a /prove request\n' "$service" >&2; exit 1; }
 done
 
