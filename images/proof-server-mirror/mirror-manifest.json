@@ -1,0 +1,199 @@
+{
+  "schemaVersion": "oci-mirror-record-v1",
+  "note": "Complete identity record for the two owner-controlled proof-server OCI mirrors. Every field below was re-derived anonymously from BOTH the upstream registry and the destination registry on verifiedOn, by hashing the bytes actually returned. verify-mirror.py re-proves this record on demand and cross-checks it against config/artifact-decisions.json so the two records can never drift apart. This file contains no credential and none is required to verify it.",
+  "verifiedOn": "2026-08-31",
+  "verificationMethod": "anonymous-registry-read",
+  "destinationPackage": {
+    "registry": "ghcr.io",
+    "repository": "ghcr.io/effectstream/midnight-proof-server",
+    "visibility": "public",
+    "anonymouslyReadable": true,
+    "expectedTags": [
+      "9.0.0-rc.5-experimental-upstream-4f02ca27",
+      "9.0.0-rc.5-plain-upstream-d96a4d0f"
+    ],
+    "forbiddenTags": [
+      "latest",
+      "9.0.0-rc.5",
+      "9.0.0-rc.5_experimental",
+      "plain",
+      "experimental"
+    ],
+    "forbiddenTagsReason": "A generic tag could collapse the two genuinely different variants onto one name, or float to different bytes later. The package must expose only the two variant-and-upstream-digest aliases; consumers still pin by digest (FR-010)."
+  },
+  "requiredPlatforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "forbiddenPlatformTokens": [
+    "unknown",
+    "windows",
+    "darwin"
+  ],
+  "expectedRuntimeShape": {
+    "note": "Shared by all four platform manifests. Recorded so a later Compose change cannot silently rely on an Entrypoint or a non-root User that does not exist, and so an added healthcheck/label (which would change the config digest) is caught as a difference rather than absorbed.",
+    "entrypoint": null,
+    "user": null,
+    "cmdArgc": 1,
+    "cmdTemplate": "<nix-store-prefix>/bin/midnight-proof-server --port $PORT",
+    "envKeys": [
+      "PATH",
+      "PORT"
+    ],
+    "port": "6300",
+    "exposedPorts": [
+      "6300/tcp"
+    ],
+    "historyEntries": 1
+  },
+  "mirrors": [
+    {
+      "id": "proof-server-plain",
+      "variant": "plain",
+      "version": "9.0.0-rc.5",
+      "equalityClass": "exact-mirror",
+      "equalityEvidence": "raw index bytes, both platform manifest documents, both config documents, both layer blobs, and both extracted executables compare byte-identical between source and destination",
+      "source": {
+        "repository": "docker.io/midnightntwrk/proof-server",
+        "readableTag": "9.0.0-rc.5",
+        "indexDigest": "sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "indexBytes": 741
+      },
+      "destination": {
+        "repository": "ghcr.io/effectstream/midnight-proof-server",
+        "alias": "9.0.0-rc.5-plain-upstream-d96a4d0f",
+        "indexDigest": "sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "indexBytes": 741,
+        "consumerRef": "ghcr.io/effectstream/midnight-proof-server@sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9"
+      },
+      "platforms": {
+        "linux/amd64": {
+          "architecture": "amd64",
+          "os": "linux",
+          "manifestDigest": "sha256:e912e04c48a7fdd385f05b313e4b52e0452cd8ccf6368816fa0c2effb5eb2361",
+          "manifestBytes": 528,
+          "manifestMediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "configDigest": "sha256:e463c99ed75105badab68e39a595b830c740f1fedf25ec3b5258f9b32be38b8f",
+          "configBytes": 783,
+          "layers": [
+            {
+              "digest": "sha256:c105504967db56d5a3846eb60fe8dd0572b42b184dee4de927710b0d3aacdb4b",
+              "size": 27843755,
+              "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip"
+            }
+          ],
+          "diffIds": [
+            "sha256:19512390413e68af77bfd05c3408f46bf89d67cfe4379d1ca2626d1079e20251"
+          ],
+          "nixStorePrefix": "/nix/store/nkcyvwigx3a7wary1n6yjrq3mgx1faqx-ledger-1.0.0",
+          "executablePath": "nix/store/nkcyvwigx3a7wary1n6yjrq3mgx1faqx-ledger-1.0.0/bin/midnight-proof-server",
+          "executableSha256": "189974b9641ee3a9e1c567b1a715a46faa57e67d680e3f1a2231dcfe78bd71c9",
+          "executableBytes": 28407736,
+          "closureStoreDirs": 16,
+          "layerTarEntries": 4549
+        },
+        "linux/arm64": {
+          "architecture": "arm64",
+          "os": "linux",
+          "manifestDigest": "sha256:52056fdd69e86fbe94e11dc7c6243c4251c7d2ccf56390c8e555e01be0508b40",
+          "manifestBytes": 528,
+          "manifestMediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "configDigest": "sha256:988561648ac1b9e26541478be4af557059afbdefc44f395a7af45dcc73c2719e",
+          "configBytes": 784,
+          "layers": [
+            {
+              "digest": "sha256:e0d6bd40a19deb1f3f96558cb984243dc0f6b32a44e5b59d0425ff023a8429cc",
+              "size": 31319119,
+              "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip"
+            }
+          ],
+          "diffIds": [
+            "sha256:cd2f96f5d94922199d8512892a79476ba071f0dcd5b6ad66dabfb2aa1c125a1b"
+          ],
+          "nixStorePrefix": "/nix/store/mniyagc6r1qmkgnl8rxqgqkzrd4m5vyw-ledger-1.0.0",
+          "executablePath": "nix/store/mniyagc6r1qmkgnl8rxqgqkzrd4m5vyw-ledger-1.0.0/bin/midnight-proof-server",
+          "executableSha256": "ed758766c1b69b153b7d2fc1374621b738a64f7968ea97906ec1189fb8ff5646",
+          "executableBytes": 26613256,
+          "closureStoreDirs": 18,
+          "layerTarEntries": 4594
+        }
+      }
+    },
+    {
+      "id": "proof-server-experimental",
+      "variant": "experimental",
+      "version": "9.0.0-rc.5",
+      "equalityClass": "exact-mirror",
+      "equalityEvidence": "raw index bytes, both platform manifest documents, both config documents, both layer blobs, and both extracted executables compare byte-identical between source and destination",
+      "source": {
+        "repository": "docker.io/midnightntwrk/proof-server",
+        "readableTag": "9.0.0-rc.5_experimental",
+        "indexDigest": "sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "indexBytes": 741
+      },
+      "destination": {
+        "repository": "ghcr.io/effectstream/midnight-proof-server",
+        "alias": "9.0.0-rc.5-experimental-upstream-4f02ca27",
+        "indexDigest": "sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "indexBytes": 741,
+        "consumerRef": "ghcr.io/effectstream/midnight-proof-server@sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1"
+      },
+      "platforms": {
+        "linux/amd64": {
+          "architecture": "amd64",
+          "os": "linux",
+          "manifestDigest": "sha256:4db380b1434492896a144a5ffc083a145d30dc68af64e43e5b4813efa118a09a",
+          "manifestBytes": 528,
+          "manifestMediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "configDigest": "sha256:3c437ed72be99f1769e85013a6f92351cae48afe697f6d6ac8fd6477658f297c",
+          "configBytes": 783,
+          "layers": [
+            {
+              "digest": "sha256:866b7a7dd9e5a59c07d13cef25f4a5e9b2c98f1b6b4bb5a4378ee43cd6a49a74",
+              "size": 29059309,
+              "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip"
+            }
+          ],
+          "diffIds": [
+            "sha256:db1d037fcddf9a8087b93ab504dd33dd868503cf6a08a0db1e551f1b12296f76"
+          ],
+          "nixStorePrefix": "/nix/store/bw59nnpky928qy2z7z6vc0h8a11xzfmw-ledger-1.0.0",
+          "executablePath": "nix/store/bw59nnpky928qy2z7z6vc0h8a11xzfmw-ledger-1.0.0/bin/midnight-proof-server",
+          "executableSha256": "913d5e659d7b5de85040860f888e17b00ff6f0504d8f929ce0d4fa62bb902a04",
+          "executableBytes": 32229600,
+          "closureStoreDirs": 16,
+          "layerTarEntries": 4549
+        },
+        "linux/arm64": {
+          "architecture": "arm64",
+          "os": "linux",
+          "manifestDigest": "sha256:83eb40f64db7c8d4a5972352da2bc4a86e4e2963bccdcd96b5116d1a640cf709",
+          "manifestBytes": 528,
+          "manifestMediaType": "application/vnd.docker.distribution.manifest.v2+json",
+          "configDigest": "sha256:dc62f60cbe0016ddc768b215a61766931ea5fb13d05180bf7d2ba12a1bd9d574",
+          "configBytes": 784,
+          "layers": [
+            {
+              "digest": "sha256:2d350f74059e0153e0cbe75df85f51286aa471437c7bf9c6e86083d74080da0b",
+              "size": 32554570,
+              "mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip"
+            }
+          ],
+          "diffIds": [
+            "sha256:93d193f727a5fd5574077eef6949e2fe7a73365f145b6a762a9efb6fe396a963"
+          ],
+          "nixStorePrefix": "/nix/store/girxlljm3vki64d0ri0hdqfi0faplfww-ledger-1.0.0",
+          "executablePath": "nix/store/girxlljm3vki64d0ri0hdqfi0faplfww-ledger-1.0.0/bin/midnight-proof-server",
+          "executableSha256": "4a3d16692e982cc49dd45f3ee37c16977b9ca514305242de5232b22bdcdb7f65",
+          "executableBytes": 30011480,
+          "closureStoreDirs": 18,
+          "layerTarEntries": 4594
+        }
+      }
+    }
+  ]
+}
