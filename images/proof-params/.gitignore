@@ -1,0 +1,11 @@
+# The proof fixtures install their dependencies into Docker volumes at test time (see
+# tests/run-gate.sh). A local node_modules/ is never part of the component.
+tests/proof-fixture/node_modules/
+tests/zkir-fixture/node_modules/
+# Compiled fixture artifacts — including CONTRACT PROVING KEYS — are generated into a
+# test-scoped volume and torn down with the gate. They must never be committed, and they
+# must never reach the shared proof-params volume or an OCI layer.
+tests/zkir-fixture/managed/
+tests/zkir-fixture/artifacts/
+__pycache__/
+*.py[cod]

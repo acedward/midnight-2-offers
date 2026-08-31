@@ -3,14 +3,28 @@
 #
 # Two services:
 #
-#   aa-proof-server   midnightntwrk/proof-server:9.0.0-rc.5_experimental, INTERNAL
-#                     ONLY (no host port). The AA contracts are compiled with
+#   aa-proof-server   proof-server 9.0.0-rc.5 EXPERIMENTAL variant, INTERNAL ONLY
+#                     (no host port — the stack publishes exactly one proof port,
+#                     core's plain one). The AA contracts are compiled with
 #                     --feature-zkir-v3 (the Manager is keccak/EIP-712-heavy), so
 #                     their verifier keys are [v7] and proving a call against them
-#                     needs the _experimental build — while the core proof-server
-#                     stays on the PLAIN tag the kernel's [v6] keys are proven
-#                     with. Whether _experimental also proves [v6] is unverified;
+#                     needs the experimental build — while the core proof-server
+#                     stays on the PLAIN one the kernel's [v6] keys are proven
+#                     with. Whether experimental also proves [v6] is unverified;
 #                     running both sidesteps the question entirely.
+#
+#                     Plain and experimental are DIFFERENT PROGRAMS, not two tags on
+#                     one image: their amd64 executables hash to 189974b9… and
+#                     913d5e65… respectively, and they share no manifest, config or
+#                     layer digest at any platform. Both are pinned to their own
+#                     immutable index digest, so they cannot be collapsed onto one
+#                     image by accident. NOTE that `GET /proof-versions` answers
+#                     ["V2","V3"] on BOTH builds — it reports the proof wire format,
+#                     not the compiler lane, so it CANNOT be used to tell them apart.
+#
+#                     It reads the same single verified proof-data generation as the
+#                     core server, read-only, from the `proof-params` volume declared
+#                     in compose/core.yml — one noarch copy for both variants.
 #
 #   aa-deploy         one-shot: deploys Manager(domain) + Minter(tag) with the
 #                     stack's own deploy machinery (@effectstream/midnight-contracts
@@ -28,7 +42,25 @@
 
 services:
   aa-proof-server:
-    image: 'midnightntwrk/proof-server:${AA_PROOF_TAG:-9.0.0-rc.5_experimental}'
+    # Exact byte-for-byte Effectstream mirror of upstream experimental index
+    # sha256:4f02ca27…; see images/proof-server-mirror/. Digest, never tag.
+    image: '${AA_PROOF_IMAGE:-ghcr.io/effectstream/midnight-proof-server@sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1}'
+    # NEITHER `command:` NOR `entrypoint:` — same reason as the core proof server:
+    # no Entrypoint, and Cmd is one argv element containing `--port $PORT`.
+    environment:
+      PORT: '6300'
+      # The SAME fixed generation directory the core server reads. Never
+      # /proof-params and never the `current` symlink.
+      MIDNIGHT_PP: '/proof-params/generations/${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+      MIDNIGHT_PARAM_SOURCE: '${MIDNIGHT_PARAM_SOURCE:-https://srs.midnight.network/}'
+    volumes:
+      # READ-ONLY, like the core reader. The initializer in compose/core.yml is the
+      # only writer of this volume anywhere in the stack.
+      - 'proof-params:/proof-params:ro'
+    depends_on:
+      proof-params-init:
+        # Declared in compose/core.yml, which every bring-up always includes.
+        condition: 'service_completed_successfully'
     # Same nix-based image family as the core proof-server: no curl, no shell
     # healthcheck possible; consumers TCP-wait (the runner's first proving call
     # comes minutes into the deploy, long after this container listens).
@@ -50,7 +82,9 @@ services:
       context: '../images/aa-contracts'
       args:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
-        AA_REF: '${AA_REF:-main}'
+        AA_REF: '${AA_REF:-713a20215f33e02904ea5bd699b7de7f76562e1b}'
+        KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
+        KERNEL_REF: '${KERNEL_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
         # Optional k=18 execute overlay (halved prover key, ~2x faster proofs;
         # unaudited-compiler caveat — see the Dockerfile). KEY-BREAKING: wipe
         # the aa-out artifact and redeploy after flipping this.
@@ -89,12 +123,14 @@ services:
   # be funded SHIELDED-FREE (unshielded NIGHT + DUST only — the T7.5 rule);
   # up.sh does it on bring-up when /healthz reports the wallet empty.
   aa-console:
-    image: 'midnight-2-offers/aa-contracts:console'
+    image: '${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}'
     build:
       context: '../images/aa-contracts'
       args:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
-        AA_REF: '${AA_REF:-main}'
+        AA_REF: '${AA_REF:-713a20215f33e02904ea5bd699b7de7f76562e1b}'
+        KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
+        KERNEL_REF: '${KERNEL_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
         AA_PRUNE_MANAGER_PROVERS: '0'
         AA_EXECUTE_K18: '${AA_EXECUTE_K18:-0}'
       additional_contexts:
@@ -123,7 +159,7 @@ services:
       # Host-reachable sink page URL for the Offers+Solver tab's iframe.
       AA_SINK_PUBLIC_URL: '${AA_SINK_PUBLIC_URL:-http://127.0.0.1:${SOLVER_SINK_HOST_PORT:-10800}}'
     ports:
-      - '${HOST_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
+      - '${BIND_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
     volumes:
       - 'aa-out:/aa/out'
     healthcheck:

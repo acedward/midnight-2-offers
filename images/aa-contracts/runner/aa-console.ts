@@ -243,7 +243,7 @@ async function join(walletResult: any, name: string, address: string, witnesses:
       indexer: midnightNetworkConfig.indexer,
       indexerWS: midnightNetworkConfig.indexerWS,
       node: midnightNetworkConfig.node,
-      // The AA contracts prove on the _experimental server (zkir-v3 / [v7]
+      // The AA contracts prove on the experimental server (zkir-v3 / [v7]
       // keys); the offer-files contract is a plain zkir-v2 / [v6] artifact and
       // proves on the PLAIN server — the caller picks.
       proofServer: proofServer ?? midnightNetworkConfig.proofServer,
@@ -262,8 +262,8 @@ async function join(walletResult: any, name: string, address: string, witnesses:
 }
 
 // ── the offer-files contract: the unified token mint ────────────────────────
-// Its compiled artifact is baked from the kernel image at /aa/contract-offer-files
-// (empty witnesses; [v6] keys → PLAIN proof server).
+// Its source is fetched at exact KERNEL_REF and compiled during this AA image's
+// build into /aa/contract-offer-files (empty witnesses; [v6] keys → PLAIN proof server).
 async function joinOfferFiles(walletResult: any) {
   if (!tokens.offerFilesAddress) await resolveTokens();
   if (!tokens.offerFilesAddress) throw new Error(`offer-files contract unknown: ${tokens.error}`);

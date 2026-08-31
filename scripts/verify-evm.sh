@@ -16,7 +16,7 @@
 #   balances         eth_getBalance is non-zero for a monitored wallet. This is the one check that
 #                    exercises the whole chain: node → indexer → wallet-monitor → Postgres → RPC.
 #   WS newHeads      a header actually ARRIVES. Subscribing always succeeds; only delivery proves
-#                    a block source is wired (see images/umbra-evm/patches/).
+#                    the pinned upstream block-source fix is wired.
 #   error policy     an unimplemented-but-real method is -32004, an unknown name is -32601. A
 #                    client uses that difference to decide whether to fall back or to give up.
 #   read-only        eth_sendRawTransaction is NOT registered (plan Q2). If it ever answers

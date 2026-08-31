@@ -72,11 +72,14 @@ celestia_namespace_b64() {
 # ── JSON-RPC over the published host port ────────────────────────────────────
 
 # cel_rpc <method> [params-json] — prints the raw response body.
+# `auth` stays EMPTY when no token is available, so it is expanded as ${auth[@]+"${auth[@]}"}:
+# macOS ships bash 3.2, where "${auth[@]}" on an empty array under `set -u` is an "unbound
+# variable" error rather than zero words. See the same note in lib/common.sh's dc().
 cel_rpc() {
   local method="$1" params="${2:-[]}" token auth=()
   token="$(celestia_token || true)"
   [[ -n "$token" ]] && auth=(-H "Authorization: Bearer ${token}")
-  curl -sS --max-time 30 -H 'Content-Type: application/json' "${auth[@]}" \
+  curl -sS --max-time 30 -H 'Content-Type: application/json' ${auth[@]+"${auth[@]}"} \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}" \
     "$CELESTIA_DA_URL" 2>/dev/null
 }

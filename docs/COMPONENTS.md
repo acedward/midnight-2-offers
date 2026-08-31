@@ -15,14 +15,23 @@ batcher `:3334`, one-shot contract deploy + dev-token mint at bring-up) and the 
 profile** (the zswap-da make→take swap SPA on `:10600`). They were previously blocked on the
 `@effectstream/*` ledger-v8 → ledger-v9 migration; that migration published as
 `@effectstream/*@0.200.1` + `@effectstream/mip-zswap-offer@0.4.0-v9.0`, and the kernel's own
-migration rides branch `00001-ledger-v9` of `effectstream/zswap-offerfiles-kernel`, which is
-what `images/offerfiles-kernel/Dockerfile` builds.
+migration rides PR #49 of `effectstream/zswap-offerfiles-kernel`; the image pins PR #50 commit
+`b1420c4…`, which includes that migration plus the offer-update WS route required by the solver.
 
-**One caveat — the frontend build needs a local checkout.** The zswap-da template's ledger-v9
-migration is not published anywhere (upstream `effectstream/effectstream@templates/zswap-da` is
-frozen on ledger-v8), so `images/zswap-da/Dockerfile` consumes it as a local build context —
-`ZSWAP_DA_TEMPLATE_DIR`, defaulting to a sibling checkout. Without it, `--with frontend` fails
-at build with a clear error while every other profile is unaffected.
+**Cow solver source pin.** Cow solver source is not copied into this repository. Its image fetches
+[`effectstream/zswap-offerfiles-kernel` PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50)
+directly at build time at exact SHA `b1420c4af6ed8b2510140418e5138d282365f9c6`
+(`SOLVER_REF`). Compose supplies the separately built kernel image only for its generated Compact
+artifacts.
+
+**Frontend source pin.** The zswap-da template's ledger-v9 migration is not published upstream
+(`effectstream/effectstream@templates/zswap-da` remains on ledger-v8). The image therefore fetches
+[`effectstream/effectstream@332503c8`](https://github.com/effectstream/effectstream/tree/332503c8f9216143a8c805f2a0acbcfd39e5a21d/templates/zswap-da)
+directly, verifies the resolved full commit, and applies the fail-closed 10-file
+`images/zswap-da/ledger-v9.patch`. The patch carries only dependency/lockfile, compiler manifest,
+and six TypeScript/API migrations; 64 byte-identical upstream files are no longer copied here.
+Cold builds need GitHub and npm network access. The fetched upstream licenses are preserved in the
+runtime image, and `/.zswap-da-commit` makes the source pin part of CI provenance verification.
 
 **The `aa` profile deploys the AA contracts and mints a token.** `--with aa` deploys
 [`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3)'s
@@ -31,9 +40,9 @@ bring-up, then proves two mint calls (one shielded colour, one unshielded) and w
 receipt — addresses, colours, tx ids — to the `aa-out` volume as `aa-contracts.json`
 (`./scripts/verify-aa.sh` reads it back; `verify.sh` gains an `aa` section). Two design
 points worth knowing: the contracts are compiled with `--feature-zkir-v3` (the Manager is
-keccak/EIP-712-heavy), so the profile runs its **own internal
-`proof-server:9.0.0-rc.5_experimental`** next to the plain core one rather than flipping
-`PROOF_TAG` for everything; and the Manager's 1.1 GB `execute.prover` key is deliberately
+keccak/EIP-712-heavy), so the profile runs its **own internal experimental proof server**
+(`AA_PROOF_IMAGE`) next to the plain core one rather than repointing the whole stack's
+proving at one variant; and the Manager's 1.1 GB `execute.prover` key is deliberately
 NOT in the image — deploying needs only verifier keys, and bring-up never calls `execute`.
 The one-shot is idempotent across `up` runs and its state dies with `down.sh -v`.
 
@@ -104,6 +113,59 @@ is when a fresh deploy is correct.
 Practical consequences: `kernel` and `batcher` restart independently of each other, and
 `docker compose logs batcher` is the batcher's log alone rather than six processes interleaved.
 
+## The two proof servers, and the one cache they share (profile `core` + `aa`)
+
+**They are two different programs, not two tags on one image.** `9.0.0-rc.5` plain proves the
+zkir-v2 / `[v6]` lane — the offer-files kernel's circuits and the wallet's standard lane. The
+`9.0.0-rc.5` experimental build additionally carries a zkir-v3 interpreter, which the AA
+contracts need because they are compiled `--feature-zkir-v3`. Their Linux-amd64 executables
+hash to `189974b9…` and `913d5e65…` respectively and they share no manifest, config or layer
+digest at any platform, so each is pinned to its own immutable index digest and the scripts
+refuse to start if the two references are equal.
+
+> `GET /proof-versions` answers `["V2","V3"]` on **both** builds — it reports the proof wire
+> format, not the compiler lane, so it cannot be used to tell them apart. The reliable
+> discriminator is behavioural: feed the plain server a zkir-v3-compiled circuit and it
+> refuses it (`images/proof-params/tests/zkir-fixture/` does exactly that as a control).
+
+**Where the images come from.** Upstream `midnightntwrk/proof-server` availability at stack
+startup is this stack's most frequent cold-start failure, so both variants are pulled from
+`ghcr.io/effectstream/midnight-proof-server` instead. Those are **exact mirrors**: raw index
+bytes, both platform manifests, both configs, both layer blobs and both extracted executables
+are byte-identical to the upstream indexes, re-provable at any time with
+`images/proof-server-mirror/verify-mirror.py`. Anonymous pull, no login. Note that the
+standalone proof-server ZIP in the binary warehouse is *not* a usable substitute: it contains
+exactly one file, and that executable's ELF interpreter is an absolute `/nix/store/…` path
+with an empty `RUNPATH`, so without the 16-directory Nix closure that ships inside the
+official image it cannot exec at all. Mirroring the complete image is the only correct option.
+
+**One verified proof-data generation, mounted read-only by both.** Proof data — the SRS
+objects K0-K19 plus Ledger-static `9.0.0` — is architecture-neutral and identical for both
+variants, so it lives in exactly one place: a named `proof-params` volume, populated once by
+the `proof-params-init` one-shot in `compose/core.yml`.
+
+* It downloads exactly the 21 published noarch payloads from the warehouse, verifies every
+  outer and member SHA-256 against the reviewed admission manifest, stages on the same
+  filesystem, fsyncs, and **atomically** activates `generations/<content-digest>`. A failure
+  leaves the previous complete generation untouched; a partial tree is never observable.
+* `proof-params-init` is the **only** writer. Both proof servers mount the volume `:ro` and
+  point `MIDNIGHT_PP` at the *fixed generation directory* — never at the volume root and
+  never at the `current` symlink, so a pointer swap cannot move a running server onto
+  different bytes. A server's write attempt fails with `EROFS`.
+* Both servers gate on `service_completed_successfully`, so **a proof server cannot start
+  before the cache verifies.** That is a deliberate behaviour change: previously each server
+  fetched its own ~223 MB from `https://srs.midnight.network/` on first proof.
+* The payload bytes are in the volume and in no OCI layer — the initializer image adds about
+  230 kB over its pinned Python base. `MIDNIGHT_PARAM_SOURCE` remains the official SRS host
+  as a fallback; the development-only GitHub warehouse is explicitly not an admissible
+  parameter source and the initializer refuses one.
+* A repeat run against an already-active generation downloads nothing and returns `NOOP` in
+  a few seconds, so container recreates are free. `./down.sh` keeps the volume; `./down.sh -v`
+  is a project-wide wipe and removes it, costing one re-download on the next `up`.
+
+Boolean proof-server environment knobs (`MIDNIGHT_PROOF_SERVER_NO_FETCH_PARAMS` and friends)
+require the **literal** strings `true` / `false` on rc.5; `=1` aborts the server at startup.
+
 ## umbra-evm — read-only Ethereum JSON-RPC (profile `evm`)
 
 ```bash
@@ -144,7 +206,7 @@ breaking change for that project, not a detail.
 | `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountBy*` | the **indexer** GraphQL v4, live |
 | `eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getTransactionByHash`, `eth_getTransactionReceipt` | **Postgres**, filled by `wallet-monitor` |
 | `eth_getLogs`, `eth_subscribe("logs")`, ERC20 `eth_call` views | **Postgres**, filled by the contract-event ingester from `config/watch.json` |
-| `eth_subscribe("newHeads")` | the indexer head (see the patch note below) |
+| `eth_subscribe("newHeads")` | the indexer head (see the provenance note below) |
 
 Two consequences worth knowing before you debug something:
 
@@ -219,7 +281,7 @@ value.
 ### How the image is built
 
 `images/umbra-evm/Dockerfile` fetches `acedward/UmbraDB` at `UMBRA_REF`
-(default `feat/00006-json-rpc-review`, PR #7) and installs it — the upstream repo ships no Docker
+(default full commit `5a463485…` from `evm-compat`) and installs it — the upstream repo ships no Docker
 packaging, so this is it. Three services share the one image: `evm-rpc`
 (`npm run evm-rpc:all`), `wallet-monitor` (`npm run monitor:wallet`) and the one-shot
 `evm-migrate` (`npx tsx tools/migrate.ts`).
@@ -232,21 +294,15 @@ packaging, so this is it. Three services share the one image: `evm-rpc`
   only `wallet-monitor` does — so without an explicit init step the two services race for the
   schema and `evm-rpc` dies on a missing relation whenever it wins. Both depend on it with
   `service_completed_successfully`. It is idempotent, so it re-runs as a no-op on every bring-up.
-- **Docker cannot tell that a branch moved.** `UMBRA_REF` defaults to a branch name, so a rebuild
-  reuses the cached fetch layer. Use `docker compose … build --no-cache evm-rpc`, or pin
-  `UMBRA_REF` to a commit sha. `docker run --rm midnight-2-offers/umbra-evm:local cat
-  /app/.umbra-commit` prints the commit actually baked in.
-- **Two upstream defects are patched at build time** (`images/umbra-evm/patches/apply.mjs`), both
-  in the `createSubscribeServer` call and both about the WebSocket surface. Neither touches the
-  write path. The patcher does exact-anchor rewrites and **fails the build** if an anchor moved,
-  printing it — a fuzzy patch that half-applies would be far worse than a broken build:
+- **Source provenance is explicit.** `UMBRA_REF` defaults to full commit `5a463485…`, and
+  `/app/.umbra-commit` is checked by CI. The two WebSocket fixes below are merged upstream:
   1. `evm-rpc/logs/ws.ts` defaults `listen(port, host = "127.0.0.1")` and `serve-all.ts` never
      passes a host, so the WS server binds container-loopback and refuses every client. It fails
      invisibly: the published port accepts TCP (docker-proxy), the client sees only close `1006`,
      and the server logs nothing.
   2. With no `blockSource`, `newHeads` falls back to a source that can only announce blocks
-     carrying a *watched contract log* — i.e. nothing at all with an empty `watch.json`. The patch
-     injects a source polling the same indexer head that answers `eth_blockNumber`.
+     carrying a *watched contract log* — i.e. nothing at all with an empty `watch.json`. The merged
+     upstream fix injects a source polling the same indexer head that answers `eth_blockNumber`.
 
 ## Celestia DA devnet (profile `offerfiles`)
 
@@ -346,11 +402,23 @@ fetch-by-height — so it is verified before the kernel exists rather than durin
 
 ### Notes worth knowing
 
-- **The image is ~860 MB and built from upstream release binaries**, native on both `arm64` and
-  `amd64` (no `platform:` pin, unlike the indexer). The npm package the kernel uses mirrors only
-  `linux-amd64`, which would have meant QEMU-emulating a block-a-second consensus node on Apple
-  Silicon; those mirrored tarballs are byte-identical to celestiaorg's own release assets, which
-  *do* include `Linux_arm64`, so this fetches from upstream at the same pinned versions.
+- **The image is ~860 MB and built from published release binaries**, native on both `arm64` and
+  `amd64` — and so is the indexer now, so neither image carries a `platform:` pin any more. Both
+  archives come from the `effectstream/binaries@0.3.120` warehouse by `TARGETARCH`, and each one
+  is byte-equal to the corresponding official celestiaorg release asset. That equality is pinned
+  offline in `images/celestia/official-equality.tsv` — asset name, official release/tag/asset id,
+  and both the release-asset checksum and the `checksums.txt` checksum — rather than re-fetched
+  from a release's `checksums.txt` during the build, which used to make a mutable network
+  resource part of the trust decision.
+  The warehouse is **development-only and mutable**: an asset can be re-uploaded under the same
+  name, so those SHA-256 values are the artifact's identity and a byte change fails the build
+  before anything is extracted.
+  Two of the four rows are cataloged `legacy-unverified` with null source and null member hashes.
+  That is truthful and is left alone: their equality is proven directly against the official
+  release instead, and the build **rejects** a legacy row that tries to claim a source commit.
+  (An earlier version of this image went straight to celestiaorg because the npm package the
+  kernel uses mirrors only `linux-amd64` — that claim no longer applies to the warehouse, which
+  publishes `linux-arm64` at both of these versions.)
 - **The first bring-up prints `pull access denied`** for the local-only image tag, exactly as the
   umbra-evm one does, then builds.
 - **State survives `./down.sh` and dies with `./down.sh -v`**, like the node and indexer volumes.

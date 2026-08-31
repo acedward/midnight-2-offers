@@ -8,7 +8,12 @@
 #
 # Requires common.sh to have been sourced first (load_env, log/ok/err).
 
-: "${TOOLKIT_IMAGE:=midnightntwrk/midnight-node-toolkit:${TOOLKIT_TAG:-2.0.0-rc.4}}"
+# The toolkit is the good official multiarch image, pinned by its complete index digest —
+# never composed from a tag. load_env() sets and validates this; the default here only
+# covers a caller that sourced this file without it. Readable version: TOOLKIT_VERSION.
+: "${TOOLKIT_IMAGE:=docker.io/midnightntwrk/midnight-node-toolkit@sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f}"
+: "${TOOLKIT_VERSION:=2.0.0-rc.4}"
+: "${NODE_VERSION:=2.0.0-rc.4}"
 
 # The node's URL as seen from inside the compose network. Container ports are fixed, so
 # this is independent of NODE_HOST_PORT.
@@ -206,7 +211,10 @@ wait_spendable_dust() {
 
 # ── version guard ────────────────────────────────────────────────────────────
 # check_toolkit_version — warns unless the toolkit's reported Node version is a prefix of
-# NODE_TAG (toolkit 2.0.0-rc.4 reports "Node: 2.0.0" for node tag "2.0.0-rc.4").
+# NODE_VERSION (toolkit 2.0.0-rc.4 reports "Node: 2.0.0" for node version "2.0.0-rc.4").
+#
+# NODE_VERSION is the readable label, not the identity: the node and toolkit images are both
+# pinned by digest and this guard only answers "do these two agree on the tx format?".
 #
 # Only the Node line is compared. The Ledger and Compactc lines in `toolkit version` are
 # NOT usable as a compatibility signal on this tag: 2.0.0-rc.4 reports "Ledger: =7.0.3"
@@ -220,11 +228,11 @@ check_toolkit_version() {
     warn "could not read 'Node:' from \`toolkit version\` — skipping the version guard"
     return 0
   fi
-  if [[ "${NODE_TAG}" == "${node_ver}"* ]]; then
-    ok "toolkit ${TOOLKIT_IMAGE##*:} matches node tag ${NODE_TAG} (toolkit reports Node: ${node_ver})"
+  if [[ "${NODE_VERSION}" == "${node_ver}"* ]]; then
+    ok "toolkit ${TOOLKIT_VERSION} matches node ${NODE_VERSION} (toolkit reports Node: ${node_ver})"
     return 0
   fi
-  warn "toolkit reports Node: ${node_ver} but the stack runs node ${NODE_TAG}"
-  warn "set TOOLKIT_TAG in .env to the node tag to be sure the tx formats agree"
+  warn "toolkit reports Node: ${node_ver} but the stack runs node ${NODE_VERSION}"
+  warn "point TOOLKIT_IMAGE at the digest of the toolkit built for that node version"
   return 1
 }

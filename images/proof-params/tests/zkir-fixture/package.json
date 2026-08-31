@@ -1,0 +1,23 @@
+{
+  "name": "proof-params-zkir-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Test-only ZKIR-v2/v3 contract-circuit proof fixture for the shared proof-data cache. No wallet, node, indexer, or chain deployment.",
+  "//": [
+    "The exact midnight-js line the AA profile already runs on. The override collapses",
+    "ledger-v9 to ONE wasm copy - two copies in one process fail instanceof checks."
+  ],
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1",
+    "@midnight-ntwrk/midnight-js-contracts": "5.0.0-beta.6",
+    "@midnight-ntwrk/midnight-js-network-id": "5.0.0-beta.6",
+    "@midnight-ntwrk/midnight-js-node-zk-config-provider": "5.0.0-beta.6",
+    "@midnight-ntwrk/midnight-js-protocol": "5.0.0-beta.6",
+    "@midnight-ntwrk/midnight-js-types": "5.0.0-beta.6",
+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
+  },
+  "overrides": {
+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
+  }
+}

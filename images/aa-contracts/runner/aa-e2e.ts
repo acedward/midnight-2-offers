@@ -19,7 +19,7 @@
 //   * DEADLINE HORIZON — an EVM action's validUntil may sit at most 3600 s past
 //     block time; the e2e uses now+1800 s.
 //   * ONE FACADE PER TRANSACTION — a facade that has signed several txs in one
-//     session eventually attaches a piece the aa profile's _experimental proof
+//     session eventually attaches a piece the aa profile's experimental proof
 //     server rejects at /check ("zswap-cc[v1] inputs did not match alignment",
 //     runs 2–7: always the session's 5th tx, never the first four; the deploy
 //     runner — fresh wallet per operation — never failed once). Fresh facades

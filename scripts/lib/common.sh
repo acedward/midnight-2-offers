@@ -27,6 +27,48 @@ warn() { printf '%s\n' "    ${C_YELLOW}WARN${C_RESET} $*"; }
 err()  { printf '%s\n' "    ${C_RED}FAIL${C_RESET} $*" >&2; }
 die()  { err "$*"; exit 1; }
 
+# ── immutable image references ───────────────────────────────────────────────
+#
+# require_digest_ref VAR… — each named variable must hold a COMPLETE immutable image
+# reference, `<repository>@sha256:<64 hex>`.
+#
+# A tag is not an identity. `midnightntwrk/proof-server:9.0.0-rc.5` can be repointed at
+# different bytes at any moment without anything in this repository changing, which is
+# exactly the failure the artifact-decision matrix exists to prevent. So an override that
+# supplies a tag is REJECTED rather than quietly accepted as a weaker pin: there is no
+# digest→tag fallback anywhere in this stack.
+# It REPORTS rather than exits, and `assert_image_pins` below is what makes it fatal. The
+# split is deliberate: a bad pin must never be able to strand a running stack, so `down.sh`
+# and the read-only verify scripts still work while every path that STARTS something fails
+# hard. Teardown does not depend on image identity; starting does.
+require_digest_ref() {
+  local var val bad=0
+  for var in "$@"; do
+    val="${!var-}"
+    if [[ ! "$val" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
+      err "${var} is not a complete immutable image reference"
+      info "  got:      ${val:-<empty>}"
+      info "  expected: <repository>@sha256:<64 hex>"
+      bad=1
+    fi
+  done
+  return "$bad"
+}
+
+# assert_image_pins — the fatal form, for anything that is about to start containers.
+# load_env() only warns; up.sh calls this.
+assert_image_pins() {
+  require_digest_ref NODE_IMAGE TOOLKIT_IMAGE PROOF_IMAGE AA_PROOF_IMAGE \
+    || die "external runtime images are pinned by digest only — see docs/ARTIFACT-DECISIONS.md"
+  if [[ "${PROOF_IMAGE:-}" == "${AA_PROOF_IMAGE:-}" ]]; then
+    die "PROOF_IMAGE and AA_PROOF_IMAGE resolve to the same image — plain and experimental are different programs and must stay separately pinned"
+  fi
+  if [[ ! "${PROOF_DATA_GENERATION:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    die "PROOF_DATA_GENERATION must be the 64-hex content digest of a proof-data generation (got: ${PROOF_DATA_GENERATION:-<empty>})"
+  fi
+  return 0
+}
+
 # ── env ──────────────────────────────────────────────────────────────────────
 # Loads .env (or $ENV_FILE) into the environment, then applies the defaults so every
 # variable the scripts read is always set. Values already exported win over the file,
@@ -58,11 +100,65 @@ load_env() {
   fi
 
   : "${COMPOSE_PROJECT_NAME:=demo-infra}"
-  : "${NODE_TAG:=2.0.0-rc.4}"
-  : "${INDEXER_TAG:=4.4.0-rc.1}"
-  : "${PROOF_TAG:=9.0.0-rc.5}"
-  : "${TOOLKIT_TAG:=$NODE_TAG}"
-  : "${INDEXER_PLATFORM:=linux/amd64}"
+
+  # ── RETIRED CONTROLS ───────────────────────────────────────────────────────
+  # Say so out loud. A `.env` carried over from before this refactor still sets some of
+  # these, and a control that is silently ignored is worse than one that is gone: the
+  # operator believes they changed the image or the platform and they did not.
+  local retired
+  for retired in NODE_TAG PROOF_TAG TOOLKIT_TAG AA_PROOF_TAG; do
+    if [[ -n "${!retired-}" ]]; then
+      warn "${retired} is RETIRED and IGNORED — set ${retired%_TAG}_IMAGE to a full <repo>@sha256:… reference instead"
+    fi
+  done
+  for retired in INDEXER_PLATFORM INDEXER_REPO INDEXER_REF INDEXER_RUST_VERSION; do
+    if [[ -n "${!retired-}" ]]; then
+      warn "${retired} is RETIRED and IGNORED — the indexer installs a published warehouse binary and is never compiled or platform-forced"
+    fi
+  done
+
+  # ── external runtime images: repository + IMMUTABLE DIGEST, never a tag ─────
+  # Node and toolkit are the good official multiarch images, kept as-is. Both proof-server
+  # variants come from the Effectstream GHCR mirror, which Phase 1 proved byte-identical to
+  # the upstream Docker Hub indexes. All four are complete linux/amd64 + linux/arm64
+  # indexes, so the same reference resolves natively on Intel and Apple Silicon.
+  : "${NODE_IMAGE:=docker.io/midnightntwrk/midnight-node@sha256:caf93d6f9fb3630c906ef3e714c151655377f3d28f907d17545de1870514da2e}"
+  : "${TOOLKIT_IMAGE:=docker.io/midnightntwrk/midnight-node-toolkit@sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f}"
+  : "${PROOF_IMAGE:=ghcr.io/effectstream/midnight-proof-server@sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9}"
+  : "${AA_PROOF_IMAGE:=ghcr.io/effectstream/midnight-proof-server@sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1}"
+  # Reported here, made fatal by assert_image_pins() in whatever is about to start
+  # containers — so a bad override cannot stop `./down.sh` from cleaning up.
+  require_digest_ref NODE_IMAGE TOOLKIT_IMAGE PROOF_IMAGE AA_PROOF_IMAGE \
+    || warn "external runtime images must be digest-pinned; ./up.sh will refuse to start until this is fixed"
+  if [[ "$PROOF_IMAGE" == "$AA_PROOF_IMAGE" ]]; then
+    warn "PROOF_IMAGE and AA_PROOF_IMAGE are the same image — plain and experimental are different programs; ./up.sh will refuse to start"
+  fi
+
+  # READABLE VERSION LABELS, display only. Nothing resolves an image from these; they exist
+  # so logs and the toolkit/node compatibility check can say "2.0.0-rc.4" instead of a
+  # 64-character hash. Identity is the digest above, and only the digest.
+  : "${NODE_VERSION:=2.0.0-rc.4}"
+  : "${TOOLKIT_VERSION:=2.0.0-rc.4}"
+  : "${PROOF_VERSION:=9.0.0-rc.5}"
+
+  # ── shared proof-data cache ────────────────────────────────────────────────
+  # One verified immutable generation, populated once by the proof-params-init one-shot and
+  # mounted read-only by both proof-server variants. The digest names the generation and is
+  # both a build arg and a runtime expectation, so there is one reviewable value.
+  : "${PROOF_PARAMS_IMAGE:=midnight-2-offers/proof-params:local}"
+  : "${PROOF_DATA_GENERATION:=b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}"
+  if [[ ! "$PROOF_DATA_GENERATION" =~ ^[0-9a-f]{64}$ ]]; then
+    warn "PROOF_DATA_GENERATION is not a 64-hex content digest (${PROOF_DATA_GENERATION}); ./up.sh will refuse to start"
+  fi
+
+  # The indexer is no longer compiled from source, so there is no INDEXER_REF to fetch and
+  # no INDEXER_PLATFORM to force: the exact 4.4.0-rc.3 executable is downloaded from the
+  # warehouse for the building machine's own architecture. The upstream source commit
+  # survives as provenance only, baked into the image and asserted by
+  # scripts/verify-source-pins.sh against config/artifact-decisions.json.
+  : "${WAREHOUSE_REPO:=effectstream/binaries}"
+  : "${WAREHOUSE_RELEASE:=0.3.120}"
+  : "${INDEXER_VERSION:=4.4.0-rc.3}"
   : "${BIND_ADDR:=127.0.0.1}"
   : "${NODE_HOST_PORT:=9944}"
   : "${INDEXER_HOST_PORT:=8088}"
@@ -70,8 +166,12 @@ load_env() {
   : "${NODE_WAIT_TIMEOUT:=180}"
   : "${INDEXER_WAIT_TIMEOUT:=420}"
   : "${PROOF_WAIT_TIMEOUT:=120}"
-  export COMPOSE_PROJECT_NAME NODE_TAG INDEXER_TAG PROOF_TAG TOOLKIT_TAG \
-         INDEXER_PLATFORM BIND_ADDR NODE_HOST_PORT INDEXER_HOST_PORT PROOF_HOST_PORT \
+  export COMPOSE_PROJECT_NAME \
+         NODE_IMAGE TOOLKIT_IMAGE PROOF_IMAGE AA_PROOF_IMAGE \
+         NODE_VERSION TOOLKIT_VERSION PROOF_VERSION \
+         PROOF_PARAMS_IMAGE PROOF_DATA_GENERATION \
+         WAREHOUSE_REPO WAREHOUSE_RELEASE INDEXER_VERSION \
+         BIND_ADDR NODE_HOST_PORT INDEXER_HOST_PORT PROOF_HOST_PORT \
          NODE_WAIT_TIMEOUT INDEXER_WAIT_TIMEOUT PROOF_WAIT_TIMEOUT
 
   # A host address the scripts can actually connect to. BIND_ADDR may be 0.0.0.0, which
@@ -223,12 +323,18 @@ compose_files() {
   printf '%s\n' "${files[@]}"
 }
 
+# ${arr[@]+"${arr[@]}"}, not "${arr[@]}", for any array that can be EMPTY here.
+# macOS ships bash 3.2, where expanding an empty array as "${arr[@]}" under `set -u` is an
+# "unbound variable" error; bash 4.4+ (every Linux host this repo is developed on) treats it
+# as zero words, so no Linux gate can see the difference. `env_args` is empty on the ordinary
+# clean-clone path — no .env file — which is exactly where this used to abort.
 dc() {
   local files=()
   while IFS= read -r f; do files+=("$f"); done < <(compose_files)
   local env_args=()
   [[ -f "${ENV_FILE:-}" ]] && env_args=(--env-file "$ENV_FILE")
-  docker compose "${env_args[@]}" "${files[@]}" -p "$COMPOSE_PROJECT_NAME" "$@"
+  docker compose ${env_args[@]+"${env_args[@]}"} ${files[@]+"${files[@]}"} \
+    -p "$COMPOSE_PROJECT_NAME" "$@"
 }
 
 require_docker() {

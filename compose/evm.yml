@@ -45,7 +45,7 @@ services:
       context: ../images/umbra-evm
       args:
         UMBRA_REPO: '${UMBRA_REPO:-https://github.com/acedward/UmbraDB.git}'
-        UMBRA_REF: '${UMBRA_REF:-feat/00006-json-rpc-review}'
+        UMBRA_REF: '${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}'
     command: ['npx', 'tsx', 'tools/migrate.ts']
     environment: &pg_env
       PG_URL: 'postgres://${EVM_PG_USER:-umbra}:${EVM_PG_PASSWORD:-umbra}@postgres:5432/${EVM_PG_DB:-umbra}'

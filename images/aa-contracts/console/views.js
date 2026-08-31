@@ -218,7 +218,7 @@ const INFRA_NODES = [
   { id: "batcher",       label: "batcher",                   sub: ":3334 · own container", x: 665, y: 240, w: 155, h: 52 },
   { id: "solver",        label: "cow (solver)",              sub: "observation mode",   x: 840, y: 240, w: 165, h: 52 },
   { id: "proofServer",   label: "proof-server 9.0.0-rc.5",   sub: "plain · zkir-v2 / [v6] + wallet lane", x: 240, y: 356, w: 250, h: 52 },
-  { id: "aaProofServer", label: "proof-server 9.0.0-rc.5_experimental", sub: "zkir-v3 / [v7] — the AA circuits", x: 530, y: 356, w: 290, h: 52 },
+  { id: "aaProofServer", label: "proof-server 9.0.0-rc.5 experimental", sub: "zkir-v3 / [v7] — the AA circuits", x: 530, y: 356, w: 290, h: 52 },
   { id: "postgres",      label: "postgres (shared)",         sub: "offerfiles + umbra · one store", x: 845, y: 356, w: 200, h: 52 },
   // Blockchain
   { id: "node",          label: "midnight-node 2.0.0-rc.4",  sub: ":9944 · the chain",  x: 280, y: 496, w: 240, h: 56 },
@@ -250,8 +250,8 @@ const INFRA_TITLES = {
   kernel: "sync node :9999; contract deployed once per stack, address persisted",
   batcher: ":3334 — own container since the split",
   postgres: "the one store for the stack: the kernel's offer book (db offerfiles) + umbra's index (db umbra); no host port, TCP-level probe",
-  aaProofServer: "9.0.0-rc.5_experimental — zkir-v3 / [v7], the AA circuits",
-  proofServer: "9.0.0-rc.5 plain — zkir-v2 / [v6] + the wallet standard lane",
+  aaProofServer: "9.0.0-rc.5 experimental — zkir-v3 / [v7], the AA circuits; internal only, digest-pinned from the ghcr.io/effectstream mirror",
+  proofServer: "9.0.0-rc.5 plain — zkir-v2 / [v6] + the wallet standard lane; digest-pinned from the ghcr.io/effectstream mirror. Both read ONE verified proof-data generation, read-only",
 };
 const DOT = { up: "#6fd18b", down: "#e57373", absent: "#4a5563" };
 
@@ -385,14 +385,14 @@ const REPOS = [
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
-    role: "offer-files kernel + batcher (profile offerfiles)",
-    ref: "branch 00001-ledger-v9",
-    notes: [["PR #49", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/49", "migrated from v8 to v9"]],
+    role: "offer-files kernel + batcher (profile offerfiles; pinned to the solver-compatible descendant)",
+    ref: "b1420c4… (branch 00001-solver-v9)",
+    notes: [["PR #50", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/50", "includes PR #49's v8→v9 migration plus the solver WS route"]],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel (solver)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/00001-solver-v9",
     role: "COW solver, observation mode (profile solver; the kernel also builds from this branch when the solver runs)",
-    ref: "branch 00001-solver-v9",
+    ref: "pinned b1420c4… from branch 00001-solver-v9",
     notes: [["PR #50", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/50", "the v9 port, pointing into PR #48"]],
   },
   {
@@ -404,7 +404,7 @@ const REPOS = [
   {
     repo: "acedward/UmbraDB", url: "https://github.com/acedward/UmbraDB",
     role: "umbra-evm read-only Ethereum JSON-RPC (profile evm)",
-    ref: "branch feat/00006-json-rpc-review",
+    ref: "pinned 5a463485… from evm-compat",
     notes: [["PR #5", "https://github.com/acedward/UmbraDB/pull/5", "home of the JSON-RPC work — everything merged into it"]],
   },
   {
@@ -416,8 +416,8 @@ const REPOS = [
   {
     repo: "effectstream templates/zswap-da", url: "https://github.com/effectstream/effectstream",
     role: "the swap frontend (profile frontend)",
-    ref: "LOCAL v9-migrated checkout (ZSWAP_DA_TEMPLATE_DIR)",
-    notes: [["", "", "checked 2026-08-26: upstream v-next has @effectstream 0.200.1 but still ledger-v8 + midnight-js 4 — the local checkout is still required"]],
+    ref: "effectstream/effectstream @ 332503c8 + local ledger-v9 patch",
+    notes: [["", "", "upstream templates/zswap-da is fetched at the immutable commit; images/zswap-da/ledger-v9.patch carries the 10 required v9 adaptations, with no copied SPA tree"]],
   },
   {
     repo: "acedward/web-memo", url: "https://github.com/acedward/web-memo",
@@ -440,25 +440,31 @@ const REPOS = [
   {
     repo: "midnightntwrk/midnight-node", muted: true, url: "https://hub.docker.com/r/midnightntwrk/midnight-node",
     role: "the Midnight node (core)",
-    ref: "image 2.0.0-rc.4",
+    ref: "official image 2.0.0-rc.4, multiarch index-digest pinned",
     notes: [],
   },
   {
-    repo: "midnightntwrk/indexer-standalone", muted: true, url: "https://hub.docker.com/r/midnightntwrk/indexer-standalone",
+    repo: "midnightntwrk/midnight-indexer", muted: true, url: "https://github.com/midnightntwrk/midnight-indexer",
     role: "the chain indexer (core; GraphQL v4)",
-    ref: "image 4.4.0-rc.1 (linux/amd64 only)",
-    notes: [],
+    ref: "4.4.0-rc.3 published binary; source 56561b2f recorded as provenance",
+    notes: [["", "", "rc3 fixes rc1's standalone SQLite deadlock; its Docker Hub manifest was not published, so the exact executable is installed from the warehouse instead of compiled"]],
+  },
+  {
+    repo: "effectstream/binaries", url: "https://github.com/effectstream/binaries/releases/tag/0.3.120",
+    role: "binary warehouse — the indexer, both Celestia binaries, and the 21 noarch proof-data payloads",
+    ref: "release 0.3.120, every asset pinned by SHA-256",
+    notes: [["", "", "DEVELOPMENT ONLY and MUTABLE: an asset can be re-uploaded under the same name, so the hashes are the identity, not the URL"]],
   },
   {
     repo: "midnightntwrk/proof-server", muted: true, url: "https://hub.docker.com/r/midnightntwrk/proof-server",
-    role: "proving — TWO instances: plain (kernel's v6 keys) + _experimental (the aa profile's zkir-v3/v7 keys)",
-    ref: "images 9.0.0-rc.5 and 9.0.0-rc.5_experimental",
-    notes: [],
+    role: "proving — TWO different programs: plain (kernel's v6 / zkir-v2 keys) + experimental (the aa profile's zkir-v3 / v7 keys)",
+    ref: "9.0.0-rc.5 plain and 9.0.0-rc.5 experimental, consumed by digest",
+    notes: [["ghcr mirror", "https://github.com/effectstream/binaries", "pulled from ghcr.io/effectstream/midnight-proof-server — an exact byte-for-byte mirror of these upstream indexes, because upstream availability at startup is unreliable"]],
   },
   {
     repo: "midnightntwrk/midnight-node-toolkit", muted: true, url: "https://hub.docker.com/r/midnightntwrk/midnight-node-toolkit",
     role: "wallet funding / address derivation (scripts)",
-    ref: "image 2.0.0-rc.4 (must match the node)",
+    ref: "official image 2.0.0-rc.4, index-digest pinned (must match the node)",
     notes: [],
   },
 ];

@@ -4,9 +4,12 @@
 // authoritative copy lives in the kernel repo at
 // `packages/solver-core/relay-ws-contract.ts`, which is itself a port of the
 // acceptance predicates in the pinned `midnight-intents-swaps` relay
-// (@ d444c8379415093460d83a6ba27536af396f759d). The sink cannot import it:
-// the sink is a demo-repo service and the kernel branch is a separate,
-// unpublished checkout.
+// (@ d444c8379415093460d83a6ba27536af396f759d). The sink cannot import it
+// because its isolated image context does not contain the upstream solver tree.
+// That tree is public and not copied here: the Cow solver image fetches
+// effectstream/zswap-offerfiles-kernel PR #50 directly at exact SHA
+// b1420c4af6ed8b2510140418e5138d282365f9c6. The separate browser SPA is fetched
+// through FRONTEND_REPO/FRONTEND_REF.
 //
 // The canonical JSON bodies are pinned by that package's
 // `fixtures/relay-ws/v1/` + `MANIFEST.sha256`; `wire.test.ts` next to this

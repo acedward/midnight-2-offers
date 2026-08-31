@@ -14,9 +14,9 @@
  *
  * The distinction this check exists to catch: subscribing SUCCEEDS trivially — the server returns
  * a subscription id for any `newHeads` request regardless of whether a block source is wired up.
- * Only the arrival of a header proves the source is real. That is exactly the failure mode the
- * demo stack patches around (see images/umbra-evm/patches/indexer-head-source.ts), so accepting
- * the subscription id as the pass condition would test nothing.
+ * Only the arrival of a header proves the source is real. That is exactly the failure mode fixed
+ * in the pinned upstream Umbra commit, so accepting the subscription id as the pass condition
+ * would test nothing.
  */
 const url = process.argv[2];
 const timeoutSeconds = Number(process.argv[3] ?? "45");

@@ -1,0 +1,21 @@
+// TEST-ONLY fixture contract for the proof-data cache gate (plan 00003, task T3.7).
+//
+// It exists for exactly one reason: to be compiled TWICE by the same pinned compactc —
+// once with the default `zkir` backend (ZKIR v2) and once with `--feature-zkir-v3`
+// (ZKIR v3) — so each rc.5 proof-server variant can be measured on the IR lane it
+// actually implements. It is never deployed, never part of the demo stack, and its
+// generated keys never enter the shared proof-params cache or any OCI layer.
+//
+// Keep it as small as a proving circuit can be. `bump` compiles to k=5 under the v2
+// backend and k=6 under v3, which keeps both prover keys under 60 kB — the point is the
+// interpreter lane, not the circuit.
+
+pragma language_version 0.25;
+
+import CompactStandardLibrary;
+
+export ledger round: Counter;
+
+export circuit bump(): [] {
+  round.increment(1);
+}
