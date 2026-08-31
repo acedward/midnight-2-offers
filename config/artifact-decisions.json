@@ -1,0 +1,409 @@
+{
+  "schemaVersion": "artifact-decision-matrix-v1",
+  "pinsDigest": "2a03b9fbed3e9ded22ae6443e97c1036eca7c1c80ab2b3bd35402529dfbb679a",
+  "frozenOn": "2026-08-31",
+  "note": "Frozen artifact-selection contract for the external runtime dependencies of this demo. Every field here was re-derived from live sources on the freeze date. scripts/verify-artifact-decisions.sh enforces it. Do not edit a digest to make a build pass: re-verify the source first.",
+  "selectionOrder": [
+    "official-oci",
+    "warehouse-binary",
+    "exact-oci-mirror",
+    "source-build"
+  ],
+  "selectionRule": "Prefer a good official multiarch OCI image pinned by index digest. Otherwise use the verified official warehouse binary inside a thin local image. Otherwise mirror an unreliable upstream OCI image exactly into an owner-controlled registry. Only build from source when no reusable executable artifact exists.",
+  "linuxArchitectures": [
+    "amd64",
+    "arm64"
+  ],
+  "forbiddenAssetSubstrings": [
+    "macos",
+    "darwin",
+    "windows",
+    "-standalone_"
+  ],
+  "warehouse": {
+    "repository": "effectstream/binaries",
+    "releaseTag": "0.3.120",
+    "releaseId": 270761136,
+    "assetCount": 97,
+    "catalogCommit": "42c1b610ea1cbafd3eaf4c95901610d79541091b",
+    "catalogPath": "metadata/releases/0.3.120.json",
+    "mutable": true,
+    "distributionTier": "development-only",
+    "warning": "DEVELOPMENT ONLY - NOT FOR PRODUCTION USE. Release 0.3.120 is mutable; verify every downloaded SHA-256 against this file before installation or execution."
+  },
+  "components": [
+    {
+      "id": "midnight-node",
+      "version": "2.0.0-rc.4",
+      "inArtifactNormalizationScope": true,
+      "decision": "official-oci",
+      "reason": "A good official multiarch image already exists for the exact required version. Repacking it under another registry owner would add risk and no value.",
+      "oci": {
+        "repository": "docker.io/midnightntwrk/midnight-node",
+        "readableTag": "2.0.0-rc.4",
+        "indexDigest": "sha256:caf93d6f9fb3630c906ef3e714c151655377f3d28f907d17545de1870514da2e",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "platforms": {
+          "linux/amd64": {
+            "manifestDigest": "sha256:2a36b581a5c6500d7d7a6d8b9ff1b406fb31bc851707e5494eff33cd7b9be368",
+            "configDigest": "sha256:20556986d7734105f801b1655adb89ac037f7f37e3b3c93fad1d0ccddef3deec"
+          },
+          "linux/arm64": {
+            "manifestDigest": "sha256:d1e5fc231147e9af739a1128ae0941119fd59dca7356a2333567bad7b57d7424",
+            "configDigest": "sha256:1217f688f69cfdb430104fe3e3a38570150e39dc5a2e728d8050250012aa2ce9"
+          }
+        }
+      }
+    },
+    {
+      "id": "midnight-node-toolkit",
+      "version": "2.0.0-rc.4",
+      "inArtifactNormalizationScope": true,
+      "decision": "official-oci",
+      "reason": "Same as midnight-node: a good official multiarch image exists for the exact required version.",
+      "oci": {
+        "repository": "docker.io/midnightntwrk/midnight-node-toolkit",
+        "readableTag": "2.0.0-rc.4",
+        "indexDigest": "sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "platforms": {
+          "linux/amd64": {
+            "manifestDigest": "sha256:6243ce223cc297fbff3027bcb36308e5c556378702069044e73ed79a2519f0ed",
+            "configDigest": "sha256:1eb015910b71e307e053a3d5370dc22a1a26e49091f98fdf4ba587448c008edf"
+          },
+          "linux/arm64": {
+            "manifestDigest": "sha256:3224738bc0bdb4d0b4add803721f19362f478ff2d270d4cebfa6fa0a479a1412",
+            "configDigest": "sha256:f34b970d782f43bf53fc7dceccbbf6507999e4edf340fdfb1a6fc2a77f5acc91"
+          }
+        }
+      }
+    },
+    {
+      "id": "indexer-standalone",
+      "version": "4.4.0-rc.3",
+      "inArtifactNormalizationScope": true,
+      "decision": "warehouse-binary",
+      "reason": "No official OCI image is published for indexer-standalone 4.4.0-rc.3, but exact native Linux amd64 and arm64 executables are cataloged. A thin local runtime image is smaller and far cheaper than compiling Rust.",
+      "forbidsRustBuild": true,
+      "forbidsForcedPlatform": true,
+      "sourceProvenance": {
+        "repository": "midnightntwrk/midnight-indexer",
+        "commit": "56561b2f5cf5c6839f678257fc69bed1a8b9ba2c",
+        "role": "provenance-only",
+        "note": "Recorded so a running indexer can prove which upstream commit produced its executable. This is NOT a build instruction: nothing in this repository may clone or compile it."
+      },
+      "assets": {
+        "linux/amd64": {
+          "name": "indexer-standalone-linux-amd64-v4.4.0-rc.3.zip",
+          "assetId": 534359865,
+          "outerSize": 31479027,
+          "outerSha256": "4b5df2ae3ed01f378adfb64d1c0d20d306470f8fba23a36638f937a4486a9434",
+          "format": "zip",
+          "memberPath": "indexer-standalone-linux-amd64-v4.4.0-rc.3",
+          "memberSize": 102715168,
+          "memberSha256": "84b429c3f2eb43372eba4b1fa5739acfdd8c8d472052b281ca6778b2bf4eb17b",
+          "installMode": "0755",
+          "catalogProvenance": "known"
+        },
+        "linux/arm64": {
+          "name": "indexer-standalone-linux-arm64-v4.4.0-rc.3.zip",
+          "assetId": 534360484,
+          "outerSize": 29782570,
+          "outerSha256": "eb44e8493df141d552334399dc25277e76cd500e937bedd5c6ff42a068fb15d0",
+          "format": "zip",
+          "memberPath": "indexer-standalone-linux-arm64-v4.4.0-rc.3",
+          "memberSize": 87921072,
+          "memberSha256": "623539f18bfd9067ba2f70e43546af70277d113e9d1b486263df668c1d585c82",
+          "installMode": "0755",
+          "catalogProvenance": "known"
+        }
+      }
+    },
+    {
+      "id": "celestia-appd",
+      "version": "6.4.10",
+      "inArtifactNormalizationScope": true,
+      "decision": "warehouse-binary",
+      "reason": "The combined local Celestia devnet runtime stays, but both binaries now come from the warehouse by TARGETARCH instead of bypassing it. Linux arm64 IS available - the old 'warehouse lacks Linux arm64' claim is stale and must be removed.",
+      "assets": {
+        "linux/amd64": {
+          "name": "celestia-appd-linux-amd64-v6.4.10.tar.gz",
+          "assetId": 378640596,
+          "outerSize": 198844329,
+          "outerSha256": "fa1826187a91514c6d506e22f1fcce25afbd551b98458caf899801b662a0c8da",
+          "format": "tar.gz",
+          "memberPath": "celestia-appd",
+          "memberSize": 285614960,
+          "memberSha256": null,
+          "installMode": "0755",
+          "catalogProvenance": "legacy-unverified",
+          "officialEquality": {
+            "required": true,
+            "reason": "The catalog row truthfully records legacy-unverified with null source and null member hashes. Those nulls must never be back-filled. Equality is instead proven directly against the official release.",
+            "repository": "celestiaorg/celestia-app",
+            "releaseTag": "v6.4.10",
+            "releaseId": 282480015,
+            "assetName": "celestia-app_Linux_x86_64.tar.gz",
+            "assetId": 349955092,
+            "assetSize": 198844329,
+            "assetSha256": "fa1826187a91514c6d506e22f1fcce25afbd551b98458caf899801b662a0c8da",
+            "checksumsAssetId": 349955278,
+            "checksumsSha256": "960c02e97215f6c802e0992a64458b3f3df04cf2fb56f2f9e802a204a7a9e5c1",
+            "verifiedOn": "2026-08-31"
+          }
+        },
+        "linux/arm64": {
+          "name": "celestia-appd-linux-arm64-v6.4.10.tar.gz",
+          "assetId": 534358491,
+          "outerSize": 180685852,
+          "outerSha256": "52cc9d59f9db5e3d2b7de91008c808f46ba319922db4a39404735b0a5dd6a76b",
+          "format": "tar.gz",
+          "memberPath": "celestia-appd",
+          "memberSize": 262644248,
+          "memberSha256": "bdeec5aefadecd3b517545347110ea1f9e95dfabb5a287979c1a3fb6626db91b",
+          "installMode": "0755",
+          "catalogProvenance": "known",
+          "sourceProvenance": {
+            "repository": "celestiaorg/celestia-app",
+            "commit": "0b26ea0cf0b52406d6004cef4a36e13c30ddca85",
+            "method": "rename-only",
+            "upstreamAssetName": "celestia-app_Linux_arm64.tar.gz",
+            "upstreamAssetId": 349955149
+          }
+        }
+      }
+    },
+    {
+      "id": "celestia-node",
+      "version": "0.28.4",
+      "inArtifactNormalizationScope": true,
+      "decision": "warehouse-binary",
+      "reason": "Same as celestia-appd. Note the installed executable is named 'celestia', not 'celestia-node'.",
+      "assets": {
+        "linux/amd64": {
+          "name": "celestia-node-linux-amd64-v0.28.4.tar.gz",
+          "assetId": 378640594,
+          "outerSize": 78842331,
+          "outerSha256": "bb8b9fd2ac859945fdf2f8c84ba038f75e01be54e56d1a946cbbd4b540f120d9",
+          "format": "tar.gz",
+          "memberPath": "celestia",
+          "memberSize": 190846060,
+          "memberSha256": null,
+          "installMode": "0755",
+          "catalogProvenance": "legacy-unverified",
+          "officialEquality": {
+            "required": true,
+            "reason": "The catalog row truthfully records legacy-unverified with null source and null member hashes. Those nulls must never be back-filled. Equality is instead proven directly against the official release.",
+            "repository": "celestiaorg/celestia-node",
+            "releaseTag": "v0.28.4",
+            "releaseId": 265784044,
+            "assetName": "celestia-node_Linux_x86_64.tar.gz",
+            "assetId": 321528009,
+            "assetSize": 78842331,
+            "assetSha256": "bb8b9fd2ac859945fdf2f8c84ba038f75e01be54e56d1a946cbbd4b540f120d9",
+            "checksumsAssetId": 321528021,
+            "checksumsSha256": "10b730253822bff3be9517f649d56b26ebfa192f23a40b9a0b1b2313a55425ec",
+            "verifiedOn": "2026-08-31"
+          }
+        },
+        "linux/arm64": {
+          "name": "celestia-node-linux-arm64-v0.28.4.tar.gz",
+          "assetId": 534359261,
+          "outerSize": 71184641,
+          "outerSha256": "09eb0505c5265bb08dfd09f14aa397516efd89d7b8f120e06f133d9e387ad50c",
+          "format": "tar.gz",
+          "memberPath": "celestia",
+          "memberSize": 176946394,
+          "memberSha256": "b38154ba4ec52ba784c4fd1e52af41fb9fb78e1a928f20cf9264d837a7ad6d2e",
+          "installMode": "0755",
+          "catalogProvenance": "known",
+          "sourceProvenance": {
+            "repository": "celestiaorg/celestia-node",
+            "commit": "52cd8b52ec031bb9e3b4e476e0b159db2053384c",
+            "method": "rename-only",
+            "upstreamAssetName": "celestia-node_Linux_arm64.tar.gz",
+            "upstreamAssetId": 321528010
+          }
+        }
+      }
+    },
+    {
+      "id": "proof-server-plain",
+      "variant": "plain",
+      "version": "9.0.0-rc.5",
+      "inArtifactNormalizationScope": true,
+      "decision": "exact-oci-mirror",
+      "reason": "Upstream Docker Hub availability for the proof server is unreliable at stack startup. The warehouse ZIP holds ONLY the executable: its ELF program interpreter is the absolute path /nix/store/jms7zxzm7w1whczwny5m3gkgdjghmi2r-glibc-2.42-51/lib/ld-linux-x86-64.so.2 and its RUNPATH is empty, so it cannot run without the 16-directory Nix closure that ships in the official image. Mirroring the complete official index is therefore the only correct and the most compact option.",
+      "upstream": {
+        "repository": "docker.io/midnightntwrk/proof-server",
+        "readableTag": "9.0.0-rc.5",
+        "indexDigest": "sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "platforms": {
+          "linux/amd64": {
+            "manifestDigest": "sha256:e912e04c48a7fdd385f05b313e4b52e0452cd8ccf6368816fa0c2effb5eb2361",
+            "configDigest": "sha256:e463c99ed75105badab68e39a595b830c740f1fedf25ec3b5258f9b32be38b8f",
+            "layerDigests": [
+              "sha256:c105504967db56d5a3846eb60fe8dd0572b42b184dee4de927710b0d3aacdb4b"
+            ],
+            "executableSha256": "189974b9641ee3a9e1c567b1a715a46faa57e67d680e3f1a2231dcfe78bd71c9"
+          },
+          "linux/arm64": {
+            "manifestDigest": "sha256:52056fdd69e86fbe94e11dc7c6243c4251c7d2ccf56390c8e555e01be0508b40",
+            "configDigest": "sha256:988561648ac1b9e26541478be4af557059afbdefc44f395a7af45dcc73c2719e",
+            "layerDigests": [
+              "sha256:e0d6bd40a19deb1f3f96558cb984243dc0f6b32a44e5b59d0425ff023a8429cc"
+            ],
+            "executableSha256": "ed758766c1b69b153b7d2fc1374621b738a64f7968ea97906ec1189fb8ff5646"
+          }
+        }
+      },
+      "destination": {
+        "repository": "ghcr.io/effectstream/midnight-proof-server",
+        "alias": "9.0.0-rc.5-plain-upstream-d96a4d0f",
+        "equalityClass": "exact-mirror",
+        "indexDigest": "sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9",
+        "visibility": "public",
+        "anonymouslyReadable": true,
+        "verifiedOn": "2026-08-31",
+        "note": "Anonymously re-verified end to end on 2026-08-31 (plan 00003 T1.3/T1.5): raw index bytes, both platform manifests, both configs, both layer blobs and both extracted executables are byte-identical to the upstream source, and the destination is pullable with no credential. Full record: images/proof-server-mirror/mirror-manifest.json, re-provable with images/proof-server-mirror/verify-mirror.py.",
+        "mirrorRecord": "images/proof-server-mirror/mirror-manifest.json"
+      },
+      "warehouseAlternativeRejected": {
+        "assetName": "midnight-proof-server-linux-amd64-9.0.0-rc.5.zip",
+        "assetId": 526514405,
+        "reasons": [
+          "Contains exactly one file - the executable - with no Nix runtime closure.",
+          "No linux/arm64 row exists for 9.0.0-rc.5 in the warehouse.",
+          "No experimental-variant row exists at any version."
+        ]
+      }
+    },
+    {
+      "id": "proof-server-experimental",
+      "variant": "experimental",
+      "version": "9.0.0-rc.5",
+      "inArtifactNormalizationScope": true,
+      "decision": "exact-oci-mirror",
+      "reason": "The AA profile compiles with --feature-zkir-v3 and needs the experimental build. Its executable is genuinely different from the plain one, so it keeps a separate name, tag, digest, and compatibility record.",
+      "upstream": {
+        "repository": "docker.io/midnightntwrk/proof-server",
+        "readableTag": "9.0.0-rc.5_experimental",
+        "indexDigest": "sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1",
+        "indexMediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "platforms": {
+          "linux/amd64": {
+            "manifestDigest": "sha256:4db380b1434492896a144a5ffc083a145d30dc68af64e43e5b4813efa118a09a",
+            "configDigest": "sha256:3c437ed72be99f1769e85013a6f92351cae48afe697f6d6ac8fd6477658f297c",
+            "layerDigests": [
+              "sha256:866b7a7dd9e5a59c07d13cef25f4a5e9b2c98f1b6b4bb5a4378ee43cd6a49a74"
+            ],
+            "executableSha256": "913d5e659d7b5de85040860f888e17b00ff6f0504d8f929ce0d4fa62bb902a04"
+          },
+          "linux/arm64": {
+            "manifestDigest": "sha256:83eb40f64db7c8d4a5972352da2bc4a86e4e2963bccdcd96b5116d1a640cf709",
+            "configDigest": "sha256:dc62f60cbe0016ddc768b215a61766931ea5fb13d05180bf7d2ba12a1bd9d574",
+            "layerDigests": [
+              "sha256:2d350f74059e0153e0cbe75df85f51286aa471437c7bf9c6e86083d74080da0b"
+            ],
+            "executableSha256": "4a3d16692e982cc49dd45f3ee37c16977b9ca514305242de5232b22bdcdb7f65"
+          }
+        }
+      },
+      "destination": {
+        "repository": "ghcr.io/effectstream/midnight-proof-server",
+        "alias": "9.0.0-rc.5-experimental-upstream-4f02ca27",
+        "equalityClass": "exact-mirror",
+        "indexDigest": "sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1",
+        "visibility": "public",
+        "anonymouslyReadable": true,
+        "verifiedOn": "2026-08-31",
+        "note": "Anonymously re-verified end to end on 2026-08-31 (plan 00003 T1.3/T1.5): raw index bytes, both platform manifests, both configs, both layer blobs and both extracted executables are byte-identical to the upstream source, and the destination is pullable with no credential. Full record: images/proof-server-mirror/mirror-manifest.json, re-provable with images/proof-server-mirror/verify-mirror.py.",
+        "mirrorRecord": "images/proof-server-mirror/mirror-manifest.json"
+      }
+    }
+  ],
+  "proofData": {
+    "decision": "warehouse-data-generation",
+    "reason": "Proof data is architecture-neutral. It belongs in one persistent verified generation mounted read-only by both proof-server variants, not embedded twice in OCI layers and not fetched independently by two services.",
+    "generation": "b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c",
+    "payloadCount": 21,
+    "fileCount": 32,
+    "selection": "q8b-k0-k19-ledger-static-9",
+    "ledgerStaticSemver": "9.0.0",
+    "cacheNamespace": "9",
+    "compatibleProofServerVersion": "9.0.0-rc.5",
+    "compatibleImageDigests": [
+      "sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9",
+      "sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1"
+    ],
+    "manifestSourceOfTruth": {
+      "note": "Deliberately NOT duplicated here. Exactly one copy of the 21 payload hashes and the 32-file content manifest must exist in this repository, imported by Phase 3 from the audited forge commit below. Duplicating them would create the divergent second source the artifact policy exists to prevent.",
+      "repository": "acedward/midnight-binary-forge",
+      "commit": "546185faefcf91f9d1fe9169041b05394e8e4d29",
+      "paths": [
+        "catalog/proof-data/q8b-v1.json",
+        "catalog/proof-data/q8b-cache-admission-v1.json",
+        "catalog/proof-data/ledger-static-9-member-manifest.json"
+      ],
+      "warehouseMirror": "effectstream/binaries@42c1b610ea1cbafd3eaf4c95901610d79541091b:metadata/contracts/proof-data-q8b-v1.json"
+    },
+    "incompatibleNegative": {
+      "ledgerStaticSemver": "10.0.0",
+      "cacheNamespace": "10",
+      "sourceCommit": "cd652d7f97b34b805bb5f0310ce7434eb883af38",
+      "mustBeRejected": true
+    },
+    "midnightParamSourceMustNotBeGitHub": true
+  },
+  "retainedPaths": [
+    {
+      "id": "compact",
+      "decision": "official-upstream-direct",
+      "inArtifactNormalizationScope": false,
+      "reason": "Compact keeps its direct official LFDT acquisition under the current compatible pin. A Compact 0.34 / runtime 0.19 migration is explicitly out of scope for this project."
+    },
+    {
+      "id": "offerfiles-kernel",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact. Its immutable source build stays exactly as it is."
+    },
+    {
+      "id": "batcher",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact."
+    },
+    {
+      "id": "cow-solver",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact."
+    },
+    {
+      "id": "aa-contracts",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact."
+    },
+    {
+      "id": "zswap-da",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact."
+    },
+    {
+      "id": "umbra-evm",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code with no reusable warehouse runtime artifact."
+    },
+    {
+      "id": "postgres",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "pg_ivm is compiled in; no reusable warehouse runtime artifact exists."
+    }
+  ]
+}

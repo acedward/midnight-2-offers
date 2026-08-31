@@ -20,4 +20,8 @@ node_modules/
 dist/
 build/
 
+# Python bytecode from the helper scripts under scripts/lib/
+__pycache__/
+*.py[cod]
+
 .DS_Store
