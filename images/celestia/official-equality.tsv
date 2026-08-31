@@ -1,0 +1,37 @@
+# WAREHOUSE ARCHIVE -> OFFICIAL CELESTIA RELEASE ASSET: the byte-equality record.
+#
+# Why this file exists. The Celestia archives now come from the effectstream/binaries
+# warehouse, but two of the four rows this stack uses are cataloged `legacy-unverified`
+# with NULL source and NULL member hashes. Those nulls are truthful and must never be
+# back-filled with invented provenance. Instead, equality is proven directly and
+# independently against the official celestiaorg release: the warehouse archive's SHA-256
+# is byte-for-byte the SHA-256 that celestiaorg publishes for the corresponding asset, in
+# both the release-asset API `digest` field and the release's own `checksums.txt`.
+#
+# The build reads this file OFFLINE. The previous Dockerfile downloaded each release's
+# `checksums.txt` at build time, which made a network resource part of the trust decision
+# and let a future release silently change what "verified" meant. These values are pinned.
+#
+# `sha256` below is asserted three ways during the build: it must equal the pinned build
+# argument for that architecture, and both must equal the hash of the archive actually
+# downloaded. A row that is missing, duplicated, or disagreeing fails the build before any
+# binary is extracted.
+#
+# `source_commit` is `-` for a `legacy-unverified` row ON PURPOSE. The catalog does not
+# know it, so neither do we, and the build REJECTS a legacy row that claims one.
+#
+# Verified 2026-08-31 against:
+#   https://github.com/celestiaorg/celestia-app/releases/tag/v6.4.10   (release id 282480015)
+#   https://github.com/celestiaorg/celestia-node/releases/tag/v0.28.4  (release id 265784044)
+#
+# CAUTION — look-alike assets. celestia-app v6.4.10 ALSO publishes
+# `celestia-app-standalone_Linux_x86_64.tar.gz` and `..._Linux_arm64.tar.gz`, which are
+# DIFFERENT artifacts with different checksums. Binding the exact asset name here, and not
+# just a checksum, is what keeps one of those from ever satisfying this record.
+#
+# columns:
+#   warehouse_asset  provenance  official_repo  official_tag  official_asset  official_asset_id  sha256  checksums_sha256  source_commit
+celestia-appd-linux-amd64-v6.4.10.tar.gz  legacy-unverified  celestiaorg/celestia-app   v6.4.10  celestia-app_Linux_x86_64.tar.gz   349955092  fa1826187a91514c6d506e22f1fcce25afbd551b98458caf899801b662a0c8da  960c02e97215f6c802e0992a64458b3f3df04cf2fb56f2f9e802a204a7a9e5c1  -
+celestia-appd-linux-arm64-v6.4.10.tar.gz  known              celestiaorg/celestia-app   v6.4.10  celestia-app_Linux_arm64.tar.gz    349955149  52cc9d59f9db5e3d2b7de91008c808f46ba319922db4a39404735b0a5dd6a76b  960c02e97215f6c802e0992a64458b3f3df04cf2fb56f2f9e802a204a7a9e5c1  0b26ea0cf0b52406d6004cef4a36e13c30ddca85
+celestia-node-linux-amd64-v0.28.4.tar.gz  legacy-unverified  celestiaorg/celestia-node  v0.28.4  celestia-node_Linux_x86_64.tar.gz  321528009  bb8b9fd2ac859945fdf2f8c84ba038f75e01be54e56d1a946cbbd4b540f120d9  10b730253822bff3be9517f649d56b26ebfa192f23a40b9a0b1b2313a55425ec  -
+celestia-node-linux-arm64-v0.28.4.tar.gz  known              celestiaorg/celestia-node  v0.28.4  celestia-node_Linux_arm64.tar.gz   321528010  09eb0505c5265bb08dfd09f14aa397516efd89d7b8f120e06f133d9e387ad50c  10b730253822bff3be9517f649d56b26ebfa192f23a40b9a0b1b2313a55425ec  52cd8b52ec031bb9e3b4e476e0b159db2053384c
