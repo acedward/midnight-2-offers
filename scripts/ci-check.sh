@@ -75,7 +75,11 @@ PROFILE_ARGS=()
 case "$PROFILE_MODE" in
   all)  PROFILE_ARGS=(--all) ;;
   core) PROFILE_ARGS=() ;;
-  list) PROFILE_ARGS=("${WITH_LIST[@]}") ;;
+  # `list` implies at least one --with, so WITH_LIST is non-empty here, but it is expanded
+  # with the ${arr[@]+…} guard anyway: macOS bash 3.2 turns "${arr[@]}" on an empty array
+  # into an `unbound variable` error under `set -u`, and this file already relies on that
+  # guard for PROFILE_ARGS in step 2 below.
+  list) PROFILE_ARGS=(${WITH_LIST[@]+"${WITH_LIST[@]}"}) ;;
 esac
 
 require_docker

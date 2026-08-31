@@ -64,7 +64,9 @@ for combo in "${COMBOS[@]}"; do
   render="$(mktemp)"
   # `--profile fund` so the toolkit-backed one-shot is rendered too; it is otherwise
   # filtered out and its image pin would never be checked.
-  if ! docker compose --env-file "$EMPTY_ENV" --profile fund "${files[@]}" config --format json \
+  # ${files[@]+…} guards the empty case: macOS bash 3.2 errors on "${files[@]}" under
+  # `set -u` when the array has no elements. Same note as lib/common.sh's dc().
+  if ! docker compose --env-file "$EMPTY_ENV" --profile fund ${files[@]+"${files[@]}"} config --format json \
        >"$render" 2>"$render.err"; then
     err "compose could not render: ${combo}"
     sed 's/^/      /' "$render.err" >&2

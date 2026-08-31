@@ -229,8 +229,10 @@ reject() { # label dir target [build-arg ...]
   local args=() a out rc
   for a in "$@"; do args+=(--build-arg "$a"); done
   set +e
+  # The build args are optional, so `args` can be empty; ${args[@]+"${args[@]}"} rather than
+  # "${args[@]}" because macOS bash 3.2 calls the latter an unbound variable under `set -u`.
   out="$(docker build --platform "$PLATFORM" --target "$target" \
-          "${args[@]}" -t "midnight-2-offers/artifact-fetch-negative:${TAG_PREFIX}" \
+          ${args[@]+"${args[@]}"} -t "midnight-2-offers/artifact-fetch-negative:${TAG_PREFIX}" \
           "$dir" 2>&1)"
   rc=$?
   set -e

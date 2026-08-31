@@ -323,12 +323,18 @@ compose_files() {
   printf '%s\n' "${files[@]}"
 }
 
+# ${arr[@]+"${arr[@]}"}, not "${arr[@]}", for any array that can be EMPTY here.
+# macOS ships bash 3.2, where expanding an empty array as "${arr[@]}" under `set -u` is an
+# "unbound variable" error; bash 4.4+ (every Linux host this repo is developed on) treats it
+# as zero words, so no Linux gate can see the difference. `env_args` is empty on the ordinary
+# clean-clone path — no .env file — which is exactly where this used to abort.
 dc() {
   local files=()
   while IFS= read -r f; do files+=("$f"); done < <(compose_files)
   local env_args=()
   [[ -f "${ENV_FILE:-}" ]] && env_args=(--env-file "$ENV_FILE")
-  docker compose "${env_args[@]}" "${files[@]}" -p "$COMPOSE_PROJECT_NAME" "$@"
+  docker compose ${env_args[@]+"${env_args[@]}"} ${files[@]+"${files[@]}"} \
+    -p "$COMPOSE_PROJECT_NAME" "$@"
 }
 
 require_docker() {
