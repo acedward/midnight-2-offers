@@ -22,8 +22,11 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 load_env
 
 E2E_IMAGE="${AA_E2E_IMAGE:-midnight-2-offers/aa-contracts:e2e}"
-COMPOSE=(docker compose --env-file "${ENV_FILE:-$REPO_ROOT/.env}"
-  -f "$REPO_ROOT/compose/core.yml" -f "$REPO_ROOT/compose/aa.yml")
+# --env-file only when the file exists — compose hard-fails on a missing file,
+# and the clean-clone path legitimately has none (defaults cover every value).
+COMPOSE=(docker compose)
+[[ -f "${ENV_FILE:-}" ]] && COMPOSE+=(--env-file "$ENV_FILE")
+COMPOSE+=(-f "$REPO_ROOT/compose/core.yml" -f "$REPO_ROOT/compose/aa.yml")
 
 # The deployed-contracts artifact must exist (aa profile brought up on THIS chain).
 if ! "${COMPOSE[@]}" run --rm --no-deps --entrypoint test aa-deploy -f /aa/out/aa-contracts.json 2>/dev/null; then
