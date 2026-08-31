@@ -35,7 +35,7 @@
 # assets (the `compact` version manager does not publish the 0.33 line — see
 # the kernel repo's infra/compact-toolchain.Dockerfile, which this stage
 # mirrors). No --feature-zkir-v3: v2 zkir emits verifier-key[v6], which the
-# PLAIN proof-server:9.0.0-rc.5 proves.
+# PLAIN 9.0.0-rc.5 proof server (the core one) proves.
 
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
 ARG KERNEL_REF=b1420c4af6ed8b2510140418e5138d282365f9c6

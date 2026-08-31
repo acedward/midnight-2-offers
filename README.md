@@ -15,13 +15,14 @@ consumed as-is with no code changes of ours.
 
 | Component | Profile | Endpoint (default) | Source · ref · note |
 |---|---|---|---|
-| Midnight node | `core` | RPC `http://127.0.0.1:9944` (HTTP+WS) | midnightntwrk/midnight-node *(upstream)* — image `2.0.0-rc.4`, `CFG_PRESET=dev` |
-| Indexer | `core` | GraphQL v4 `http://127.0.0.1:8088/api/v4/graphql` (+`/ws`; `/api/v3` aliases v4) | [midnightntwrk/midnight-indexer](https://github.com/midnightntwrk/midnight-indexer) *(upstream)* — official `4.4.0-rc.3` source pinned at `56561b2f…` and built locally because its Docker Hub manifest was not published; includes the upstream standalone SQLite deadlock fix |
-| Proof server ×2 | `core` + `aa` | plain `http://127.0.0.1:6300`; `_experimental` internal-only | midnightntwrk/proof-server *(upstream)* — `9.0.0-rc.5` (kernel's v6 keys) + `9.0.0-rc.5_experimental` (the aa profile's zkir-v3/v7 keys) |
+| Midnight node | `core` | RPC `http://127.0.0.1:9944` (HTTP+WS) | midnightntwrk/midnight-node *(upstream)* — official image `2.0.0-rc.4` pinned by multiarch index digest, `CFG_PRESET=dev` |
+| Indexer | `core` | GraphQL v4 `http://127.0.0.1:8088/api/v4/graphql` (+`/ws`; `/api/v3` aliases v4) | official `4.4.0-rc.3` executable from the [`effectstream/binaries@0.3.120`](https://github.com/effectstream/binaries/releases/tag/0.3.120) warehouse *(development-only, mutable — pinned by SHA-256)*, installed into a thin local image: **no Rust build**, native `amd64` **and** `arm64`. Built upstream from [midnightntwrk/midnight-indexer](https://github.com/midnightntwrk/midnight-indexer) `56561b2f…`, recorded in the image as provenance; includes the standalone SQLite deadlock fix missing from rc1 |
+| Proof server ×2 | `core` + `aa` | plain `http://127.0.0.1:6300`; experimental internal-only | `9.0.0-rc.5` plain (kernel's v6 / zkir-v2 keys) + `9.0.0-rc.5` experimental (the aa profile's zkir-v3 / v7 keys), pulled from `ghcr.io/effectstream/midnight-proof-server` by digest. Exact byte-for-byte mirrors of the upstream `midnightntwrk/proof-server` indexes *(upstream availability at startup is unreliable; the bytes are identical — `images/proof-server-mirror/`)*. Two **different programs**, separately pinned |
+| Proof data (shared cache) | `core` | internal — one named `proof-params` volume | SRS K0-K19 + Ledger-static `9.0.0`, 21 noarch payloads from the same `effectstream/binaries@0.3.120` warehouse. A one-shot initializer verifies every hash and activates ONE immutable generation; both proof servers mount it **read-only**. Not in any image layer, never duplicated per architecture or variant |
 | PostgreSQL (shared store) | `core` | internal only — `docker compose … exec postgres psql -U offerfiles offerfiles` | `postgres:17-alpine` *(upstream)* + `pg_ivm` 1.11 compiled in (`images/postgres/`). ONE server for the stack: db `offerfiles` = the kernel's offer book, db `umbra` = umbra-evm's index |
-| Wallet tooling | `core` | `scripts/fund-wallet.sh`, `verify-wallets.sh` | midnightntwrk/midnight-node-toolkit *(upstream)* — image `2.0.0-rc.4` (must match the node) |
+| Wallet tooling | `core` | `scripts/fund-wallet.sh`, `verify-wallets.sh` | midnightntwrk/midnight-node-toolkit *(upstream)* — official image `2.0.0-rc.4` pinned by multiarch index digest (must match the node) |
 | umbra-evm (read-only eth JSON-RPC) | `evm` | HTTP `http://127.0.0.1:8545` (chainId 2400) · WS `ws://127.0.0.1:10021` | [acedward/UmbraDB](https://github.com/acedward/UmbraDB) — pinned `5a463485…` from `evm-compat`; [PR #5](https://github.com/acedward/UmbraDB/pull/5) is the home of the JSON-RPC work |
-| Celestia DA devnet | `offerfiles` | DA JSON-RPC `http://127.0.0.1:26658` (bearer token: `scripts/celestia-token.sh`) | celestiaorg release binaries *(upstream)* — app `6.4.10` + node `0.28.4`, one container |
+| Celestia DA devnet | `offerfiles` | DA JSON-RPC `http://127.0.0.1:26658` (bearer token: `scripts/celestia-token.sh`) | app `6.4.10` + node `0.28.4` from the same `effectstream/binaries@0.3.120` warehouse, each archive byte-equal to the official celestiaorg release asset (`images/celestia/official-equality.tsv`); one container, native `amd64` **and** `arm64` |
 | Offer-files kernel (sync node) | `offerfiles` | API `http://127.0.0.1:9999` | [effectstream/zswap-offerfiles-kernel](https://github.com/effectstream/zswap-offerfiles-kernel) — pinned `b1420c4…` from [PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50), which includes [PR #49](https://github.com/effectstream/zswap-offerfiles-kernel/pull/49)'s v9 migration plus the solver's offer-update WS route. Contract deploys ONCE per stack (`offerfiles-deploy` one-shot, address persisted) |
 | Offer-files batcher | `offerfiles` | `http://127.0.0.1:3334` | same repo/branch — its own container, restarts independently of the kernel |
 | COW solver (observation mode) + sink | `solver` | feed page `http://127.0.0.1:10800` (relay WS `:10801`) | [effectstream/zswap-offerfiles-kernel PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50) — fetched directly at build time at exact SHA `b1420c4af6ed8b2510140418e5138d282365f9c6` (`SOLVER_REF`); **not vendored**; generated contract artifacts reuse the service-built kernel image |
@@ -35,17 +36,54 @@ consumed as-is with no code changes of ours.
 | dusk-wallet | (related work) | — | [acedward/dusk-wallet](https://github.com/acedward/dusk-wallet/tree/00001-utxo-pinning) — branch `00001-utxo-pinning` · PRIVATE repo |
 
 Internal-only ports (never published): `postgres:5432` (the one shared store), celestia consensus `26657`/`9090`,
-`aa-proof-server:6300`. No service addresses another by a host port — everything internal runs
+`aa-proof-server:6300` (exactly one proof host port exists, core's plain one). No service addresses
+another by a host port — everything internal runs
 on the compose network — so remapping host ports cannot break the stack, which is what makes
 [two stacks on one machine](docs/OPERATIONS.md#running-two-stacks-at-once) possible.
 `BIND_ADDR` (default `127.0.0.1`) is the interface published ports bind to.
 
+### How each external artifact is chosen
+
+One rule decides every row above, applied in order — so you can tell at a glance *why* a
+component is an image, a downloaded binary, a mirror or a build:
+
+1. **A good official OCI image exists** → use it, pinned by its complete multiarch **digest**
+   (node, toolkit). We do not repack a good official image just to put everything under one
+   registry owner.
+2. **No image, but the exact official binary is published** → download it from the
+   `effectstream/binaries` warehouse by `TARGETARCH` into a thin local image, verifying the
+   archive's and the executable's SHA-256 (indexer, both Celestia binaries). No compiler.
+3. **An official image exists but is unreliable to pull** → mirror the complete multiarch
+   index into a registry we control and consume it by destination digest (both proof-server
+   variants). An exact mirror keeps the upstream bytes; anything that differs would have to
+   carry an explicit Effectstream revision marker instead.
+4. **Only source exists** → an immutable source build pinned to a full commit SHA (kernel,
+   batcher, solver, AA, Umbra, frontend, `pg_ivm`).
+
+**Identity is the digest or the SHA-256, never the tag or the URL.** A tag can be repointed at
+different bytes without anything here changing, so overrides that supply a tag are rejected
+rather than accepted as a weaker pin. The frozen decisions live in
+[`config/artifact-decisions.json`](config/artifact-decisions.json) with the reasoning in
+[docs/ARTIFACT-DECISIONS.md](docs/ARTIFACT-DECISIONS.md); four offline checks
+(`verify-artifact-decisions.sh`, `verify-artifact-fetch.sh --static`,
+`verify-mirror.py --level offline`, `verify-compose-pins.sh`) keep the matrix, the image
+build pins, the mirror record and the rendered Compose configuration agreeing with each other.
+
+> **The binary warehouse is DEVELOPMENT-ONLY and MUTABLE.** `effectstream/binaries@0.3.120`
+> can re-publish an asset under the same name, so the pinned hashes — not the URL and not the
+> version string — are the identity. A byte change fails the build before anything is
+> installed, which is intended, but it does mean a build can start failing with no change here.
+
 ## Quickstart
 
 ```bash
-cp .env.example .env       # ports/tags; defaults are the Midnight-standard ports
+cp .env.example .env       # ports + pinned image digests; defaults are the Midnight-standard ports
 ./up.sh --all              # everything; blocks until genuinely usable
 ```
+
+The **first** bring-up (and the first after `./down.sh -v`) also downloads and verifies the
+~223 MB shared proof-data generation once, about a minute. Every later run finds it already
+active. The proof servers deliberately cannot start until that check passes.
 
 Open the console at **http://127.0.0.1:10700** when it is up.
 
@@ -67,8 +105,10 @@ ENV_FILE=.env.test ./up.sh --all      # …for a second stack beside the first
 ./scripts/fund-wallet.sh --all-demo   # fund the demo-* wallets (10M NIGHT + DUST each)
 ./scripts/aa-e2e.sh                   # end-to-end of the EVM-signed AA path
 ./down.sh                             # stop, keep the chain (./up.sh resumes)
-./down.sh -v                          # FULL RESET — wipes every chain-keyed volume
+./down.sh -v                          # FULL RESET — wipes every volume, cache included
 ./scripts/ci-check.sh                 # one command: free ports → up --all → fund → verify → down -v
+./scripts/verify-artifact-decisions.sh --self-test   # offline: the frozen artifact contract
+./scripts/verify-compose-pins.sh --self-test         # offline: rendered compose really asks for it
 ```
 
 What `up.sh` actually waits on (and why the container healthchecks are not enough), verify
@@ -126,7 +166,7 @@ scripts/    funding, verification, port-picking, and the ci-check entrypoint
 wallets/    wallets.json — the dev wallets this stack knows about
 tools/      standalone helpers (mnemonic-wallets/ — mnemonic → Lace address derivation)
 vendor/     pinned source absent from public upstream (zswap-da ledger-v9 migration)
-config/     files mounted into containers (e.g. umbra-evm watch.json)
+config/     artifact-decisions.json (the frozen artifact contract) + files mounted into containers
 docs/       the long-form write-ups this README links to
-.env.example  every host port and image tag, with the Midnight-standard defaults
+.env.example  every host port and pinned image digest, with the Midnight-standard defaults
 ```

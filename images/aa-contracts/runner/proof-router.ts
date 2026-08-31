@@ -1,7 +1,7 @@
 // proof-router.ts — a routing shim between two proof servers, born of a
 // measured incompatibility (master plan T7.5, e2e runs 2–9): the wallet-SDK's
 // proving bridge emits a CONSTANT standard-lane zswap-cc[v1] /check on every
-// debit-shaped Manager `execute` tx, and the _experimental server's v3
+// debit-shaped Manager `execute` tx, and the experimental server's v3
 // zswap-cc build rejects its input layout ("Inputs did not match alignment:
 // b21b32b32b16b1b32") — while that same server proves the v7 contract circuits
 // and dust just fine. Everything forwards to the experimental server EXCEPT

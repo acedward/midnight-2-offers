@@ -12,8 +12,10 @@
 # `--feature-zkir-v3`, and that flag is load-bearing: the Manager is
 # keccak/EIP-712-heavy and its measured k=19 is a v3-lane artifact. v3 zkir emits
 # verifier-key[v7], which the PLAIN proof-server 9.0.0-rc.5 cannot prove calls
-# against — which is why compose/aa.yml ships its own INTERNAL
-# `proof-server:9.0.0-rc.5_experimental` instead of flipping the core PROOF_TAG.
+# against — which is why compose/aa.yml ships its own INTERNAL experimental
+# 9.0.0-rc.5 proof server (AA_PROOF_IMAGE, digest-pinned) instead of repointing
+# the whole stack's proving at one variant. The two builds are different
+# programs, not two tags on one image.
 #
 # KEYS. Key generation is the expensive step (~155 s, ~1.2 GB; `execute.prover`
 # alone is 1.1 GB). Bring-up DEPLOYS the Manager but never CALLS it, and a deploy

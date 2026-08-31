@@ -243,7 +243,7 @@ async function join(walletResult: any, name: string, address: string, witnesses:
       indexer: midnightNetworkConfig.indexer,
       indexerWS: midnightNetworkConfig.indexerWS,
       node: midnightNetworkConfig.node,
-      // The AA contracts prove on the _experimental server (zkir-v3 / [v7]
+      // The AA contracts prove on the experimental server (zkir-v3 / [v7]
       // keys); the offer-files contract is a plain zkir-v2 / [v6] artifact and
       // proves on the PLAIN server — the caller picks.
       proofServer: proofServer ?? midnightNetworkConfig.proofServer,

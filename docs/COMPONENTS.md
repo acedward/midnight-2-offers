@@ -40,9 +40,9 @@ bring-up, then proves two mint calls (one shielded colour, one unshielded) and w
 receipt — addresses, colours, tx ids — to the `aa-out` volume as `aa-contracts.json`
 (`./scripts/verify-aa.sh` reads it back; `verify.sh` gains an `aa` section). Two design
 points worth knowing: the contracts are compiled with `--feature-zkir-v3` (the Manager is
-keccak/EIP-712-heavy), so the profile runs its **own internal
-`proof-server:9.0.0-rc.5_experimental`** next to the plain core one rather than flipping
-`PROOF_TAG` for everything; and the Manager's 1.1 GB `execute.prover` key is deliberately
+keccak/EIP-712-heavy), so the profile runs its **own internal experimental proof server**
+(`AA_PROOF_IMAGE`) next to the plain core one rather than repointing the whole stack's
+proving at one variant; and the Manager's 1.1 GB `execute.prover` key is deliberately
 NOT in the image — deploying needs only verifier keys, and bring-up never calls `execute`.
 The one-shot is idempotent across `up` runs and its state dies with `down.sh -v`.
 
@@ -112,6 +112,59 @@ is when a fresh deploy is correct.
 
 Practical consequences: `kernel` and `batcher` restart independently of each other, and
 `docker compose logs batcher` is the batcher's log alone rather than six processes interleaved.
+
+## The two proof servers, and the one cache they share (profile `core` + `aa`)
+
+**They are two different programs, not two tags on one image.** `9.0.0-rc.5` plain proves the
+zkir-v2 / `[v6]` lane — the offer-files kernel's circuits and the wallet's standard lane. The
+`9.0.0-rc.5` experimental build additionally carries a zkir-v3 interpreter, which the AA
+contracts need because they are compiled `--feature-zkir-v3`. Their Linux-amd64 executables
+hash to `189974b9…` and `913d5e65…` respectively and they share no manifest, config or layer
+digest at any platform, so each is pinned to its own immutable index digest and the scripts
+refuse to start if the two references are equal.
+
+> `GET /proof-versions` answers `["V2","V3"]` on **both** builds — it reports the proof wire
+> format, not the compiler lane, so it cannot be used to tell them apart. The reliable
+> discriminator is behavioural: feed the plain server a zkir-v3-compiled circuit and it
+> refuses it (`images/proof-params/tests/zkir-fixture/` does exactly that as a control).
+
+**Where the images come from.** Upstream `midnightntwrk/proof-server` availability at stack
+startup is this stack's most frequent cold-start failure, so both variants are pulled from
+`ghcr.io/effectstream/midnight-proof-server` instead. Those are **exact mirrors**: raw index
+bytes, both platform manifests, both configs, both layer blobs and both extracted executables
+are byte-identical to the upstream indexes, re-provable at any time with
+`images/proof-server-mirror/verify-mirror.py`. Anonymous pull, no login. Note that the
+standalone proof-server ZIP in the binary warehouse is *not* a usable substitute: it contains
+exactly one file, and that executable's ELF interpreter is an absolute `/nix/store/…` path
+with an empty `RUNPATH`, so without the 16-directory Nix closure that ships inside the
+official image it cannot exec at all. Mirroring the complete image is the only correct option.
+
+**One verified proof-data generation, mounted read-only by both.** Proof data — the SRS
+objects K0-K19 plus Ledger-static `9.0.0` — is architecture-neutral and identical for both
+variants, so it lives in exactly one place: a named `proof-params` volume, populated once by
+the `proof-params-init` one-shot in `compose/core.yml`.
+
+* It downloads exactly the 21 published noarch payloads from the warehouse, verifies every
+  outer and member SHA-256 against the reviewed admission manifest, stages on the same
+  filesystem, fsyncs, and **atomically** activates `generations/<content-digest>`. A failure
+  leaves the previous complete generation untouched; a partial tree is never observable.
+* `proof-params-init` is the **only** writer. Both proof servers mount the volume `:ro` and
+  point `MIDNIGHT_PP` at the *fixed generation directory* — never at the volume root and
+  never at the `current` symlink, so a pointer swap cannot move a running server onto
+  different bytes. A server's write attempt fails with `EROFS`.
+* Both servers gate on `service_completed_successfully`, so **a proof server cannot start
+  before the cache verifies.** That is a deliberate behaviour change: previously each server
+  fetched its own ~223 MB from `https://srs.midnight.network/` on first proof.
+* The payload bytes are in the volume and in no OCI layer — the initializer image adds about
+  230 kB over its pinned Python base. `MIDNIGHT_PARAM_SOURCE` remains the official SRS host
+  as a fallback; the development-only GitHub warehouse is explicitly not an admissible
+  parameter source and the initializer refuses one.
+* A repeat run against an already-active generation downloads nothing and returns `NOOP` in
+  a few seconds, so container recreates are free. `./down.sh` keeps the volume; `./down.sh -v`
+  is a project-wide wipe and removes it, costing one re-download on the next `up`.
+
+Boolean proof-server environment knobs (`MIDNIGHT_PROOF_SERVER_NO_FETCH_PARAMS` and friends)
+require the **literal** strings `true` / `false` on rc.5; `=1` aborts the server at startup.
 
 ## umbra-evm — read-only Ethereum JSON-RPC (profile `evm`)
 
@@ -349,11 +402,23 @@ fetch-by-height — so it is verified before the kernel exists rather than durin
 
 ### Notes worth knowing
 
-- **The image is ~860 MB and built from upstream release binaries**, native on both `arm64` and
-  `amd64` (no `platform:` pin, unlike the indexer). The npm package the kernel uses mirrors only
-  `linux-amd64`, which would have meant QEMU-emulating a block-a-second consensus node on Apple
-  Silicon; those mirrored tarballs are byte-identical to celestiaorg's own release assets, which
-  *do* include `Linux_arm64`, so this fetches from upstream at the same pinned versions.
+- **The image is ~860 MB and built from published release binaries**, native on both `arm64` and
+  `amd64` — and so is the indexer now, so neither image carries a `platform:` pin any more. Both
+  archives come from the `effectstream/binaries@0.3.120` warehouse by `TARGETARCH`, and each one
+  is byte-equal to the corresponding official celestiaorg release asset. That equality is pinned
+  offline in `images/celestia/official-equality.tsv` — asset name, official release/tag/asset id,
+  and both the release-asset checksum and the `checksums.txt` checksum — rather than re-fetched
+  from a release's `checksums.txt` during the build, which used to make a mutable network
+  resource part of the trust decision.
+  The warehouse is **development-only and mutable**: an asset can be re-uploaded under the same
+  name, so those SHA-256 values are the artifact's identity and a byte change fails the build
+  before anything is extracted.
+  Two of the four rows are cataloged `legacy-unverified` with null source and null member hashes.
+  That is truthful and is left alone: their equality is proven directly against the official
+  release instead, and the build **rejects** a legacy row that tries to claim a source commit.
+  (An earlier version of this image went straight to celestiaorg because the npm package the
+  kernel uses mirrors only `linux-amd64` — that claim no longer applies to the warehouse, which
+  publishes `linux-arm64` at both of these versions.)
 - **The first bring-up prints `pull access denied`** for the local-only image tag, exactly as the
   umbra-evm one does, then builds.
 - **State survives `./down.sh` and dies with `./down.sh -v`**, like the node and indexer volumes.

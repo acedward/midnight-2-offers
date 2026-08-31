@@ -23,7 +23,10 @@ set -euo pipefail
 
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NETWORK="undeployed"
-TOOLKIT_IMAGE="${TOOLKIT_IMAGE:-midnightntwrk/midnight-node-toolkit:${TOOLKIT_TAG:-2.0.0-rc.4}}"
+# Digest-pinned like every other external runtime image in this repo (the readable version
+# is 2.0.0-rc.4). This helper is standalone — it does not source scripts/lib/common.sh — so
+# the default is spelled out here rather than composed from a tag.
+TOOLKIT_IMAGE="${TOOLKIT_IMAGE:-docker.io/midnightntwrk/midnight-node-toolkit@sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

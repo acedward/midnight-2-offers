@@ -12,7 +12,7 @@
 #   addresses    manager + minter addresses present and hex-shaped.
 #   minted       both mint entries carry a 64-hex colour and a transaction id — the
 #                actual "we can mint a token" evidence, proven through the profile's
-#                own _experimental proof server (zkir-v3 verifier keys).
+#                own experimental proof server (zkir-v3 verifier keys).
 #
 # The artifact is read via `docker compose run` against the same image, mounting the
 # same volume — no host jq needed (the image ships bun).

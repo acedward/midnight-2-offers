@@ -27,7 +27,7 @@ healthy":
 |---|---|---|
 | node | RPC answers `chain_getBlockHash[1]`, **and** finalized height ≥ 1 | The node answers RPC several blocks before finality moves off genesis, and in that window the toolkit refuses to build transactions (`OnlyGenesisFinalized`) |
 | indexer | GraphQL v4 answers a block query | Its container healthcheck only proves the supervisor is alive — the entrypoint touches the running-file *before* launching the indexer |
-| proof-server | the port accepts a TCP connection | The image has no curl/wget, and its bash sits behind a per-tag `/nix/store/<hash>…` path |
+| proof-server | the port accepts a TCP connection | The image has no curl/wget, and its bash sits behind a per-build `/nix/store/<hash>…` path. Compose has already gated it on the proof-data cache verifying, so reaching this point means the shared generation is active |
 | evm-rpc (`--with evm`) | `eth_chainId` answers over HTTP, **and** the WS port completes a `101 Switching Protocols` handshake | A TCP probe of a *published* port proves nothing: docker's port proxy accepts the connection before it dials the container, so `nc -z` reports a working endpoint that refuses every client |
 
 ## Verifying and tearing down
@@ -40,7 +40,8 @@ healthy":
 ./verify.sh --celestia   # require the celestia section — fail if the profile is not up
 ./verify.sh --no-celestia # skip the celestia section even when it is up
 ./down.sh                # stop, keep the chain — ./up.sh resumes it
-./down.sh -v             # FULL RESET: wipes node, indexer, postgres, celestia and cache volumes
+./down.sh -v             # FULL RESET: wipes every project volume — node, indexer, postgres,
+                         #             celestia, toolkit cache AND the proof-data cache
 ```
 
 Each optional section runs automatically when that profile's containers exist, so `./verify.sh`
@@ -79,8 +80,16 @@ What it removes, and what each piece of state is keyed to:
 | Celestia chain + validator keyring + bridge store | volume `<project>_celestia-data` | its own Celestia genesis |
 | the DA auth token + handoff file | volume `<project>_celestia-auth` | the bridge store above |
 | toolkit fetch/ledger cache | host directory `.cache/<project>/` | that same Midnight genesis |
+| the verified proof-data generation | volume `<project>_proof-params` | **nothing** — see below |
 
-They must go together. A fresh node genesis beside a surviving indexer database gives you an
+The proof-data cache is the odd one out. Its contents are published SRS and Ledger-static
+payloads that have nothing to do with this chain's genesis, so plain `./down.sh` keeps it and
+the next bring-up reuses it for free. `-v` removes it anyway, because a project-wide wipe that
+leaves something behind is not a wipe and the "nothing left behind" assertion would fail. The
+only cost is one ~223 MB re-download (~60 s) the next time the stack comes up — and the proof
+servers will not start until that download verifies, by design.
+
+Everything else must go together. A fresh node genesis beside a surviving indexer database gives you an
 indexer serving a chain that no longer exists; a surviving toolkit cache makes the next funding
 run fail in a way that looks nothing like "stale cache"; and an offer spans **both** chains, so a
 Celestia history describing offers against a Midnight genesis that no longer exists is worse than
