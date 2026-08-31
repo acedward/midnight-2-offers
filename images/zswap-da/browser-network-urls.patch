@@ -1,0 +1,25 @@
+--- a/src/services/api.ts
++++ b/src/services/api.ts
+@@ -283,6 +283,22 @@ export const api = {
+     const res = await fetch(`${V1}/midnight/config`);
+     const data = await res.json();
+     if (!res.ok) throw new Error(data.message ?? JSON.stringify(data));
++    // The kernel reports the URIs it dials itself; inside Docker Compose those
++    // carry service hostnames (indexer, proof-server) that only resolve on the
++    // compose network. This code runs in the page, so a bare (dot-less,
++    // non-localhost) hostname is re-pointed at the page's own host — scheme,
++    // port and path are kept, and the stack publishes each service on that
++    // same host port. Fixed here so every consumer of this config (wallet,
++    // contract client, take-offer flow) gets browser-reachable URIs.
++    const pageHost = typeof location !== 'undefined' ? location.hostname : '127.0.0.1';
++    for (const key of Object.keys(data)) {
++      const value = (data as Record<string, unknown>)[key];
++      if (!key.endsWith('Uri') || typeof value !== 'string') continue;
++      const m = value.match(/^(\w+:\/\/)([^/:]+)(.*)$/);
++      if (m && !m[2].includes('.') && m[2] !== 'localhost') {
++        (data as Record<string, unknown>)[key] = `${m[1]}${pageHost}${m[3]}`;
++      }
++    }
+     return data;
+   },
+ 
