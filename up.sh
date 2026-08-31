@@ -108,6 +108,9 @@ done
 export PROFILES
 require_docker
 load_env
+# Nothing starts against a weak identity. load_env only warns (so `./down.sh` can always
+# clean up); this is the fatal form, and it runs before a single container is created.
+assert_image_pins
 
 # ── `--with` is ADDITIVE (question Q12) ──────────────────────────────────────
 #
@@ -138,7 +141,13 @@ done < <(running_profiles)
 export PROFILES
 
 log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
-info "images   node=${NODE_TAG}  indexer=${INDEXER_REF:0:12}… (${INDEXER_PLATFORM})  proof=${PROOF_TAG}"
+# Print the readable version AND the digest that is the actual identity: a version alone
+# cannot be checked against anything, and a bare hash tells an operator nothing.
+info "images   node=${NODE_VERSION} ${NODE_IMAGE#*@}"
+info "         indexer=${INDEXER_VERSION} (${WAREHOUSE_REPO}@${WAREHOUSE_RELEASE}, native binary)"
+info "         proof=${PROOF_VERSION} plain ${PROOF_IMAGE#*@}"
+[[ " $PROFILES " == *" aa "* ]] && info "         proof=${PROOF_VERSION} experimental ${AA_PROOF_IMAGE#*@}"
+info "         proof-data generation ${PROOF_DATA_GENERATION:0:16}… (one shared read-only cache)"
 info "ports    node=${HOST_ADDR}:${NODE_HOST_PORT}  indexer=${HOST_ADDR}:${INDEXER_HOST_PORT}  proof=${HOST_ADDR}:${PROOF_HOST_PORT}"
 [[ -n "${PROFILES// /}" ]] && info "profiles core${PROFILES// /, }"
 # Say what was carried over and what is about to be stopped. Both directions are named out loud:
@@ -198,10 +207,16 @@ fi
 
 FAILED=0
 log "starting containers"
+# The proof servers gate on the proof-params-init one-shot completing successfully, so on a
+# FIRST bring-up (or after `./down.sh -v`) this step also downloads and verifies the ~223 MB
+# proof-data generation once — about a minute. Every later run finds it already active and
+# the one-shot returns NOOP in a few seconds.
+dim "first run only: proof-params-init populates the shared proof-data cache (~223 MB, ~60s)"
 if ! dc up -d --remove-orphans; then
   FAILED=1
   echo
   err "docker compose up failed. Container state and last 40 log lines follow:"
+  dim "if a proof server never started, read 'dc logs proof-params-init' first — it gates them"
   dc ps -a || true
   dc logs --tail=40 || true
   echo
@@ -325,7 +340,8 @@ log "stack is up"
 info "node RPC          ${NODE_RPC_URL}"
 info "indexer GraphQL   ${INDEXER_GQL_URL}"
 info "indexer GraphQL WS ws://${HOST_ADDR}:${INDEXER_HOST_PORT}/api/v4/graphql/ws"
-info "proof server      http://${HOST_ADDR}:${PROOF_HOST_PORT}"
+info "proof server      http://${HOST_ADDR}:${PROOF_HOST_PORT}   (plain; the aa profile's experimental one is internal)"
+info "proof data        one verified generation, read-only in every proof server"
 if [[ " $PROFILES " == *" evm "* ]]; then
   info "evm JSON-RPC      ${EVM_RPC_URL}   (chainId ${EVM_CHAIN_ID}, READ-ONLY)"
   info "evm WS            ws://${HOST_ADDR}:${EVM_WS_HOST_PORT}"

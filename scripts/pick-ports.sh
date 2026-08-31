@@ -59,6 +59,7 @@ COMPOSE_PROJECT_NAME=${PROJECT_PREFIX}-${SUFFIX}
 # binaries from another checkout.
 POSTGRES_IMAGE=midnight-2-offers/postgres:${IMAGE_TAG_SUFFIX}
 INDEXER_IMAGE=midnight-2-offers/indexer:${IMAGE_TAG_SUFFIX}
+PROOF_PARAMS_IMAGE=midnight-2-offers/proof-params:${IMAGE_TAG_SUFFIX}
 EVM_IMAGE=midnight-2-offers/umbra-evm:${IMAGE_TAG_SUFFIX}
 CELESTIA_IMAGE=midnight-2-offers/celestia:${IMAGE_TAG_SUFFIX}
 KERNEL_IMAGE=midnight-2-offers/offerfiles-kernel:${IMAGE_TAG_SUFFIX}
@@ -69,12 +70,23 @@ AA_E2E_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}-e2e
 SOLVER_IMAGE=midnight-2-offers/cow-solver:${IMAGE_TAG_SUFFIX}
 SOLVER_SINK_IMAGE=midnight-2-offers/cow-solver-sink:${IMAGE_TAG_SUFFIX}
 
-NODE_TAG=${NODE_TAG:-2.0.0-rc.4}
-INDEXER_REF=${INDEXER_REF:-56561b2f5cf5c6839f678257fc69bed1a8b9ba2c}
-INDEXER_RUST_VERSION=${INDEXER_RUST_VERSION:-1.95.0}
-PROOF_TAG=${PROOF_TAG:-9.0.0-rc.5}
-TOOLKIT_TAG=${TOOLKIT_TAG:-2.0.0-rc.4}
-INDEXER_PLATFORM=${INDEXER_PLATFORM:-linux/amd64}
+# External runtime images: repository + IMMUTABLE DIGEST, never a tag. Node and toolkit are
+# the official multiarch images; both proof-server variants come from the Effectstream GHCR
+# mirror, which is byte-identical to the upstream indexes. Readable versions are in the
+# comments — 2.0.0-rc.4 (node, toolkit) and 9.0.0-rc.5 plain / 9.0.0-rc.5 experimental.
+NODE_IMAGE=${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:caf93d6f9fb3630c906ef3e714c151655377f3d28f907d17545de1870514da2e}
+TOOLKIT_IMAGE=${TOOLKIT_IMAGE:-docker.io/midnightntwrk/midnight-node-toolkit@sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f}
+PROOF_IMAGE=${PROOF_IMAGE:-ghcr.io/effectstream/midnight-proof-server@sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9}
+AA_PROOF_IMAGE=${AA_PROOF_IMAGE:-ghcr.io/effectstream/midnight-proof-server@sha256:4f02ca2734649eb238d13924df299b1c82bd5546ec928c5d67bdd0ce86dd0bd1}
+
+# The shared proof-data generation both proof servers mount read-only.
+PROOF_DATA_GENERATION=${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}
+
+# Warehouse-backed binaries (indexer + Celestia). Which release, never which bytes: the
+# SHA-256 pins live in the image Dockerfiles and config/artifact-decisions.json.
+WAREHOUSE_REPO=${WAREHOUSE_REPO:-effectstream/binaries}
+WAREHOUSE_RELEASE=${WAREHOUSE_RELEASE:-0.3.120}
+INDEXER_VERSION=${INDEXER_VERSION:-4.4.0-rc.3}
 
 BIND_ADDR=127.0.0.1
 NODE_HOST_PORT=$(( BASE + 0 ))

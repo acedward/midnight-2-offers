@@ -13,6 +13,21 @@
 # 9944 / 8088 / 6300 that Lace's `undeployed` preset hardcodes; a shared machine overrides
 # them with a free block above 10000. No service addresses another by a host port — they talk
 # over the compose network on the container ports, which never change.
+#
+# ── EVERY EXTERNAL RUNTIME IMAGE IS PINNED BY DIGEST, NEVER BY TAG ───────────
+# `<repository>@sha256:<64 hex>` is the whole identity. The readable version lives in a
+# comment beside it and in *_VERSION, which nothing resolves an image from — a tag can be
+# repointed at different bytes without any change here, a digest cannot. The digests come
+# from config/artifact-decisions.json (node, toolkit) and
+# images/proof-server-mirror/mirror-manifest.json (both proof variants); the frozen matrix
+# and mirror record are re-checked offline by ./scripts/verify-compose-pins.sh, which also
+# REJECTS a tag-only override rather than silently accepting the weaker identity.
+#
+# The two proof-server references point at the Effectstream GHCR mirror, which Phase 1
+# proved byte-identical to the upstream Docker Hub indexes across every manifest, config,
+# layer blob and extracted executable (371/371 anonymous checks, zero divergence). Upstream
+# proof-server availability is the stack's most frequent cold-start failure; the mirror is
+# the same bytes from a registry we control.
 
 services:
   # ── node ───────────────────────────────────────────────────────────────────
@@ -78,7 +93,10 @@ services:
 
 
   node:
-    image: 'midnightntwrk/midnight-node:${NODE_TAG:-2.0.0-rc.4}'
+    # midnight-node 2.0.0-rc.4 — the official multiarch image, kept as-is and pinned by its
+    # complete index digest (linux/amd64 + linux/arm64). Repacking a good official image
+    # under another registry owner would add risk and no value, so we do not.
+    image: '${NODE_IMAGE:-docker.io/midnightntwrk/midnight-node@sha256:caf93d6f9fb3630c906ef3e714c151655377f3d28f907d17545de1870514da2e}'
     cap_drop:
       - ALL
     # The entrypoint mkdir's and chowns BASE_PATH before dropping to the node binary.
@@ -122,16 +140,24 @@ services:
   # ── indexer ────────────────────────────────────────────────────────────────
   indexer:
     image: '${INDEXER_IMAGE:-midnight-2-offers/indexer:local}'
-    # The official rc3 source fixes rc1's single-connection SQLite deadlock, but no public
-    # Docker Hub rc3 manifest exists. Build that exact upstream commit locally instead of
-    # silently using the known-broken rc1 binary.
+    # rc3 fixes rc1's single-connection SQLite deadlock and still has no public Docker Hub
+    # manifest — but effectstream/binaries@0.3.120 publishes the exact rc3 executable for
+    # BOTH Linux architectures, cataloged with its upstream source commit and a SHA-256 for
+    # the archive and for the executable inside it. So this is a thin verified-download
+    # image, not a Rust compile.
+    #
+    # No `platform:` pin any more: arm64 IS published, so Apple Silicon builds and runs this
+    # natively instead of emulating the stack's slowest service.
+    #
+    # Identity lives in images/indexer/Dockerfile and config/artifact-decisions.json, not
+    # here: the arguments below name WHICH release, never which bytes. Overriding them
+    # without also re-pinning the hashes fails the build, which is the intended behaviour.
     build:
       context: '../images/indexer'
       args:
-        INDEXER_REPO: '${INDEXER_REPO:-https://github.com/midnightntwrk/midnight-indexer.git}'
-        INDEXER_REF: '${INDEXER_REF:-56561b2f5cf5c6839f678257fc69bed1a8b9ba2c}'
-        RUST_VERSION: '${INDEXER_RUST_VERSION:-1.95.0}'
-    platform: '${INDEXER_PLATFORM:-linux/amd64}'
+        WAREHOUSE_REPO: '${WAREHOUSE_REPO:-effectstream/binaries}'
+        WAREHOUSE_RELEASE: '${WAREHOUSE_RELEASE:-0.3.120}'
+        INDEXER_VERSION: '${INDEXER_VERSION:-4.4.0-rc.3}'
     cap_drop:
       - ALL
     security_opt:
@@ -186,21 +212,85 @@ services:
       node:
         condition: service_healthy
 
+  # ── proof-data cache initializer (one-shot) ────────────────────────────────
+  # THE ONLY WRITER of the `proof-params` volume, and a MANDATORY startup dependency of
+  # every proof server in this stack (core's plain one here, the aa profile's experimental
+  # one in compose/aa.yml). It downloads exactly the 21 published noarch payloads — SRS
+  # K0-K19 plus Ledger-static 9.0.0 — from the warehouse, verifies every outer and member
+  # hash, and atomically activates ONE immutable generation directory named after its own
+  # content digest. It exits 0; a rerun against an already-active generation downloads
+  # nothing, writes nothing and returns NOOP in a few seconds.
+  #
+  # Why this exists: without it each proof server fetches its own copy of ~223 MB from
+  # https://srs.midnight.network/ on first proof, which is this stack's most common
+  # cold-start failure and duplicates the data per variant. Proof data is architecture
+  # neutral, so one generation serves amd64, arm64, plain and experimental alike — it is
+  # deliberately NOT baked into any OCI layer (the image adds ~230 kB over its base).
+  #
+  # BEHAVIOUR CHANGE: a proof server can no longer start before this succeeds. That is the
+  # point — a partial, mixed or corrupt cache must never be observable by a reader.
+  proof-params-init:
+    image: '${PROOF_PARAMS_IMAGE:-midnight-2-offers/proof-params:local}'
+    build:
+      context: '../images/proof-params'
+      args:
+        # One reviewable value in one place: the same generation digest is both a build arg
+        # (baked in, so the shipped metadata is verified at build time) and the runtime
+        # expectation below. Changing it without re-verifying against the audited manifests
+        # fails the build, which is the intended behaviour.
+        PROOF_DATA_GENERATION: '${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+    environment:
+      PROOF_DATA_GENERATION: '${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+      PROOF_PARAMS_DIR: '/proof-params'
+    volumes:
+      # The one read-write mount of this volume anywhere in the stack.
+      - proof-params:/proof-params
+    restart: 'no'
+
   # ── proof-server ───────────────────────────────────────────────────────────
   proof-server:
-    image: 'midnightntwrk/proof-server:${PROOF_TAG:-9.0.0-rc.5}'
+    # proof-server 9.0.0-rc.5, PLAIN variant — the zkir-v2 / [v6] lane the offer-files
+    # kernel and the wallet standard lane prove against. Exact byte-for-byte Effectstream
+    # mirror of upstream index sha256:d96a4d0f…; see images/proof-server-mirror/.
+    image: '${PROOF_IMAGE:-ghcr.io/effectstream/midnight-proof-server@sha256:d96a4d0f3f0f10f82698288443f2873a32fed180eb8f93c0bae83572c0a187a9}'
     cap_drop:
       - ALL
     security_opt:
       - 'no-new-privileges:true'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${PROOF_HOST_PORT:-6300}:6300'
+    # NEITHER `command:` NOR `entrypoint:` — deliberately. These images have no Entrypoint
+    # and their Cmd is a SINGLE argv element containing `--port $PORT`, so any override
+    # changes how the process is launched. Everything is configured through `environment:`
+    # and `volumes:` only.
     environment:
       RUST_BACKTRACE: 'full'
       EXTRA_ARGS: '-v'
+      PORT: '6300'
+      # The FIXED generation directory, never /proof-params and never the `current`
+      # symlink: a pointer swap must not be able to move a running server onto different
+      # bytes. It matches PROOF_DATA_GENERATION above, which the initializer activated.
+      MIDNIGHT_PP: '/proof-params/generations/${PROOF_DATA_GENERATION:-b73584978fc560bb827fd9df3ad914b37a6f5ea434fe62e9fa0adad809d8486c}'
+      # The image default, stated out loud. It is the fallback for anything the cache does
+      # not cover, and it is NEVER a GitHub release: the warehouse is a development-only
+      # mutable store and is not an admissible MIDNIGHT_PARAM_SOURCE (the initializer
+      # refuses one). With the cache active this endpoint is not contacted at all.
+      MIDNIGHT_PARAM_SOURCE: '${MIDNIGHT_PARAM_SOURCE:-https://srs.midnight.network/}'
+      # NOTE for anyone adding a boolean knob here (e.g.
+      # MIDNIGHT_PROOF_SERVER_NO_FETCH_PARAMS): rc.5 requires the LITERAL strings `true` or
+      # `false`. `=1` aborts the server at startup.
+    volumes:
+      # READ-ONLY. The server must not be able to mutate the verified generation, and a
+      # write attempt fails with EROFS rather than silently corrupting a shared tree.
+      - 'proof-params:/proof-params:ro'
+    depends_on:
+      proof-params-init:
+        # Not `service_started`: the cache must be verified and atomically activated
+        # BEFORE any reader looks at it.
+        condition: 'service_completed_successfully'
     healthcheck:
       # A nix-built image with no curl/wget, and its bash lives at an unstable
-      # /nix/store/<hash>-bash-interactive-<arch>… path that changes per tag and per
+      # /nix/store/<hash>-bash-interactive-<arch>… path that changes per digest and per
       # architecture — too brittle to hardcode in a healthcheck. up.sh waits on the
       # listening port from the host instead.
       disable: true
@@ -217,7 +307,9 @@ services:
   # a human should use, since it prints progress and can target one wallet.
   fund:
     profiles: ['fund']
-    image: 'midnightntwrk/midnight-node-toolkit:${TOOLKIT_TAG:-2.0.0-rc.4}'
+    # midnight-node-toolkit 2.0.0-rc.4 — official multiarch image, index-digest pinned.
+    # It must stay in step with the node: same variable is used by scripts/lib/toolkit.sh.
+    image: '${TOOLKIT_IMAGE:-docker.io/midnightntwrk/midnight-node-toolkit@sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f}'
     entrypoint: ['/bin/bash', '/fund/fund-in-container.sh']
     environment:
       # Reached over the compose network, so the container port — never a host port.
@@ -258,3 +350,13 @@ volumes:
   # longer exists is worse than no book. It also holds umbra-evm's index, which
   # is derived from the same chain. `./down.sh -v` takes all three together.
   postgres-data:
+  # The ONE proof-data cache: read-write in proof-params-init alone, read-only in the plain
+  # proof server here and in the aa profile's experimental one. Proof data is noarch, so
+  # there is no per-architecture and no per-variant duplicate anywhere in the stack.
+  #
+  # NOT chain-keyed — unlike every volume above, its contents are published SRS and
+  # Ledger-static payloads that have nothing to do with this genesis. `./down.sh` (no -v)
+  # therefore keeps it and the next bring-up reuses it for free. `./down.sh -v` is a
+  # PROJECT-WIDE wipe and does remove it, because a teardown that leaves anything behind is
+  # not a teardown; the only cost is one ~223 MB re-download (~60 s) on the next `up`.
+  proof-params:
