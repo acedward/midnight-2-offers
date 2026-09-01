@@ -38,7 +38,24 @@ import {
 import { Transaction } from "@midnightntwrk/ledger-v9";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
-import { MidnightBech32m, ShieldedAddress, UnshieldedAddress } from "@midnightntwrk/wallet-sdk-address-format";
+import { MidnightBech32m, ShieldedAddress, UnshieldedAddress, mainnet } from "@midnightntwrk/wallet-sdk-address-format";
+import { bech32m as scureBech32m } from "@scure/base";
+
+// MidnightBech32m.parse with the length limit LIFTED. @scure/base 2.4.0 (an
+// unpinned transitive dep) enforces bech32's spec limit of 90 characters by
+// default, and wallet-sdk-address-format calls the decoder without a limit —
+// but a mn_shield-addr carries TWO 32-byte keys and is ~135 characters, so
+// every shielded address stopped parsing ("invalid string length 135,
+// expected (8..90)"). Same prefix handling as the SDK's parse; only the
+// limit differs. bech32m has no cryptographic length cap — 1023 is scure's
+// own documented "long string" allowance.
+function parseMnBech32(bech32string: string): MidnightBech32m {
+  const decoded = scureBech32m.decode(bech32string as `${string}1${string}`, 1023);
+  const bytes = scureBech32m.fromWords(decoded.words);
+  const [prefix, type, network = mainnet as any] = decoded.prefix.split("_");
+  if (prefix !== "mn") throw new Error("Expected prefix mn");
+  return new MidnightBech32m(type!, network as any, Buffer.from(bytes));
+}
 
 import { deriveAccountId, buildEthSignTypedDataV4Request, computeDigest } from "/aa/aalib/codec.js";
 import { prepareEvmExecute } from "/aa/aalib/manager.js";
@@ -511,7 +528,7 @@ async function checkRelayWallet() {
     await session("wallet-check", async (walletResult) => {
       const st = await Rx.firstValueFrom((walletResult.wallet as any).state());
       relay.address = walletResult.unshieldedAddress;
-      const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+      const parsed = parseMnBech32(walletResult.unshieldedAddress);
       relay.userAddress = toHex(Uint8Array.prototype.slice.call(parsed.data, 0, 32));
       relay.balance = String(unshieldedTotal(st));
       relay.funded = unshieldedTotal(st) > 0n;
@@ -629,7 +646,7 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     let coinPk: string, encPk: unknown, coinPkRaw: unknown, label: string;
     if (to) {
       if (!to.startsWith("mn_shield-addr")) throw new Error("recipient must be a mn_shield-addr… address for a shielded withdraw");
-      const dec: any = MidnightBech32m.parse(to).decode(ShieldedAddress as any, midnightNetworkConfig.id as any);
+      const dec: any = parseMnBech32(to).decode(ShieldedAddress as any, midnightNetworkConfig.id as any);
       coinPk = String(dec.coinPublicKeyString()).toLowerCase();
       coinPkRaw = coinPk;
       encPk = String(dec.encryptionPublicKeyString()).toLowerCase();
@@ -708,7 +725,7 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     } else if (/^0x?[0-9a-f]{64}$/i.test(r)) {
       recipient32 = r.replace(/^0x/, "").toLowerCase();
     } else {
-      const parsed = MidnightBech32m.parse(r);
+      const parsed = parseMnBech32(r);
       recipient32 = toHex(Uint8Array.prototype.slice.call(parsed.data, 0, 32));
     }
     const wdToken = tokenByName(String(body.token ?? "wUSD"));
@@ -921,7 +938,7 @@ function faucetJob(tokenName: string, amount: bigint, target: "relay" | "taker" 
         const tx = await mintShieldedTo(walletResult, j, token, amount);
         j.txId = tx.public?.txId ?? null;
       } else {
-        const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+        const parsed = parseMnBech32(walletResult.unshieldedAddress);
         const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
         const tx = await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
         j.txId = tx.public?.txId ?? null;
@@ -943,17 +960,17 @@ function sendJob(tokenName: string, amount: bigint, to: string): Job {
     let receiver: any;
     if (token.family === "shielded") {
       if (!to.startsWith("mn_shield-addr")) throw new Error(`${token.name} is SHIELDED — the recipient must be a mn_shield-addr… address`);
-      receiver = MidnightBech32m.parse(to).decode(ShieldedAddress as any, netId);
+      receiver = parseMnBech32(to).decode(ShieldedAddress as any, netId);
     } else {
       if (!to.startsWith("mn_addr")) throw new Error(`${token.name} is UNSHIELDED — the recipient must be a mn_addr… address`);
-      receiver = MidnightBech32m.parse(to).decode(UnshieldedAddress as any, netId);
+      receiver = parseMnBech32(to).decode(UnshieldedAddress as any, netId);
     }
     await withProveRetry(j, "send", () => session("send", async (walletResult) => {
       // 1. mint to the funder wallet itself…
       if (token.family === "shielded") {
         await mintShieldedTo(walletResult, j, token, amount);
       } else {
-        const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+        const parsed = parseMnBech32(walletResult.unshieldedAddress);
         const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
         await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
       }
@@ -992,7 +1009,7 @@ function fundJob(accountId: Hex32, amount: bigint, tokenName = "wUSD"): Job {
     const token = tokenByName(tokenName);
     if (token.family !== "unshielded") throw new Error(`fund deposits the UNSHIELDED balance — '${tokenName}' is shielded (use Fund shielded)`);
     await withProveRetry(j, "fund-mint", () => session("fund-mint", async (walletResult) => {
-      const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
+      const parsed = parseMnBech32(walletResult.unshieldedAddress);
       const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
       await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
     }));
