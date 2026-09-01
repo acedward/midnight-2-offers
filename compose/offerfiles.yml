@@ -123,7 +123,7 @@ services:
       context: '../images/offerfiles-kernel'
       args:
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        KERNEL_REF: '${KERNEL_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
+        KERNEL_REF: '${KERNEL_REF:-706301ee96647f90c861090dc09c0a0a69042109}'
     entrypoint: ['/usr/local/bin/entrypoint-deploy.sh']
     restart: 'no'            # a one-shot that "restarts" is a redeploy loop
     volumes:
@@ -233,7 +233,15 @@ services:
       # The batcher's FileStorage queue. Its own volume so a restart does not
       # lose inputs that have been accepted but not yet submitted.
       - 'offerfiles-batcher:/app/packages/batcher/batcher-data'
-    environment: *offerfiles_midnight_env
+    environment:
+      <<: *offerfiles_midnight_env
+      # Contract-calling delegated transactions (the frontend faucet's
+      # mint_shielded) fail the adapter's blank-state wellFormed check with
+      # "call to non-existant contract". This opts into the batcher's
+      # missing-contract retry lane (verifyContractProofs=false; native proofs
+      # and signatures still verified; the node verifies the contract proof at
+      # settlement) — the batcher twin of ALLOW_CONTRACT_MAKER_OFFERS above.
+      BATCHER_ALLOW_CONTRACT_TX: '${BATCHER_ALLOW_CONTRACT_TX:-true}'
     healthcheck:
       # The batcher exposes no health route, so this asserts only that the HTTP
       # listener is up — the same thing scripts/verify-kernel.sh asserts.

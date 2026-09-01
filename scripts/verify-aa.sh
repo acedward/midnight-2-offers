@@ -44,7 +44,12 @@ else
 fi
 
 # The artifact, from the volume, validated in-container (bun ships in the image).
-artifact=$(docker compose --env-file "${ENV_FILE:-$REPO_ROOT/.env}" \
+# --env-file only when the file exists: on the ordinary clean-clone path there
+# is no .env, and compose hard-fails on a missing --env-file even though every
+# value has a built-in default (the same no-.env class dc() already handles).
+aa_env_args=()
+[[ -f "${ENV_FILE:-}" ]] && aa_env_args=(--env-file "$ENV_FILE")
+artifact=$(docker compose ${aa_env_args[@]+"${aa_env_args[@]}"} \
     -f "$REPO_ROOT/compose/core.yml" -f "$REPO_ROOT/compose/aa.yml" \
     run --rm --no-deps --entrypoint cat aa-deploy /aa/out/aa-contracts.json 2>/dev/null) || artifact=""
 if [[ -z "$artifact" ]]; then

@@ -61,6 +61,21 @@ RUN set -eux; \
     test -f LICENSE-APACHE; \
     test -f LICENSE-MIT
 
+# The kernel's GET /v1/midnight/config reports the URIs the kernel itself
+# dials — inside compose those are service hostnames (indexer, proof-server)
+# that no browser can resolve, so the in-page JS wallet, contract client, and
+# take-offer flow all died with ERR_NAME_NOT_RESOLVED. The patch re-points a
+# bare (dot-less, non-localhost) hostname at the page's own host once, in
+# api.getMidnightConfig — the single chokepoint every consumer goes through —
+# keeping scheme, port and path; every affected service is published on that
+# same host port.
+COPY browser-network-urls.patch /tmp/browser-network-urls.patch
+RUN set -eux; \
+    cd /src; \
+    git apply --check /tmp/browser-network-urls.patch; \
+    git apply /tmp/browser-network-urls.patch; \
+    grep -q 'pageHost' src/services/api.ts
+
 # ── stage 1: compile the matching Compact bindings/keys ─────────────────────
 FROM debian:stable-slim AS compact
 
