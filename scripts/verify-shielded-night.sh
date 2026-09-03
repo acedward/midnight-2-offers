@@ -118,6 +118,30 @@ else
   ok "index.html loads /config.js as a classic script, so it runs before the deferred bundle"
 fi
 
+# THE PREPROD NETWORK, BAKED AT BUILD TIME. Unlike UNDEPLOYED_ADDRESS (runtime-injected via
+# /config.js, checked above), PREVIEW_ADDRESS and PREPROD_ADDRESS come from the pinned tree's
+# own committed `frontend/.env` and are inlined into the module bundle by Vite at build time —
+# there is no container-side lane to check them through. Since ledger-v9 @ 36caf599… (project
+# 00007 phase F2) merged shielded-night main's PR #11, that file carries a real PreProd address,
+# so the page this profile serves now offers Preview / PreProd / Local (undeployed) in its
+# network dropdown, not just the first and third. This is a consequence of the re-pin, not new
+# code here — the assertion exists so a future re-pin that silently drops PREPROD_ADDRESS (or
+# points it at the wrong contract) fails loudly instead of shipping a broken menu entry.
+BUNDLE_SRC="$(printf '%s' "$HTML" | grep -o '<script type="module"[^>]*src="[^"]*"' | grep -o '/assets/[^"]*\.js' | head -1 || true)"
+if [[ -z "$BUNDLE_SRC" ]]; then
+  fail "index.html has no module bundle <script src>; cannot check the baked PreProd address"
+else
+  BUNDLE_JS="$(curl -fsS --max-time 20 "${BASE}${BUNDLE_SRC}" 2>/dev/null || true)"
+  case "$BUNDLE_JS" in
+    *'e354e6725893397e6a2dfa44522a017fabb5d9c92efed50288711f5f865c8950'*)
+      ok "the served bundle carries the baked PreProd address e354e672… (network dropdown offers PreProd)"
+      ;;
+    *)
+      fail "the served bundle (${BUNDLE_SRC}) does not carry the PreProd contract address — the network dropdown would be missing PreProd"
+      ;;
+  esac
+fi
+
 # ── the address, from the volume, compared EXACTLY ───────────────────────────
 echo
 log "shielded-night: the contract this stack deployed"

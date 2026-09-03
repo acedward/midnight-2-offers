@@ -47,13 +47,13 @@
 # well, because scripts/lib/compose_pins.py rejects one outright — and both architectures
 # build native.
 ARG DEBIAN_BASE=debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad88fe00908045e9a0d21712ae3ba
-ARG BUN_BASE=oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7
+ARG BUN_BASE=oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6
 ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
 
 ARG SHIELDED_NIGHT_REPO=https://github.com/effectstream/shielded-night.git
 # effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port, full CI green on this
 # stack's triple (unit, frontend, byte-exact rebuild, 17/17 integration).
-ARG SHIELDED_NIGHT_REF=0ff6ae1414f0e60156514c1529cad5b91e246638
+ARG SHIELDED_NIGHT_REF=36caf59999bd9336b49009253b168bc3024ea4fb
 # NOT a free choice: the pinned tree's package.json runs `compact compile +0.34.0` and its CI
 # pins COMPACT_VERSION 0.34.0. Stage `source` asserts the tree still says so, so this ARG and
 # the source can never drift apart silently.

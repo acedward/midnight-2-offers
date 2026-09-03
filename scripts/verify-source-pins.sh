@@ -178,7 +178,7 @@ FRONTEND_EXPECTED="${FRONTEND_REF:-332503c8f9216143a8c805f2a0acbcfd39e5a21d}"
 # effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port. The default here and
 # the Dockerfile ARG default and compose/shielded-night.yml all state the same SHA; this
 # assertion is what proves the RUNNING images were actually built from it.
-SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-0ff6ae1414f0e60156514c1529cad5b91e246638}"
+SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-36caf59999bd9336b49009253b168bc3024ea4fb}"
 
 if present indexer; then
   assert_pin indexer "${INDEXER_IMAGE:-midnight-2-offers/indexer:local}" /opt/indexer-standalone/.indexer-commit "$INDEXER_EXPECTED"

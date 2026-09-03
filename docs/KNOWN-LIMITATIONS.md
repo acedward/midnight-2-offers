@@ -158,10 +158,12 @@ they cannot.
   not fixed here.
 - **The contract is deployed once and is NOT locked.** `SHIELDED_NIGHT_LOCK=false` by default:
   locking dissolves the maintenance committee permanently, which is a one-way door meant for
-  hosted releases. As a consequence upstream's `verify-deployment.ts` exits non-zero on this
-  stack's contract *even when all 11 verifier keys match* — its contract is "the code matches
-  AND the contract is immutable" — so the verify container parses the key result rather than
-  the exit status (project 00007 Q8).
+  hosted releases. By default upstream's `verify-deployment.ts` exits non-zero on this stack's
+  contract *even when all 11 verifier keys match* — its contract is "the code matches AND the
+  contract is immutable" — so the verify container passes `--allow-unlocked`, which still
+  measures and prints the lock state but folds only the verifier-key/circuit-set check into the
+  exit code (project 00007 Q8, delivered as upstream PR #12; consumed here from `ledger-v9` @
+  `36caf599…`, project 00007 phase F2).
 - **`./down.sh -v` changes the token.** The sNight colour is derived from the contract address,
   so a full reset does not merely redeploy: every sNight coin from the previous chain becomes a
   different, unspendable token. That is why the deploy is a JOIN-or-deploy one-shot and why

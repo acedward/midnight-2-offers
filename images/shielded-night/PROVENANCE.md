@@ -8,15 +8,26 @@ Nothing else is fetched, and no source from that repository is copied into this 
 
 | Thing | Identity | Where |
 |---|---|---|
-| dApp source | `effectstream/shielded-night` @ `0ff6ae1414f0e60156514c1529cad5b91e246638` (branch **`ledger-v9`**) | `SHIELDED_NIGHT_REF` — Dockerfile ARG default, `.env.example`, `compose/shielded-night.yml`, baked into both runtime images as `/.shielded-night-commit` |
+| dApp source | `effectstream/shielded-night` @ `36caf59999bd9336b49009253b168bc3024ea4fb` (branch **`ledger-v9`**) | `SHIELDED_NIGHT_REF` — Dockerfile ARG default, `.env.example`, `compose/shielded-night.yml`, baked into both runtime images as `/.shielded-night-commit` |
 | Compact compiler | `compactc` **0.34.0** (language 0.26.0, runtime 0.19.0, ledger 9), Linux musl release asset, SHA-256 per architecture | `COMPACT_VERSION`, `COMPACT_SHA256_AMD64`, `COMPACT_SHA256_ARM64` — Dockerfile ARG defaults |
-| Base images | `debian:trixie-slim`, `oven/bun:1.3.11`, `nginx:1.27-alpine` — all by index digest | `DEBIAN_BASE`, `BUN_BASE`, `NGINX_BASE` |
+| Base images | `debian:trixie-slim`, `oven/bun:1.4.0`, `nginx:1.27-alpine` — all by index digest | `DEBIAN_BASE`, `BUN_BASE`, `NGINX_BASE` |
 | npm dependencies | `bun.lock` + `frontend/bun.lock` at the pinned commit, installed `--frozen-lockfile` | the pinned tree |
 
 `git fetch --depth 1 origin <sha>` is used, and the fetched `FETCH_HEAD` is compared to the
 requested SHA. An abbreviated ref is refused by the Dockerfile before the fetch, because
 `ledger-v9` is a live branch: an image that could resolve a *branch name* would silently change
 what it builds the next time somebody pushed.
+
+**Why `BUN_BASE` moved from 1.3.11 to 1.4.0 (project 00007, question Q13):** the pinned
+`ledger-v9` head at `36caf599…` merged in shielded-night `main`'s own PR #12, which regenerated
+`bun.lock` and `frontend/bun.lock` with bun 1.4.0. Bun 1.4 writes `"lockfileVersion": 2`, and bun
+1.3.x cannot parse that format at all — `bun install --frozen-lockfile` on 1.3.11 against either
+lockfile now exits 1 with `error: Unknown lockfile version` before it reads a single package.
+`BUN_BASE` and the pinned source tree must therefore move together: this image's two
+`bun install --frozen-lockfile` calls (stage `build`, root and `frontend/`) would otherwise fail
+outright the moment `SHIELDED_NIGHT_REF` pointed at any bun-1.4-generated lockfile. The kernel
+and zswap-da images are unaffected and keep their own bun pins — this is scoped to
+`images/shielded-night` alone, the only image that installs from this dependency tree.
 
 ## Why this repository pins a branch and not `main`
 

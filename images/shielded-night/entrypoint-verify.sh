@@ -47,27 +47,23 @@ prepare() {
 
 # ── keys ─────────────────────────────────────────────────────────────────────
 #
-# Runs UPSTREAM's own scripts/verify-deployment.ts against OUR indexer. Two things make the
-# output worth parsing rather than the exit status worth trusting:
-#
-#   * that script exits 0 only when the contract is ALSO permanently locked, and this stack
-#     deliberately does not lock a throwaway devnet contract (spec FR-016). Reading its exit
-#     status alone would report every correct local deployment as a failure;
-#   * "it printed some ticks" is not the claim. The claim is that ALL ELEVEN circuits this
-#     image serves keys for are on chain with byte-identical verifier keys, none missing and
-#     none extra — so the circuit list is taken from the image's own keys directory and each
-#     one is required by name.
+# Runs UPSTREAM's own scripts/verify-deployment.ts against OUR indexer, with --allow-unlocked
+# (project 00007 phase F1, effectstream/shielded-night PR #12). That flag exists precisely for
+# this stack's situation: a devnet contract is deliberately never locked (spec FR-016), so the
+# script's DEFAULT behaviour — exit 0 only if the code matches AND the contract is permanently
+# locked — would report every correct local deployment as a failure. `--allow-unlocked` still
+# measures and PRINTS the lock state, but folds only the verifier-key/circuit-set check into the
+# exit code, so this entrypoint can trust `rc` directly instead of parsing "✓ … == local" /
+# "committee=…" lines out of stdout by hand. It never weakens the code check: a verifier-key
+# mismatch, a missing circuit or an extra circuit still exits non-zero with the flag set — that
+# is the negative control (see scripts/verify-deployment.ts's own `verifyOutcome()`), and
+# scripts/verify-shielded-night.sh keeps its own negative control (a bogus circuit -> 404) for
+# the served-artifact half of this claim, untouched by this change.
 verify_keys() {
-  local address out rc=0 circuits n c committee threshold locked_expected
+  local address rc=0 circuits n
   address="$(published_address)" || die "no published contract address on ${CONTRACT_FILE}"
   log "contract ${address}"
   log "indexer  ${MN_INDEXER_URL}"
-
-  out="$(mktemp)"
-  # `|| rc=$?` and not `set +e`: the script's non-zero exit is EXPECTED on an unlocked
-  # contract, and swallowing errexit wholesale would also hide a crash in the parsing below.
-  CV_ADDRESS="${address}" bun run scripts/verify-deployment.ts >"${out}" 2>&1 || rc=$?
-  sed 's/^/    /' "${out}" >&2
 
   # The circuits THIS IMAGE SERVES, which is what the browser will prove against. Derived, not
   # typed: a contract that gained a circuit must fail here rather than be silently half-checked.
@@ -83,58 +79,13 @@ verify_keys() {
     die "this image serves ${n} verifier keys, expected 11 — the served artifacts are not this contract"
   fi
 
-  local failures=0
-  if grep -q 'circuits missing on chain' "${out}"; then
-    log "FAIL: the deployed contract is missing circuits this build has"
-    failures=$(( failures + 1 ))
-  fi
-  if grep -q 'circuits on chain but not in this build' "${out}"; then
-    log "FAIL: the deployed contract has circuits this build does not"
-    failures=$(( failures + 1 ))
-  fi
-  while IFS= read -r c; do
-    [ -n "${c}" ] || continue
-    # grep against a FILE, never `printf … | grep -q …`: under `pipefail` a grep that closes
-    # the pipe early makes the producer die of SIGPIPE and the pipeline report failure.
-    if grep -q "^✓ ${c}: on-chain .* == local " "${out}"; then
-      continue
-    fi
-    log "FAIL: ${c} — on-chain verifier key does not match the served one (or is unreadable)"
-    failures=$(( failures + 1 ))
-  done <<EOF
-${circuits}
-EOF
-
-  # The maintenance authority, asserted in the direction this stack configured. An UNLOCKED
-  # local contract is correct and expected; a LOCKED one when nobody asked for it would mean a
-  # one-way door was walked through by accident.
-  local authority
-  authority="$(grep -m1 '^maintenance authority:' "${out}" || true)"
-  [ -n "${authority}" ] || die "verify-deployment.ts printed no maintenance-authority line (exit ${rc}) — it did not reach the chain"
-  committee="$(printf '%s' "${authority}" | sed -n 's/.*committee=\([0-9][0-9]*\).*/\1/p')"
-  threshold="$(printf '%s' "${authority}" | sed -n 's/.*threshold=\([0-9][0-9]*\).*/\1/p')"
-  case "$(printf '%s' "${SHIELDED_NIGHT_LOCK:-false}" | tr '[:upper:]' '[:lower:]')" in
-    true|1|yes|on) locked_expected=1 ;;
-    *)             locked_expected=0 ;;
-  esac
-  if [ "${locked_expected}" -eq 1 ]; then
-    if [ "${committee}" = "0" ] && [ "${threshold:-0}" -ge 1 ]; then
-      log "OK: contract is LOCKED as requested (committee=0 threshold=${threshold})"
-    else
-      log "FAIL: SHIELDED_NIGHT_LOCK was set but the authority is committee=${committee} threshold=${threshold}"
-      failures=$(( failures + 1 ))
-    fi
-  else
-    if [ "${committee:-0}" -ge 1 ]; then
-      log "OK: contract is unlocked as configured (committee=${committee} threshold=${threshold})"
-    else
-      log "FAIL: the contract is LOCKED (committee=${committee}) but SHIELDED_NIGHT_LOCK is not set — a one-way door was taken by accident"
-      failures=$(( failures + 1 ))
-    fi
-  fi
-
-  rm -f "${out}"
-  [ "${failures}" -eq 0 ] || die "${failures} on-chain key/authority assertion(s) failed"
+  # `-- --allow-unlocked`: the `--` is what makes `bun run` forward the flag to the script
+  # rather than swallowing it as a `bun run` option of its own. `|| rc=$?` and not `set +e`: a
+  # non-zero exit here is a real failure now (unlike the old strict-by-default call), but it
+  # must still be CAUGHT rather than let errexit kill this function before the die() below can
+  # name it. Output streams straight to the container log — there is nothing left to parse.
+  CV_ADDRESS="${address}" bun run scripts/verify-deployment.ts -- --allow-unlocked || rc=$?
+  [ "${rc}" -eq 0 ] || die "verify-deployment.ts --allow-unlocked exited ${rc} — see the output above"
   log "OK: 11/11 circuits' on-chain verifier keys are byte-identical to the served ones"
 }
 

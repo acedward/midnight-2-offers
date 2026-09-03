@@ -203,10 +203,13 @@ that dies with `./down.sh -v` gains nothing from it, so it is off by default —
 asserts the authority state in **both** directions, failing if the contract is locked when
 nobody asked for it.
 
-Note that upstream's `verify-deployment.ts` exits non-zero on an unlocked contract *even when
-all 11 verifier keys match*, because its own contract is "the code matches AND the contract is
-immutable". The verify container therefore parses the key result rather than trusting the exit
-status — see `images/shielded-night/entrypoint-verify.sh`.
+Note that upstream's `verify-deployment.ts`, by default, exits non-zero on an unlocked contract
+*even when all 11 verifier keys match*, because its own contract is "the code matches AND the
+contract is immutable" — wrong for a throwaway devnet deploy, which is deliberately never
+locked. Since shielded-night `ledger-v9` @ `36caf599…` (project 00007 phase F2, upstream PR #12)
+the script takes `--allow-unlocked`: the lock state is still measured and printed, but only the
+verifier-key/circuit-set check decides the exit code, so `images/shielded-night/entrypoint-verify.sh`
+now trusts that exit status directly instead of parsing stdout (project 00007 Q8/F2).
 
 ### What the verify section asserts
 
