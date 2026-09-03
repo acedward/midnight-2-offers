@@ -429,3 +429,120 @@ fetch-by-height — so it is verified before the kernel exists rather than durin
   answers over the host port.
 - **`utia` here is monopoly money.** The validator holds 10¹⁵ and the bridge is funded 10⁸ at
   bootstrap, which is a few thousand blob submissions.
+
+## Shielded NIGHT — NIGHT ⇄ sNight (profile `shielded-night`)
+
+```bash
+./up.sh --with shielded-night          # core + this profile, and nothing else
+./verify.sh --shielded-night           # prove it works, not merely that it runs
+open http://127.0.0.1:10900
+```
+
+[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) is a Compact
+contract plus a Vite/React dApp that converts native **unshielded NIGHT** into a
+contract-minted **shielded wrapper token, sNight**, 1:1, and back — backed by a pool of locked
+NIGHT. Eleven circuits, and two conversion models:
+
+* **atomic** — `convertToShielded` / `convertToUnshielded`: one transaction, one wallet
+  approval, the shielded and unshielded moves netting inside a single segment;
+* **two-step credit-bridged** — `depositUnshielded` → `withdrawShielded` and
+  `depositShielded` → `withdrawUnshielded`, with a per-user credit balance keyed by
+  `hash(secret)` in between.
+
+`./verify.sh` exercises **both**, in a container, with exact balance assertions.
+
+### The pin is a branch head, and the image checks the line
+
+This stack is Midnight **2.x**. shielded-night's `main` is the **1.x / ledger-v8** line — that
+is what its live preview deployment runs, and what the sibling repository `midnight-1-offers`
+pins for the same profile. So this repository pins the long-lived **`ledger-v9`** branch
+(`0ff6ae14…`, [PR #10](https://github.com/effectstream/shielded-night/pull/10)), whose own CI
+runs the unit tier, the frontend build, the byte-exact contract rebuild and the full
+integration suite against node 2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5.
+
+Because *only the pin* separates the two images, the pin is not trusted. `images/shielded-night`
+asserts the line in both directions, in both packages **and in both resolved lockfiles**:
+`@midnightntwrk/ledger-v9` is `1.0.0-rc.3`, `@midnight-ntwrk/compact-runtime` is `0.19.0`, no
+`ledger-v8` is depended on, and neither `bun.lock` resolves one. The lockfile half is the one
+that matters — two ledger wasm instances in a single process fail each other's `instanceof`
+checks during proving, hours later and nowhere near the cause.
+
+### The contract is recompiled, not trusted
+
+`src/managed/` is committed upstream and upstream CI proves it is byte-exact. The image
+reproduces that proof instead of relying on it: it fetches **compactc 0.34.0** as a
+SHA-256-pinned Linux musl release asset, compiles `src/shielded-night.compact` into an *empty*
+directory with the same invocation and working directory upstream uses, and `diff -r`s the
+result. Any difference fails the build.
+
+Two details are load-bearing:
+
+* **the source path is part of the output.** compactc writes the input path verbatim into
+  `contract/index.js.map`, so the compile must run from the repository root as
+  `src/shielded-night.compact`. Anything else yields artifacts identical in every ZK key and
+  different in two lines of the source map — which is how the byte-exact check would end up
+  being "loosened" for the wrong reason.
+* **`compiler/contract-manifest.json` is not decorative on this line.** compactc emits it from
+  0.33 onwards, and midnight-js 5's `FetchZkConfigProvider` verifies every artifact it fetches
+  against it, with integrity checking defaulting to *require* — fail-closed. The build asserts
+  the manifest is produced and reaches `dist/`; the page's healthcheck fetches it; and
+  `verify.sh` asserts the served copy names compactc 0.34.0 and covers all 11 circuits. A page
+  serving 33 perfect keys and no manifest connects a wallet and then refuses to prove anything.
+
+`./verify.sh` closes the loop from the other end: the **on-chain** verifier keys of the
+contract this stack deployed are compared byte-for-byte against the keys the page serves,
+11 of 11, none missing and none extra — using upstream's own `verify-deployment.ts`, run
+inside the compose network against this stack's indexer.
+
+### Four services, two images
+
+| Service | Kind | What it does |
+|---|---|---|
+| `shielded-night-fund` | one-shot (toolkit) | gives the profile's two dedicated wallets NIGHT + a registered DUST address, and **skips** either one that already has both |
+| `shielded-night-deploy` | one-shot (`restart: "no"`) | deploys the contract ONCE per stack and publishes `contract.json` atomically to a named volume |
+| `shielded-night` | nginx | serves the SPA and the compiled artifacts; its entrypoint waits for that address and writes `/config.js` before starting nginx |
+| `shielded-night-verify` | never started by `up.sh` | the bun-side assertions `./verify.sh` runs with `compose run --rm` (a compose `profiles:` key keeps it out of `up -d`, exactly as `core.yml`'s `fund` service does) |
+
+**Deployed once, deliberately.** The sNight token colour is derived from the contract address
+(`tokenType(pad(32,"shielded-night:wrapper"), self())`), so a silent redeploy would not merely
+change an address — every sNight coin already minted would become a different, unspendable
+token, and the page would show a zero balance with nothing logged anywhere. The presence of
+`contract.json` on the volume IS the "already deployed" flag: a container that finds one JOINs
+and exits 0. Only `./down.sh -v` (or dropping that volume) forces a new contract.
+
+### How the page learns its address
+
+shielded-night bakes one contract address per network into the bundle at build time
+(`UNDEPLOYED_ADDRESS`, via Vite's `envPrefix`). That is right for its hosted deployments and
+impossible here — this image is built once and run against throwaway devnets whose contract
+does not exist until our own one-shot has run.
+
+Upstream therefore resolves `window.SHIELDED_NIGHT.<NETWORK>_ADDRESS` ahead of the build-time
+value, and ships a no-op `public/config.js` placeholder that `index.html` already loads as a
+**classic** script. The web entrypoint overwrites that one already-served file at container
+start and touches nothing else — **no patch of the source and no patch of the built output**.
+
+What makes it run first is that it is a classic script, not where it sits in the document:
+Vite hoists the bundle's `<script type="module">` into `<head>` while the config tag stays in
+`<body>`, and a module script is deferred by specification. `verify.sh` asserts that property
+rather than document order, because asserting the order would be both wrong and red.
+
+### No browser-endpoint lane, on purpose
+
+Unlike the zswap-da SPA, this page has **no** indexer/node/proof URL overrides and needs none:
+there is no in-page wallet, and the connected browser wallet supplies those URLs itself through
+the dApp connector's `getConfiguration()`. The only thing the page cannot know is the contract
+address. So a random port block changes nothing for the page — and the profile has no browser
+URI override to get wrong.
+
+The corollary is that **the wallet owns proving**. The page hands over the contract's ZK key
+material and calls `getProvingProvider`; it never names or reaches a proof server. A wallet
+without that method is refused with an explicit error. See
+[KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) and [WALLETS.md](WALLETS.md).
+
+### It depends on nothing but core
+
+No kernel, no Celestia, no Postgres, no evm, no aa. `./up.sh --with shielded-night` on its own
+is legal and complete, and `scripts/verify-compose-pins.sh` renders `core shielded-night`
+alone as one of its combinations so that a dependency added later fails a gate instead of a
+demo.

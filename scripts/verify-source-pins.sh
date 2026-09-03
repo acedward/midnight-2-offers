@@ -175,6 +175,10 @@ SOLVER_EXPECTED="${SOLVER_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}"
 AA_EXPECTED="${AA_REF:-713a20215f33e02904ea5bd699b7de7f76562e1b}"
 UMBRA_EXPECTED="${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-332503c8f9216143a8c805f2a0acbcfd39e5a21d}"
+# effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port. The default here and
+# the Dockerfile ARG default and compose/shielded-night.yml all state the same SHA; this
+# assertion is what proves the RUNNING images were actually built from it.
+SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-0ff6ae1414f0e60156514c1529cad5b91e246638}"
 
 if present indexer; then
   assert_pin indexer "${INDEXER_IMAGE:-midnight-2-offers/indexer:local}" /opt/indexer-standalone/.indexer-commit "$INDEXER_EXPECTED"
@@ -200,6 +204,18 @@ if present evm-rpc; then
 fi
 if present frontend; then
   assert_pin zswap-da "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" /.zswap-da-commit "$FRONTEND_EXPECTED"
+fi
+# BOTH shielded-night runtime targets carry the commit, and both are asserted. They are two
+# images from one build — the nginx page server and the bun deploy/verify one-shot — and only
+# one of them is what a browser sees. An operator answering "which revision is this page?"
+# from the deploy container's label would be answering about the wrong artifact.
+if present shielded-night; then
+  assert_pin shielded-night "${SHIELDED_NIGHT_IMAGE:-midnight-2-offers/shielded-night:local}" \
+    /.shielded-night-commit "$SHIELDED_NIGHT_EXPECTED"
+fi
+if present shielded-night-deploy; then
+  assert_pin shielded-night-deploy "${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-2-offers/shielded-night-deploy:local}" \
+    /.shielded-night-commit "$SHIELDED_NIGHT_EXPECTED"
 fi
 
 if (( FAILURES == 0 )); then

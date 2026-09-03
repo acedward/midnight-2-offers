@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v1",
-  "pinsDigest": "2a03b9fbed3e9ded22ae6443e97c1036eca7c1c80ab2b3bd35402529dfbb679a",
+  "pinsDigest": "ecad60acfa7e52df040c82a71a8f97d86aebef8ad837d7367efa150582209487",
   "frozenOn": "2026-08-31",
   "note": "Frozen artifact-selection contract for the external runtime dependencies of this demo. Every field here was re-derived from live sources on the freeze date. scripts/verify-artifact-decisions.sh enforces it. Do not edit a digest to make a build pass: re-verify the source first.",
   "selectionOrder": [
@@ -361,7 +361,7 @@
       "id": "compact",
       "decision": "official-upstream-direct",
       "inArtifactNormalizationScope": false,
-      "reason": "Compact keeps its direct official LFDT acquisition under the current compatible pin. A Compact 0.34 / runtime 0.19 migration is explicitly out of scope for this project."
+      "reason": "Compact keeps its direct official LFDT acquisition under the current compatible pin. This entry covers the OFFER-FILES KERNEL and AA contract builds: migrating THOSE to Compact 0.34 / runtime 0.19 is explicitly out of scope for this project, and their pins do not move. It is not a statement about the whole repository - the shielded-night image carries its own SHA-256-pinned compactc 0.34.0 because the ledger-v9 contract it rebuilds was compiled with exactly that toolchain, and the two compilers never meet: each side's generated bindings version-check against their own compact-runtime at import time."
     },
     {
       "id": "offerfiles-kernel",
@@ -404,6 +404,12 @@
       "decision": "source-build",
       "inArtifactNormalizationScope": false,
       "reason": "pg_ivm is compiled in; no reusable warehouse runtime artifact exists."
+    },
+    {
+      "id": "shielded-night",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "Application code (a Compact contract plus its Vite/React dApp) with no reusable warehouse runtime artifact. Built from effectstream/shielded-night at an immutable full commit on the long-lived ledger-v9 branch, with the commit baked into both runtime images as /.shielded-night-commit and asserted by scripts/verify-source-pins.sh. The one EXTERNAL artifact its build fetches is the compactc 0.34.0 Linux musl release asset, SHA-256-pinned per architecture in images/shielded-night/Dockerfile: the contract is recompiled in-image and the build fails unless the output is byte-identical to the pinned tree's committed src/managed/, which is what makes the served prover keys provably the ones the on-chain verifier keys came from (project 00007, question Q3 -> owner decision A)."
     }
   ]
 }

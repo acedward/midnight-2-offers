@@ -119,3 +119,60 @@ control is worse than one that is gone.
 - **`toolkit version` under-reports.** It prints `Ledger: =7.0.3` / `Compactc: 0.31.0` for a
   toolkit that transacts happily against a ledger-v9 chain, so only its `Node:` line is used as a
   compatibility signal.
+
+## The `shielded-night` profile
+
+These are properties of the upstream dApp and of the 2.x line, not defects introduced here.
+Everything the automated gates *can* prove, they prove; this section is the honest list of what
+they cannot.
+
+- **The browser flow is not automatable, and that is by design.** The page has no in-page
+  wallet: it enumerates `window.midnight.*` (dApp-connector 4.x) and **refuses a wallet that
+  does not implement `getProvingProvider`**, because proving is wallet-owned — the page never
+  names or reaches a proof server. So a headless browser cannot exercise a conversion, and the
+  automated proof that the contract works comes from upstream's own Node-side integration
+  suite, run against this stack (`./verify.sh --shielded-night`). The browser path is a hand
+  test; see [WALLETS.md](WALLETS.md#browser-hand-test-night--snight-with-the-moth-wallet).
+- **A browser wallet only reaches the stack on the DEFAULT port block.** An extension's
+  `undeployed` preset hardcodes node `9944`, indexer `8088`, proof-server `6300`. A stack from
+  `scripts/pick-ports.sh` is unreachable from it. The driver-based `verify.sh` section passes
+  on any port block, so this affects the hand test only. Shared with the `frontend` profile.
+- **On the 2.x line the wallet must also speak ledger-v9.** The wallet measured to do so is
+  Moth, built from [`shieldedtech/moth-wallet` PR #30](https://github.com/shieldedtech/moth-wallet/pull/30)
+  (`feat/ledger-v9-support`). A ledger-v8 wallet connects and then fails, because the ledger
+  types it builds are not the ones the contract's state is decoded with.
+- **`ProvingProvider.lookupKey` is a hole in the connector API, and the dApp fills it.**
+  ledger-v9 widened `ProvingProvider` from `{check, prove}` to `{check, prove, lookupKey}`, and
+  midnight-js 5's `createProofProvider` requires the wider shape — but
+  `@midnight-ntwrk/dapp-connector-api` still declares only the narrow one, in `4.0.1` *and* in
+  `4.1.0-beta.1`. When the connected wallet's proving provider has no `lookupKey`, the dApp
+  supplies it from its own `zkConfigProvider`: **the same public artifacts it already serves at
+  `/contract/compiled/shielded-night/` and already handed the wallet a line earlier**, so
+  nothing leaks and `prove`/`check` stay untouched. The page logs which lane it took at
+  `console.info`. Upstream question, recorded as project 00007 Q9.
+- **The reverse path works only for coins minted in that browser.** Shielded balances reachable
+  through the connector are aggregate only, and the SPA tracks the individual sNight coins it
+  minted in that browser's `localStorage`. So sNight received from somebody else — or minted in
+  another browser, or after clearing site data — cannot be unwrapped from the page. The
+  contract has no such limitation: the Node-side round trips unwrap fine. Upstream limitation,
+  not fixed here.
+- **The contract is deployed once and is NOT locked.** `SHIELDED_NIGHT_LOCK=false` by default:
+  locking dissolves the maintenance committee permanently, which is a one-way door meant for
+  hosted releases. As a consequence upstream's `verify-deployment.ts` exits non-zero on this
+  stack's contract *even when all 11 verifier keys match* — its contract is "the code matches
+  AND the contract is immutable" — so the verify container parses the key result rather than
+  the exit status (project 00007 Q8).
+- **`./down.sh -v` changes the token.** The sNight colour is derived from the contract address,
+  so a full reset does not merely redeploy: every sNight coin from the previous chain becomes a
+  different, unspendable token. That is why the deploy is a JOIN-or-deploy one-shot and why
+  only dropping the volume can force a new contract.
+- **The round trips are slow on this line.** The two `verify.sh` round trips take ~280 s
+  against the 1.x triple and were measured at 487–537 s in the `ledger-v9` branch's own CI —
+  proving on 2.x runs about 1.25–1.6× slower. Budget minutes, and note that the branch itself
+  had to raise its CI integration timeout from 60 to 150 minutes for the same reason.
+- **The pin is a branch head, not a merge commit.** `effectstream/shielded-night`'s `ledger-v9`
+  branch is deliberately long-lived: it merges into `main` when the network moves to 2.x
+  ([PR #10](https://github.com/effectstream/shielded-night/pull/10)). Until then the pin here
+  is a commit on that branch. It is a full 40-hex SHA and the image refuses anything shorter,
+  so the pin is immutable even though the branch is not — but a reviewer looking for a merged
+  upstream commit will not find one.

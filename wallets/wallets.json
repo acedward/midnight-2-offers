@@ -2,9 +2,17 @@
   "$comment": [
     "The wallets this demo stack knows about. DEV ONLY.",
     "Every seed below is public: the first three are the well-known Midnight CFG_PRESET=dev",
-    "genesis seeds, the fourth is the seed Lace uses for its own testing, and the demo-* ones",
-    "are placeholders invented for this repo. They control value only on a throwaway local",
-    "`undeployed` chain. Never reuse any of them anywhere else.",
+    "genesis seeds, the fourth is the seed Lace uses for its own testing, and the demo-*,",
+    "aa-* and shielded-night-* ones are placeholders invented for this repo. They control",
+    "value only on a throwaway local `undeployed` chain. Never reuse any of them anywhere",
+    "else.",
+    "",
+    "ONE FACADE PER SEED. Two long-lived wallet facades on one seed against one node force",
+    "each other's connection down, silently. That is why every service that holds a wallet",
+    "open has its own: genesis-1 = funding faucet + offer-files kernel, genesis-2 = batcher,",
+    "genesis-3 = AA deploy, aac0… = AA console relay, 7a4e… = AA taker, 5e5e… = shielded-night",
+    "deployer, d00d… = shielded-night verify driver. `lace-test` is deliberately held by no",
+    "service at all, so a browser can import it at any time.",
     "",
     "Addresses were produced with `midnight-node-toolkit:2.0.0-rc.4 show-address --network",
     "undeployed --seed <seed>` and are stable for a given seed + network id — they do not",
@@ -220,6 +228,55 @@
         "shielded": "mn_shield-addr_undeployed1tl2kfgkchfmgafqwx75pkr68m849hmuxnvrtvn8p467hxt5ceyvlazcyhlmtyzxc2prsumz3ga2srgv97j5tx80d64mmjcr0xe83jscd9hxeq",
         "dust": "mn_dust_undeployed1wwam6m6qhzcxlcs0m2c56vez2jdlvvl2tc3rlcwpjq8tlekauhlxg7vczl9",
         "userAddress": "d19965555c6ea47b13948ef4bbba5e2ea9ab96e41e999c09755b4d9023854835"
+      }
+    },
+    {
+      "name": "shielded-night-deployer",
+      "role": "deploys the ShieldedNight wrapper contract ONCE per stack (profile `shielded-night`)",
+      "$comment": [
+        "A DEDICATED seed, not one of the three genesis wallets. genesis-1 is the funding",
+        "faucet and the offer-files kernel's MIDNIGHT_WALLET_SEED, genesis-2 is the batcher's",
+        "and genesis-3 is the AA deploy wallet's; a second wallet facade on any of them forces",
+        "the first one's connection down with nothing naming the cause (spec FR-009).",
+        "shielded-night's own scripts fall back to genesis-1 when MN_SEED is unset, so the",
+        "deploy entrypoint REFUSES that seed outright rather than trusting the environment.",
+        "Funded at bring-up by the `shielded-night-fund` one-shot in compose/shielded-night.yml",
+        "(the same toolkit lane scripts/fund-wallet.sh uses), which SKIPS a wallet that already",
+        "holds NIGHT and a spendable DUST UTXO — so repeated ./up.sh runs cost seconds.",
+        "It is a ONE-SHOT facade: the container deploys, publishes contract.json and exits."
+      ],
+      "seed": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+      "seedBytes": 32,
+      "funding": "fund-script",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1j2v2ym2pd08xr3qqqezahc2mmswr080gs2s099sk0tqpqshl9x5q22qkfc",
+        "shielded": "mn_shield-addr_undeployed127kpddumlkq0facv0nj32uxrg6rfjgsf8a7ahvsljaajyz6hx84x8r4ktqzgf88rjzvzhszxfaerqylhyuc0rxkwxj60f4hvvu5a42cgmvgcg",
+        "dust": "mn_dust_undeployed1w0rg7mylfe7gs9vmng6u2c2w05hes3j3h408ekzuhuy5870wycc8qzvv7cf",
+        "userAddress": "9298a26d416bce61c4000645dbe15bdc1c379de882a0f296167ac01042ff29a8"
+      }
+    },
+    {
+      "name": "shielded-night-driver",
+      "role": "drives ./verify.sh's NIGHT <-> sNight round trips (profile `shielded-night`)",
+      "$comment": [
+        "DISTINCT FROM THE DEPLOYER by requirement (spec FR-011): the round trip must be driven",
+        "by a wallet the deployer is not also holding open. The verify entrypoint refuses both",
+        "the deployer's seed and genesis-1.",
+        "The 1.x sibling repository (midnight-1-offers) has no funding lane and therefore borrows",
+        "the genesis-funded `lace-test` wallet for this role — project 00007 question Q6. This",
+        "stack has scripts/fund-wallet.sh and the toolkit, so it provisions a seed nothing else",
+        "will ever hold open, and the Lace/Moth hand test can use `lace-test` at the same time",
+        "as ./verify.sh without the two colliding.",
+        "Funded at bring-up by the same `shielded-night-fund` one-shot as the deployer."
+      ],
+      "seed": "d00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00d",
+      "seedBytes": 32,
+      "funding": "fund-script",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed159uds6tt6fxc0aaz67kxru738srksahv00vrhv02zmh2w965hhkqtuacc0",
+        "shielded": "mn_shield-addr_undeployed15nly804v4yur68l5g5zr8lht6yl3g4p6u7244u8k9k2w2m7f6x5u3vkq9e74uh9w2ul22gtfax5mxtqjrzwud82gzzlhd9etvqclhmqws45wx",
+        "dust": "mn_dust_undeployed1wvf40d2r2pl2at04av4hgt08ysj6hn7f7hdatqtflcl5rcuehrdkkuryjls",
+        "userAddress": "a178d8696bd24d87f7a2d7ac61f3d13c076876ec7bd83bb1ea16eea71754bdec"
       }
     }
   ]
