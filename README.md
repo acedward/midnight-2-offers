@@ -27,6 +27,7 @@ consumed as-is with no code changes of ours.
 | Offer-files batcher | `offerfiles` | `http://127.0.0.1:3334` | same repo/branch — its own container, restarts independently of the kernel |
 | COW solver (observation mode) + sink | `solver` | feed page `http://127.0.0.1:10800` (relay WS `:10801`) | [effectstream/zswap-offerfiles-kernel PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50) — fetched directly at build time at exact SHA `b1420c4af6ed8b2510140418e5138d282365f9c6` (`SOLVER_REF`); **not vendored**; generated contract artifacts reuse the service-built kernel image |
 | zswap-da frontend (swap SPA) | `frontend` | `http://127.0.0.1:10600` | [`effectstream/effectstream@332503c8`](https://github.com/effectstream/effectstream/tree/332503c8f9216143a8c805f2a0acbcfd39e5a21d/templates/zswap-da) — fetched directly at build time and adapted by the checked-in 10-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed |
+| Shielded NIGHT dApp (NIGHT ⇄ sNight) | `shielded-night` | `http://127.0.0.1:10900` | [effectstream/shielded-night](https://github.com/effectstream/shielded-night) — branch **`ledger-v9`** @ `0ff6ae14…` ([PR #10](https://github.com/effectstream/shielded-night/pull/10), the 2.x port; `main` is the 1.x line). Contract, harness and page from ONE commit, no patch of any kind; the contract is **recompiled in-image** with SHA-256-pinned compactc `0.34.0` and the build fails unless the output is byte-identical to the committed `src/managed/`. Deploys ONCE per stack (`shielded-night-deploy` one-shot, address persisted on a volume and injected into the page as `/config.js`) |
 | AA Manager + Minter | `aa` | deploy receipt in the `aa-out` volume | [acedward/AA-midnight-evm-experiment-v3](https://github.com/acedward/AA-midnight-evm-experiment-v3) — `main @ 713a2021` (sha-pinned; key-breaking merges need a redeploy) · [PR #10](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10) fixed withdraw |
 | — k=18 `execute` variation | `aa` (opt-in) | `AA_EXECUTE_K18=1` + `AA_K18_DIR` | [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) — 544 MiB prover key, ~2× faster proofs; equivalence-tested vs compactc (56/56 + 4,888 tamper probes), unaudited compiler, dev chains only |
 | **AA web console** (this stack's UI) | `aa` | **`http://127.0.0.1:10700`** | this repo (`images/aa-contracts/console/`) — tabs: AA+EVM, AA+Midnight (preview), COW solver feed, infrastructure canvas, Memos, Repos |
@@ -91,7 +92,8 @@ Open the console at **http://127.0.0.1:10700** when it is up.
 
 ```bash
 ./up.sh                               # core only (node + indexer + proof server + wallets)
-./up.sh --with aa --with offerfiles   # pick profiles: aa · evm · offerfiles · frontend · solver
+./up.sh --with aa --with offerfiles   # pick profiles: aa · evm · offerfiles · frontend · shielded-night · solver
+./up.sh --with shielded-night         # NIGHT ⇄ sNight on :10900 — needs nothing but core
 ./up.sh --converge --with aa          # EXACTLY core + the named profiles; stops the rest
 ./up.sh --build | --pull              # rebuild local images / pull upstream ones first
 ./scripts/pick-ports.sh > .env.test   # free port block + unique project name…
@@ -102,6 +104,7 @@ ENV_FILE=.env.test ./up.sh --all      # …for a second stack beside the first
 
 ```bash
 ./verify.sh                           # health + wallets + every profile that is up
+./verify.sh --shielded-night          # …and REQUIRE the NIGHT ⇄ sNight section (fail if absent)
 ./scripts/fund-wallet.sh --all-demo   # fund the demo-* wallets (10M NIGHT + DUST each)
 ./scripts/aa-e2e.sh                   # end-to-end of the EVM-signed AA path
 ./down.sh                             # stop, keep the chain (./up.sh resumes)
@@ -150,9 +153,14 @@ derive from `seed + networkId` only, so they survive a `./down.sh -v` reset. The
 | `demo-alice` | `0a4f358d…680d96` (mnemonic `alpha` ×23 + `avoid`) | `fund-wallet.sh --all-demo` | demo actor |
 | `demo-bob` | `1ce2d940…629095` (mnemonic `boss` ×23 + `burst`) | `fund-wallet.sh --all-demo` | demo actor |
 | `demo-carol` | `fc14ae81…201090` (mnemonic `cactus` ×23 + `cherry`) | `fund-wallet.sh --all-demo` | demo actor |
+| `lace-test` | `a51c86de…93ec9` (mnemonic `abandon` ×23 + `diesel`) | genesis | THE wallet to import into a browser extension — held open by no service |
+| `shielded-night-deployer` | `5e5e…5e5e` | `up.sh --with shielded-night` | deploys the ShieldedNight wrapper contract, once per stack |
+| `shielded-night-driver` | `d00d…d00d` | `up.sh --with shielded-night` | drives `verify.sh`'s NIGHT ⇄ sNight round trips |
 
 (The console's own relay and taker wallets, `aa-console`/`aa-taker`, are funded automatically
-by `up.sh` when the `aa` profile comes up.) Genesis wallets carry 250,000,000 NIGHT with DUST
+by `up.sh` when the `aa` profile comes up; the two `shielded-night-*` wallets are funded the
+same way by a one-shot inside that profile, which skips any wallet already holding NIGHT and
+spendable DUST.) Genesis wallets carry 250,000,000 NIGHT with DUST
 registered from block zero; `--all-demo` brings each demo actor to 10,000,000 NIGHT + spendable
 DUST. Full seeds, mnemonics, Lace import, derivation cross-checks, funding mechanics and the
 token-model gotchas: [docs/WALLETS.md](docs/WALLETS.md).

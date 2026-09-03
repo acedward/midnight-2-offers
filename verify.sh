@@ -9,6 +9,10 @@
 #   evm      the umbra-evm read-only JSON-RPC surface (skipped unless the profile is up)
 #   celestia the offerfiles profile's DA devnet: producing blocks, and a blob round trip
 #            through the shared namespace (skipped unless the profile is up)
+#   shielded-night  the dApp serves, /config.js carries THIS stack's contract address, the 11
+#            circuits' ZK artifacts and the integrity manifest answer with bytes, the on-chain
+#            verifier keys equal the served ones, and a funded wallet distinct from the
+#            deployer completes both NIGHT <-> sNight round trips
 #
 # Later phases append their own sections (kernel config endpoint, frontend HTTP).
 #
@@ -24,6 +28,7 @@ CELESTIA_MODE=auto
 KERNEL_MODE=auto
 AA_MODE=auto
 FRONTEND_MODE=auto
+SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
 
 usage() {
@@ -44,6 +49,8 @@ Options:
   --no-kernel    skip the kernel section even if the service is up
   --frontend     require the frontend section (fail if the profile is not up)
   --no-frontend  skip the frontend section even if the profile is up
+  --shielded-night     require the shielded-night section (fail if the profile is not up)
+  --no-shielded-night  skip the shielded-night section even if the profile is up
   --solver       require the solver runtime section (fail if the profile is not up)
   --no-solver    skip the solver section even if the profile is up
   -h, --help     this text
@@ -59,7 +66,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SOLVER_MODE=off; shift ;;
+    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; shift ;;
     --evm)       EVM_MODE=on; shift ;;
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
@@ -70,6 +77,8 @@ while [[ $# -gt 0 ]]; do
     --no-kernel)   KERNEL_MODE=off; shift ;;
     --frontend)    FRONTEND_MODE=on; shift ;;
     --no-frontend) FRONTEND_MODE=off; shift ;;
+    --shielded-night)    SHIELDED_NIGHT_MODE=on; shift ;;
+    --no-shielded-night) SHIELDED_NIGHT_MODE=off; shift ;;
     --solver)      SOLVER_MODE=on; shift ;;
     --no-solver)   SOLVER_MODE=off; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -347,6 +356,40 @@ case "$SOLVER_MODE" in
     else
       echo
       dim "solver profile not up — skipping (./up.sh --with offerfiles --with solver to include it)"
+    fi
+    ;;
+esac
+
+# ── shielded-night (the NIGHT <-> sNight dApp) ───────────────────────────────
+# The sentinel is the WEB service, not the deploy one-shot: the one-shot exits, and a stack
+# whose page is gone but whose exited one-shot lingers must not report a passing section.
+SHIELDED_NIGHT_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=shielded-night" 2>/dev/null)" ]]; then
+  SHIELDED_NIGHT_PRESENT=1
+fi
+
+case "$SHIELDED_NIGHT_MODE" in
+  off) ;;
+  on|auto)
+    if (( SHIELDED_NIGHT_PRESENT )); then
+      echo
+      log "shielded-night"
+      if "$REPO_ROOT/scripts/verify-shielded-night.sh"; then
+        ok "shielded-night assertions passed"
+      else
+        err "shielded-night assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$SHIELDED_NIGHT_MODE" == "on" ]]; then
+      echo
+      err "--shielded-night was requested but no shielded-night container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with shielded-night"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "shielded-night profile not up — skipping (./up.sh --with shielded-night to include it)"
     fi
     ;;
 esac

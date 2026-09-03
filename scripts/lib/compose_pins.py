@@ -138,7 +138,12 @@ def _check_official_oci(f: Failures, doc: dict, matrix: dict) -> None:
     wanted = {}
     for cid, services in (
         ("midnight-node", ("node",)),
-        ("midnight-node-toolkit", ("fund",)),
+        # Every service that runs the toolkit, not just the one that ran it first. The
+        # shielded-night profile funds its two dedicated wallets with a second toolkit
+        # one-shot, and a toolkit image that drifted from the node's would produce
+        # transactions the chain rejects — so it is pinned to the same frozen index digest and
+        # checked here rather than left to a reviewer to notice.
+        ("midnight-node-toolkit", ("fund", "shielded-night-fund")),
     ):
         oci = _component(matrix, cid)["oci"]
         expect = f"{oci['repository']}@{oci['indexDigest']}"
@@ -394,6 +399,18 @@ def _fx_wrong_node_digest(doc):
     return doc
 
 
+def _fx_drifted_shielded_night_toolkit(doc):
+    # The shielded-night funding one-shot runs the same toolkit the `fund` service does. If it
+    # were pinned to different bytes it would build transactions against a different SDK than
+    # the node the stack runs, so it is audited exactly like `fund` — and this fixture is what
+    # proves the audit covers it. The self-test mutates the WIDEST rendering, which includes
+    # this fragment.
+    doc["services"]["shielded-night-fund"]["image"] = (
+        "docker.io/midnightntwrk/midnight-node-toolkit@sha256:" + "1" * 64
+    )
+    return doc
+
+
 def _fx_aliased_variants(doc):
     doc["services"]["aa-proof-server"]["image"] = doc["services"]["proof-server"]["image"]
     return doc
@@ -521,6 +538,7 @@ SELF_TESTS = [
     ("proof-server pinned by tag instead of digest", _fx_tag_only_proof),
     ("node pinned by tag instead of digest", _fx_tag_only_node),
     ("node digest drifted from the frozen matrix", _fx_wrong_node_digest),
+    ("shielded-night toolkit drifted from the frozen matrix", _fx_drifted_shielded_night_toolkit),
     ("plain and experimental aliased onto one image", _fx_aliased_variants),
     ("plain and experimental swapped", _fx_swapped_variants),
     ("proof image taken from an unrecorded (upstream) reference", _fx_upstream_registry),

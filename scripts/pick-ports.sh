@@ -69,6 +69,11 @@ AA_CONSOLE_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}-console
 AA_E2E_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}-e2e
 SOLVER_IMAGE=midnight-2-offers/cow-solver:${IMAGE_TAG_SUFFIX}
 SOLVER_SINK_IMAGE=midnight-2-offers/cow-solver-sink:${IMAGE_TAG_SUFFIX}
+# ONE build context, TWO runtime targets (nginx page server + bun deploy/verify one-shot), so
+# two image names. Both must carry the run-specific tag or a second stack on this daemon would
+# reuse the first one's binaries.
+SHIELDED_NIGHT_IMAGE=midnight-2-offers/shielded-night:${IMAGE_TAG_SUFFIX}
+SHIELDED_NIGHT_DEPLOY_IMAGE=midnight-2-offers/shielded-night-deploy:${IMAGE_TAG_SUFFIX}
 
 # External runtime images: repository + IMMUTABLE DIGEST, never a tag. Node and toolkit are
 # the official multiarch images; both proof-server variants come from the Effectstream GHCR
@@ -102,6 +107,7 @@ FRONTEND_HOST_PORT=$(( BASE + 8 ))
 AA_CONSOLE_HOST_PORT=$(( BASE + 9 ))
 SOLVER_SINK_HOST_PORT=$(( BASE + 10 ))
 SOLVER_RELAY_HOST_PORT=$(( BASE + 11 ))
+SHIELDED_NIGHT_HOST_PORT=$(( BASE + 12 ))
 
 # The SPA's hostname-relative fallback is valid only on the default :9999/:3334
 # layout. A generated random-port stack must inject its actual host endpoints.
@@ -116,4 +122,8 @@ PROOF_WAIT_TIMEOUT=${PROOF_WAIT_TIMEOUT:-120}
 EVM_WAIT_TIMEOUT=${EVM_WAIT_TIMEOUT:-300}
 CELESTIA_WAIT_TIMEOUT=${CELESTIA_WAIT_TIMEOUT:-300}
 SOLVER_WAIT_TIMEOUT=${SOLVER_WAIT_TIMEOUT:-300}
+# The shielded-night page starts only after TWO one-shots: a toolkit funding pass (NIGHT +
+# DUST registration + a wait for a spendable DUST UTXO) and a real contract deploy proved on a
+# cold chain. On the 2.x line proving runs 1.25-1.6x slower than on 1.x, so this is minutes.
+SHIELDED_NIGHT_WAIT_TIMEOUT=${SHIELDED_NIGHT_WAIT_TIMEOUT:-900}
 EOF

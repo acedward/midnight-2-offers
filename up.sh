@@ -34,7 +34,7 @@ Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
                      A profile is a compose fragment in compose/, named after the profile. An
                      unknown name is an error, not a no-op.
-                     Available now: aa, evm, frontend, offerfiles, solver.
+                     Available now: aa, evm, frontend, offerfiles, shielded-night, solver.
   --all              bring up every shipped profile in compose/. All currently documented
                      profiles have fragments and are included.
   --converge         the opposite of additive: bring up EXACTLY core + the named profiles and
@@ -57,7 +57,9 @@ without it (that profile only).
 
 Every shipped profile is complete: offerfiles includes Celestia, the kernel and batcher;
 frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA; aa deploys and serves its console; solver is
-the observation-mode solver and authenticated sink. `--all` selects all of them.
+the observation-mode solver and authenticated sink; shielded-night funds its own wallets,
+deploys the NIGHT <-> sNight wrapper contract ONCE per stack and serves its dApp, depending on
+nothing but core. `--all` selects all of them.
 
 Environment:
   ENV_FILE=<path>    use a different env file than ./.env — this is how two stacks run
@@ -69,6 +71,7 @@ Examples:
   ./up.sh --with evm            # …and umbra-evm
   ./up.sh --with offerfiles     # …and Celestia + kernel + batcher, without stopping evm
   ./up.sh --with frontend       # …and the zswap-da SPA
+  ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
 EOF
@@ -320,6 +323,29 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
   fi
 fi
 
+# The shielded-night profile. `service_completed_successfully` on the deploy one-shot is what
+# compose gates the web container on, and it is NOT enough on its own: it is equally satisfied
+# by a one-shot that took the JOIN path against a volume from a previous chain. So the two
+# things that actually matter are asserted here — the address really is on the volume, and the
+# page really is serving it — and the address is named in the summary so an operator can see
+# at a glance whether a `./down.sh -v` gave them a new contract.
+SHIELDED_NIGHT_CONTRACT=""
+if (( ! FAILED )) && [[ " $PROFILES " == *" shielded-night "* ]]; then
+  wait_compose_healthy shielded-night "${SHIELDED_NIGHT_WAIT_TIMEOUT:-900}" || FAILED=1
+  if (( ! FAILED )); then
+    # Read through the web container, which mounts the deploy volume read-only. `|| true`
+    # keeps a failed exec reportable by the assertion below instead of killing the run.
+    SHIELDED_NIGHT_CONTRACT="$(dc exec -T shielded-night \
+      cat /srv/shielded-night/contract.json 2>/dev/null \
+      | grep -o '"address"[[:space:]]*:[[:space:]]*"[^"]*"' \
+      | head -1 | sed -e 's/.*:[[:space:]]*"//' -e 's/"$//' || true)"
+    if [[ -z "$SHIELDED_NIGHT_CONTRACT" ]]; then
+      err "the shielded-night-deploy one-shot published no contract address"
+      FAILED=1
+    fi
+  fi
+fi
+
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]]; then
   # A running process is not enough: it must finish kernel discovery, connect
   # to the observation sink, and publish capabilities + its first ladder.
@@ -354,6 +380,9 @@ if [[ " $PROFILES " == *" offerfiles "* ]]; then
   if [[ "$CELESTIA_SKIP_AUTH" != "true" && "$CELESTIA_SKIP_AUTH" != "1" ]]; then
     info "celestia token    ./scripts/celestia-token.sh    (or: exec celestia celestia-token)"
   fi
+fi
+if [[ " $PROFILES " == *" shielded-night "* ]]; then
+  info "Shielded NIGHT     http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT:-10900}   contract ${SHIELDED_NIGHT_CONTRACT:-unknown}"
 fi
 if [[ " $PROFILES " == *" solver "* ]]; then
   info "solver feed        http://${HOST_ADDR}:${SOLVER_SINK_HOST_PORT:-10800}   (observation-only)"

@@ -38,11 +38,21 @@ Work down the list and stop at the first route that applies.
 | proof server, plain | `9.0.0-rc.5` | `exact-oci-mirror` | upstream index `sha256:d96a4d0f…` |
 | proof server, experimental | `9.0.0-rc.5` | `exact-oci-mirror` | upstream index `sha256:4f02ca27…` |
 | proof data | SRS K0–K19 + Ledger-static `9.0.0` | one verified generation | `b7358497…` |
-| Compact | current compatible pin | direct official LFDT | unchanged by this policy |
-| kernel, batcher, solver, AA, frontend, umbra-evm, Postgres | — | `source-build` | unchanged by this policy |
+| Compact (kernel + AA builds) | current compatible pin | direct official LFDT | unchanged by this policy |
+| Compact (shielded-night only) | `0.34.0` | official release asset, SHA-256 per arch | amd64 `775ccddf…`, arm64 `d3e292c4…` |
+| kernel, batcher, solver, AA, frontend, umbra-evm, Postgres, shielded-night | — | `source-build` | unchanged by this policy |
 
 Full digests, asset ids, member hashes, and per-platform manifest/config/layer digests live
 in the JSON. This table is the readable summary; the JSON is the truth.
+
+**Two Compact rows, and they never meet.** The kernel and AA builds keep their existing
+compatible Compact pin — migrating *them* to 0.34 / runtime 0.19 remains out of scope. The
+`shielded-night` image carries its own compactc **0.34.0**, fetched as a SHA-256-pinned Linux
+musl release asset, because the ledger-v9 contract it rebuilds was compiled with exactly that
+toolchain and the build fails unless the output is byte-identical to the committed
+`src/managed/`. Each side's generated bindings version-check against their own
+`compact-runtime` at import time, so a shared compiler would be wrong for one of them rather
+than convenient for both.
 
 ## Four rules that are easy to get wrong
 

@@ -1,0 +1,243 @@
+# compose/shielded-night.yml — the `shielded-night` profile: the Shielded NIGHT dApp.
+#
+#   ./up.sh --with shielded-night
+#
+# A profile IS this file's basename. `up.sh` never passes `--profile`, so a service that
+# carries a compose `profiles:` key is declared and rendered but never started by `up -d` —
+# which is exactly why the verify service below has one, the same way compose/core.yml's
+# toolkit `fund` service does.
+#
+# ─── FOUR SERVICES, TWO IMAGES ───────────────────────────────────────────────
+#   shielded-night-fund     ONE-SHOT: gives this profile's two dedicated wallets NIGHT and a
+#                           registered DUST address, before anything tries to pay a fee
+#   shielded-night-deploy   ONE-SHOT: deploys the ShieldedNight contract ONCE per stack and
+#                           publishes contract.json atomically to its volume
+#   shielded-night          the SPA on :10900 (nginx), which reads that address at container
+#                           start and injects it as window.SHIELDED_NIGHT
+#   shielded-night-verify   NEVER STARTED BY up.sh: the bun-side assertions of ./verify.sh
+#
+# The middle two and the last are one build context with two runtime targets (`deploy` and
+# `web`); the first is the digest-pinned midnight-node-toolkit this stack already uses.
+#
+# ─── IT DEPENDS ONLY ON `core` ───────────────────────────────────────────────
+# node, indexer and proof-server — nothing else. `./up.sh --with shielded-night` on its own is
+# legal and complete: there is no offerfiles dependency, no kernel, no Celestia, no Postgres,
+# no evm, no aa. That is a REQUIREMENT of this profile (spec FR-002), not an accident of
+# ordering, and scripts/verify-compose-pins.sh renders `core shielded-night` alone to keep it
+# true.
+#
+# ─── WHAT THE BROWSER HAS TO REACH, and why this fragment barely cares ───────
+# Unlike the zswap-da SPA, this page has NO endpoint-override lane and needs none: it has no
+# in-page wallet, and the connected browser wallet supplies the indexer / node / proof-server
+# URLs itself through the dApp connector's `getConfiguration()`. The ONE thing the page cannot
+# know is the contract address — this stack deploys its own — and that is exactly what
+# /config.js injects. So a random port block changes nothing for the page.
+#
+# The wallet must be a `window.midnight` wallet implementing the dApp-connector 4.x
+# `getProvingProvider`, AND it must speak ledger-v9. On this line that is Moth built from
+# shieldedtech/moth-wallet PR #30. See docs/KNOWN-LIMITATIONS.md and docs/WALLETS.md.
+
+services:
+  # ── shielded-night-fund ────────────────────────────────────────────────────
+  # ONE-SHOT, and a DEPENDENCY of the deploy one-shot rather than something an operator has to
+  # remember. On the ledger-9 line a wallet holding NIGHT with no registered DUST address
+  # cannot pay a fee at all, so an unfunded deployer does not fail as "no funds" — it fails
+  # somewhere inside transaction balancing with an error that names none of this.
+  #
+  # It funds exactly TWO wallets (the deployer and the verify driver) and SKIPS either one
+  # that already holds NIGHT and a spendable DUST UTXO, so repeated `./up.sh` runs cost
+  # seconds rather than minutes. compose/core.yml's `fund` service is the other tool: it funds
+  # every fund-script/mnemonic wallet in wallets.json and is invoked by hand.
+  shielded-night-fund:
+    image: '${TOOLKIT_IMAGE:-docker.io/midnightntwrk/midnight-node-toolkit@sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f}'
+    entrypoint: ['/bin/bash', '/fund/fund-shielded-night.sh']
+    environment:
+      # Reached over the compose network, so the container port — never a host port.
+      TOOLKIT_NODE_URL: 'ws://node:9944'
+      NETWORK_ID: 'undeployed'
+      FUND_FROM_SEED: '${FUND_FROM_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      FUND_AMOUNT: '${SHIELDED_NIGHT_FUND_AMOUNT:-10000000000000}'
+      FUND_DUST_WAIT: '${SHIELDED_NIGHT_FUND_DUST_WAIT:-240}'
+      SHIELDED_NIGHT_WALLET_SEED: '${SHIELDED_NIGHT_WALLET_SEED:-5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e}'
+      SHIELDED_NIGHT_DRIVER_SEED: '${SHIELDED_NIGHT_DRIVER_SEED:-d00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00d}'
+      # Matches the image's own default. The script reads it to prepare the cache dir the way
+      # the image entrypoint would.
+      MN_FETCH_CACHE: 'redb:/.cache/toolkit_fetch_cache.db'
+      MN_LEDGER_CACHE_DB: '/.cache/toolkit_ledger_cache_db'
+    volumes:
+      - ../scripts/fund-shielded-night.sh:/fund/fund-shielded-night.sh:ro
+      # THE SAME host cache directory the `fund` service and scripts/lib/toolkit.sh use — a
+      # host path rather than a named volume, because a volume created by `docker run -v`
+      # carries no compose labels and `down -v` would silently leave it behind, feeding the
+      # next run a cache built against a genesis that no longer exists. up.sh pre-creates it.
+      - ../.cache/${COMPOSE_PROJECT_NAME:-demo-infra}:/.cache
+    depends_on:
+      node:
+        condition: service_healthy
+    restart: 'no'
+
+  # ── shielded-night-deploy ──────────────────────────────────────────────────
+  # ONE-SHOT. `restart: "no"` — a one-shot that restarts is a redeploy loop, and a redeploy
+  # here is worse than for the offer-files contract: the sNight token COLOUR is derived from
+  # the contract address, so a new address silently turns every sNight coin already minted
+  # into a different, unspendable token.
+  shielded-night-deploy:
+    image: '${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-2-offers/shielded-night-deploy:local}'
+    build:
+      context: '../images/shielded-night'
+      target: 'deploy'
+      args: &shielded_night_build_args
+        SHIELDED_NIGHT_REPO: '${SHIELDED_NIGHT_REPO:-https://github.com/effectstream/shielded-night.git}'
+        # Branch `ledger-v9` — the ledger-v9 port, whose own CI is green on THIS stack's triple
+        # (node 2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5). `main` is the
+        # 1.x/ledger-v8 line and is what the sibling repository midnight-1-offers pins. The
+        # image ASSERTS the line in both directions and in both resolved lockfiles, because
+        # nothing else distinguishes the two builds.
+        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-0ff6ae1414f0e60156514c1529cad5b91e246638}'
+        # DELIBERATELY NOT OVERRIDABLE from the environment. The pinned tree's own package.json
+        # runs `compact compile +0.34.0` and the image asserts that line still says so, then
+        # recompiles and requires the output to be byte-identical to the committed
+        # src/managed/. Any other compiler simply fails — but it would fail as an inscrutable
+        # diff of binary keys rather than as the policy violation it is.
+        COMPACT_VERSION: '0.34.0'
+    entrypoint: ['/usr/local/bin/entrypoint-deploy.sh']
+    restart: 'no'
+    volumes:
+      - 'shielded-night-deploy:/srv/shielded-night'
+    environment: &shielded_night_env
+      # `undeployed` only, and the entrypoint refuses anything else. Pointing this at preview
+      # or preprod would deploy a contract with a dev seed onto a network where this dApp's
+      # own contract is already live.
+      MN_ENV: 'undeployed'
+      # SERVICE HOSTNAMES, never 127.0.0.1: upstream's `undeployed` defaults are loopback, and
+      # inside a container loopback is this container. These four names are the upstream knob
+      # (test/support/network.ts) that makes a compose-hosted deploy possible at all.
+      #
+      # /api/v4 is the path this stack's own scripts use as well (INDEXER_GQL_URL), and the
+      # one shielded-night's wallet and provider wiring are written against.
+      MN_INDEXER_URL: 'http://indexer:8088/api/v4/graphql'
+      MN_INDEXER_WS_URL: 'ws://indexer:8088/api/v4/graphql/ws'
+      MN_NODE_URL: 'http://node:9944'
+      MN_PROOF_SERVER_URL: 'http://proof-server:6300'
+      # THE DEPLOYER — a DEDICATED seed, funded at bring-up by shielded-night-fund, and not
+      # any of the three genesis wallets: genesis-1 is the funding faucet and the offer-files
+      # kernel's MIDNIGHT_WALLET_SEED, genesis-2 is the batcher's, genesis-3 is the AA deploy
+      # wallet's. Two facades on one seed take each other offline with nothing naming the
+      # cause. shielded-night's own scripts fall back to genesis-1 when MN_SEED is unset, so
+      # the entrypoint REFUSES that seed outright rather than trusting this value (FR-009).
+      SHIELDED_NIGHT_WALLET_SEED: '${SHIELDED_NIGHT_WALLET_SEED:-5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e}'
+      SHIELDED_NIGHT_ROLE: 'shielded-night-deployer'
+      # The wrapper's sealed metadata. Defaults are upstream's own ("Shielded Night" / "sNight"
+      # / 6); they are sealed into the contract at deploy and cannot be changed afterwards.
+      SHIELDED_NIGHT_NAME: '${SHIELDED_NIGHT_NAME:-Shielded Night}'
+      SHIELDED_NIGHT_SYMBOL: '${SHIELDED_NIGHT_SYMBOL:-sNight}'
+      SHIELDED_NIGHT_DECIMALS: '${SHIELDED_NIGHT_DECIMALS:-6}'
+      # Locking dissolves the maintenance committee — a ONE-WAY door meant for hosted releases.
+      # A throwaway devnet contract gains nothing from it, so it is off; the knob exists
+      # because upstream's release path uses it, and verify asserts the state either way
+      # (spec FR-016).
+      SHIELDED_NIGHT_LOCK: '${SHIELDED_NIGHT_LOCK:-false}'
+      # Not a code-level name — upstream has never heard of it. It is this deployment's
+      # convention for where the entrypoints publish and read contract.json.
+      CONTRACT_SHARE_DIR: '/srv/shielded-night'
+    depends_on:
+      # A deploy proves and submits a real transaction, so all three core services must be up
+      # AND the deployer must already be able to pay a fee. The entrypoint re-proves the
+      # endpoint readiness per container anyway: a container that comes back after its
+      # dependencies moved must not inherit a stale all-clear from bring-up.
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+      proof-server: { condition: service_started }
+      shielded-night-fund: { condition: service_completed_successfully }
+
+  # ── shielded-night ─────────────────────────────────────────────────────────
+  # The page. Static nginx plus one file written at container start.
+  shielded-night:
+    image: '${SHIELDED_NIGHT_IMAGE:-midnight-2-offers/shielded-night:local}'
+    build:
+      context: '../images/shielded-night'
+      target: 'web'
+      args: *shielded_night_build_args
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${SHIELDED_NIGHT_HOST_PORT:-10900}:10900'
+    volumes:
+      # READ-ONLY. The one-shot is the only writer of this stack's contract identity, and a
+      # web container that could rewrite it is a web container that can lose it.
+      - 'shielded-night-deploy:/srv/shielded-night:ro'
+    environment:
+      CONTRACT_SHARE_DIR: '/srv/shielded-night'
+      # The entrypoint BLOCKS on contract.json rather than writing an empty config. compose
+      # already gates this on the one-shot, but a restart policy, a `docker compose up` on a
+      # stack whose core is already running, or a manual restart can all start this container
+      # while the volume is still empty.
+      SHIELDED_NIGHT_WAIT_TIMEOUT: '${SHIELDED_NIGHT_WAIT_TIMEOUT:-900}'
+    healthcheck:
+      # THREE paths, because they prove four different things.
+      #
+      # `/` proves nginx is up and dist/ was copied.
+      #
+      # `/config.js` proves THE ENTRYPOINT RAN — and it is matched on the marker the entrypoint
+      # writes, not merely fetched. The upstream tree ships a no-op `public/config.js`
+      # placeholder (so every deployment serves a real file rather than a 404 the browser
+      # refuses to execute), and that placeholder is in dist/. A bare 200 here would therefore
+      # be satisfied by a container that never learned an address at all.
+      #
+      # The verifier key proves the ZK artifact lane is served as BYTES: without
+      # `try_files … =404` a missing artifact would answer 200 with the app shell, and
+      # midnight-js's FetchZkConfigProvider would be handed an HTML document as a proving key.
+      #
+      # The manifest is on this line what makes the keys USABLE: midnight-js 5 verifies every
+      # fetched artifact against compiler/contract-manifest.json, fail-closed. A page serving
+      # keys without it connects a wallet and then refuses to prove anything.
+      test:
+        - 'CMD-SHELL'
+        - 'wget -qO/dev/null http://127.0.0.1:10900/ && wget -qO- http://127.0.0.1:10900/config.js | grep -q entrypoint-web.sh && wget -qO/tmp/vk http://127.0.0.1:10900/contract/compiled/shielded-night/keys/convertToShielded.verifier && [ -s /tmp/vk ] && wget -qO/tmp/mf http://127.0.0.1:10900/contract/compiled/shielded-night/compiler/contract-manifest.json && [ -s /tmp/mf ]'
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      shielded-night-deploy: { condition: service_completed_successfully }
+    restart: 'unless-stopped'
+
+  # ── shielded-night-verify ──────────────────────────────────────────────────
+  # NEVER STARTED BY `up.sh`. The compose `profiles:` key is how — `up.sh` never passes
+  # `--profile`, so a service carrying one is declared and rendered but never brought up. That
+  # is the same idiom compose/core.yml's toolkit `fund` service uses, and
+  # scripts/verify-compose-pins.sh renders with BOTH profile names so this service's pins are
+  # still audited rather than quietly skipped.
+  #
+  # It carries NO depends_on on purpose: `docker compose run` would start whatever it named,
+  # and this service is only ever invoked against a stack that is already up. Its entrypoint
+  # with no argument prints what it is and exits 0, so an accidental start is harmless.
+  shielded-night-verify:
+    profiles: ['shielded-night-verify']
+    image: '${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-2-offers/shielded-night-deploy:local}'
+    build:
+      context: '../images/shielded-night'
+      target: 'deploy'
+      args: *shielded_night_build_args
+    entrypoint: ['/usr/local/bin/entrypoint-verify.sh']
+    restart: 'no'
+    volumes:
+      - 'shielded-night-deploy:/srv/shielded-night:ro'
+    environment:
+      <<: *shielded_night_env
+      # THE DRIVER WALLET, and it must not be the deployer's (spec FR-011) — the entrypoint
+      # refuses both that and the genesis-1 seed. A SECOND dedicated seed, funded at bring-up
+      # by the same one-shot: unlike the 1.x sibling (which has no funding lane and therefore
+      # borrows the genesis-funded `lace-test` wallet — project 00007 question Q6), this stack
+      # can provision a wallet nothing else will ever hold open, so it does.
+      SHIELDED_NIGHT_DRIVER_SEED: '${SHIELDED_NIGHT_DRIVER_SEED:-d00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00dd00d}'
+
+volumes:
+  # Declared here rather than created ad hoc: only a compose-created volume carries the
+  # com.docker.compose.project label that `down.sh -v` filters on, so a volume made any other
+  # way survives teardown and silently feeds a stale contract address to the next bring-up.
+  #
+  # IT BELONGS TO THE WIPE GROUP, with the chain volumes — and `down.sh` puts it there
+  # automatically, because it always passes every fragment in compose/ and `-v` removes every
+  # volume of the project. A contract address outliving its chain gives a page that loads,
+  # selects a network, and then fails every call against a contract that does not exist; the
+  # sNight colour derived from that address would be wrong too.
+  shielded-night-deploy:

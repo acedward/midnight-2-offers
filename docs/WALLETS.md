@@ -212,3 +212,104 @@ confirmed against this stack.
   and no UTXO cannot pay anything. Both the funding script and `verify-wallets.sh` assert the
   UTXO.
 - Units: 1 NIGHT = 10⁶ stars; 1 DUST = 10¹⁵ specks.
+
+## The `shielded-night` profile's two wallets
+
+The `shielded-night` profile does not reuse a genesis wallet. It has **two dedicated seeds**,
+both funded at bring-up by the `shielded-night-fund` one-shot inside the profile (the same
+toolkit lane `scripts/fund-wallet.sh` drives), and both recorded in `wallets/wallets.json`
+with `funding: "fund-script"`, so `./scripts/fund-wallet.sh --all-demo` and
+`./scripts/verify-wallets.sh --include-script-funded` cover them too.
+
+| Wallet | Seed (64 hex = 32 bytes) | Role |
+|---|---|---|
+| `shielded-night-deployer` | `5e5e…5e5e` | deploys the ShieldedNight contract, once per stack |
+| `shielded-night-driver` | `d00d…d00d` | drives `./verify.sh`'s NIGHT ⇄ sNight round trips |
+
+**Why not a genesis wallet.** Every long-lived facade in this stack already owns one:
+`genesis-1` is the funding faucet *and* the offer-files kernel's `MIDNIGHT_WALLET_SEED`,
+`genesis-2` is the batcher's, `genesis-3` is the AA deploy wallet's. Two wallet facades on one
+seed against one node force each other's connection down, silently. shielded-night's own
+scripts fall back to `genesis-1` when `MN_SEED` is unset, so the deploy entrypoint **refuses**
+that seed outright (exit 78) rather than trusting the environment.
+
+**Why the driver is a second seed and not the deployer.** The round trip must be driven by a
+wallet the deployer is not also holding open. It also keeps `lace-test` free: a browser session
+can stay connected on `lace-test` while `./verify.sh` runs, because nothing in this profile
+touches it. (The 1.x sibling repository has no funding lane and therefore *does* borrow
+`lace-test` for this role, with the matching "don't run both at once" caveat.)
+
+Both are ordinary BIP-32 master seeds, so the toolkit's `show-address` and the wallet SDK's
+`HDWallet.fromSeed` derive the same wallet — the addresses in `wallets/wallets.json` were
+produced with `midnight-node-toolkit:2.0.0-rc.4 show-address --network undeployed`.
+
+## Browser hand test: NIGHT ⇄ sNight with the Moth wallet
+
+`./verify.sh` proves the contract from Node, in a container. It cannot prove the **browser**
+path, because the shielded-night page has no in-page wallet by design: it enumerates
+`window.midnight.*` (dApp-connector API 4.x) and refuses a wallet that does not implement
+`getProvingProvider`. Proving is wallet-owned — the page never names or reaches a proof server.
+
+On the 2.x line the wallet must **also** speak ledger-v9. The one measured to do so is
+**Moth**, built from [`shieldedtech/moth-wallet` PR #30](https://github.com/shieldedtech/moth-wallet/pull/30)
+(`feat/ledger-v9-support`), which pins the same prerelease set this profile does
+(`ledger-v9@1.0.0-rc.3`, `wallet-sdk@2.0.0-beta.2`) and selects its ledger from the indexer's
+`protocolVersion`.
+
+### Steps
+
+1. **Use the DEFAULT port block.** A browser extension's `undeployed` preset hardcodes
+   **node 9944, indexer 8088, proof-server 6300** — the `.env.example` defaults. A stack from
+   `scripts/pick-ports.sh` cannot be reached by it. If port 6300 is busy, free it first; do
+   not move the stack.
+
+   ```bash
+   cp .env.example .env
+   ./up.sh --with shielded-night
+   ./verify.sh --shielded-night      # optional, but it is the cheap proof the contract works
+   ```
+
+2. **Note the contract address** `up.sh` prints on its summary line (`Shielded NIGHT
+   http://127.0.0.1:10900   contract <addr>`). It is also what `GET /config.js` serves and
+   what the page's footer shows once the network is selected.
+
+3. **Build and load Moth** from `feat/ledger-v9-support` as an unpacked extension, and
+   **record the exact commit you built** (`git -C moth-wallet rev-parse HEAD`).
+
+4. **Import a funded wallet.** `lace-test` — mnemonic `abandon` ×23 + `diesel` — is prefunded
+   at genesis with 250,000,000 NIGHT and DUST registered from block zero, so nothing has to be
+   run for it, and no service in this stack holds it open. `demo-alice` works too after
+   `./scripts/fund-wallet.sh --all-demo`.
+
+5. **Open `http://127.0.0.1:10900`**, connect the wallet, and pick **Local (undeployed)** in
+   the network dropdown. The page defaults to *Preview*; the entry that appears only because
+   `/config.js` injected this stack's address is the local one.
+
+6. **Convert 1 NIGHT → sNight, then back.** One wallet approval per direction on the atomic
+   path. NIGHT should drop by exactly 1 plus fees (fees are DUST, so the NIGHT delta is
+   exactly 1) and sNight should show 1; the reverse returns exactly 1 NIGHT.
+
+### What to record
+
+Whether it works or not, write these into `docs/KNOWN-LIMITATIONS.md` — a measured failure is
+a result, a silent gap is not:
+
+* the **extension build SHA** (`git rev-parse HEAD` of the Moth branch you built);
+* the connector's **`apiVersion`** — `await window.midnight.<name>.apiVersion` in the page
+  console;
+* whether **`getProvingProvider`** was present on the connected API (its absence is the one
+  thing the page refuses outright);
+* whether the wallet's proving provider implemented **`lookupKey`**. ledger-v9 widened
+  `ProvingProvider` from `{check, prove}` to `{check, prove, lookupKey}` while
+  `@midnight-ntwrk/dapp-connector-api` 4.0.1 still declares only the narrow shape, so the dApp
+  fills the method in from its own served artifacts when the wallet does not supply it. The
+  page logs which lane it took, at `console.info`:
+
+  ```
+  [providers] wallet proving provider implements lookupKey (ledger-v9 native)
+  [providers] wallet proving provider has no lookupKey; serving key material from the dApp's own zkConfigProvider …
+  ```
+
+  Both lanes prove; which one appeared is the measurement (project 00007, question Q9);
+* the **NIGHT and sNight balances before and after** each direction, and the tx hashes;
+* if it fails: the exact error text and which of the two directions it failed in.

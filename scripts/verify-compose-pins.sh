@@ -50,8 +50,13 @@ COMBOS=(
   "core aa"
   "core evm"
   "core frontend"
+  # `core shielded-night` ALONE is rendered on purpose. The shielded-night profile depends on
+  # nothing but core (spec FR-002), and the cheapest way to keep that true is to make a
+  # dependency on any other fragment fail to render here.
+  "core shielded-night"
+  "core offerfiles shielded-night"
   "core offerfiles solver"
-  "core offerfiles aa evm frontend solver"
+  "core offerfiles aa evm frontend shielded-night solver"
 )
 
 FAILURES=0
@@ -62,11 +67,13 @@ for combo in "${COMBOS[@]}"; do
   for frag in $combo; do files+=(-f "$REPO_ROOT/compose/${frag}.yml"); done
 
   render="$(mktemp)"
-  # `--profile fund` so the toolkit-backed one-shot is rendered too; it is otherwise
-  # filtered out and its image pin would never be checked.
+  # `--profile fund --profile shielded-night-verify` so the two profile-gated one-shots are
+  # rendered too; they are otherwise filtered out and their image pins would never be checked.
+  # A `profiles:` key is how this repository declares a service `up -d` must not start, so
+  # without this the checks would silently skip exactly those services.
   # ${files[@]+…} guards the empty case: macOS bash 3.2 errors on "${files[@]}" under
   # `set -u` when the array has no elements. Same note as lib/common.sh's dc().
-  if ! docker compose --env-file "$EMPTY_ENV" --profile fund ${files[@]+"${files[@]}"} config --format json \
+  if ! docker compose --env-file "$EMPTY_ENV" --profile fund --profile shielded-night-verify ${files[@]+"${files[@]}"} config --format json \
        >"$render" 2>"$render.err"; then
     err "compose could not render: ${combo}"
     sed 's/^/      /' "$render.err" >&2
@@ -84,9 +91,12 @@ for combo in "${COMBOS[@]}"; do
     FAILURES=$(( FAILURES + 1 ))
   fi
 
-  # The self-test mutates a rendering that contains BOTH proof servers, so every fixture
-  # has something to break.
-  [[ -z "$FIRST_RENDER" && "$combo" == "core aa" ]] && FIRST_RENDER="$render" && continue
+  # The self-test mutates the WIDEST rendering — both proof servers, the indexer, the cache
+  # initializer and both toolkit one-shots — so every fixture has something to break. A
+  # fixture whose target service is absent would mutate nothing and be scored as "the checker
+  # did not bite", which is a failure for the wrong reason.
+  [[ -z "$FIRST_RENDER" && "$combo" == "core offerfiles aa evm frontend shielded-night solver" ]] \
+    && FIRST_RENDER="$render" && continue
   rm -f "$render"
 done
 
@@ -94,7 +104,7 @@ if (( SELF_TEST )); then
   echo
   log "negative fixtures (each mutates the real rendered document)"
   if [[ -z "$FIRST_RENDER" ]]; then
-    err "no core+aa rendering was produced, so the self-test has nothing to mutate"
+    err "no full-stack rendering was produced, so the self-test has nothing to mutate"
     FAILURES=$(( FAILURES + 1 ))
   elif python3 "$CHECKER" "$FIRST_RENDER" --matrix "$MATRIX" --mirror "$MIRROR" --self-test \
        | sed -n '/negative fixtures\|ACCEPT\|reject/p'; then

@@ -144,3 +144,83 @@ your own harness:
 - **`verify.sh` alone would not prove the funding worked.** Its wallet section checks the
   *genesis* wallets, which are funded whether or not anything ran. Asserting the script-funded
   ones needs the explicit `--include-script-funded`, which is why `ci-check.sh` runs both.
+
+## The `shielded-night` profile
+
+```bash
+./up.sh --with shielded-night      # core + this profile; nothing else is needed
+./verify.sh --shielded-night       # REQUIRE the section (fail if the profile is not up)
+./verify.sh --no-shielded-night    # skip it even when the profile is up
+```
+
+### What bring-up actually does, in order
+
+1. **`shielded-night-fund`** (toolkit one-shot) waits for finality to move off genesis, then
+   gives the deployer and the verify driver 10,000,000 NIGHT each and registers their DUST
+   addresses, waiting until a *spendable* DUST UTXO exists. It **skips** a wallet that already
+   holds NIGHT and DUST, so the second and later `./up.sh` runs cost seconds rather than
+   minutes. On the ledger-9 line this step is not optional: a wallet holding NIGHT with no
+   registered DUST cannot pay a fee at all, and the failure would surface inside transaction
+   balancing with an error naming none of this.
+2. **`shielded-night-deploy`** (one-shot, `restart: "no"`) waits for node block #1, the proof
+   server and the indexer, then deploys the contract and publishes `contract.json` to its
+   named volume — temp file plus `mv`, so a reader can never see a half-written record. If a
+   record is already there it JOINs and exits 0 without deploying.
+3. **`shielded-night`** (nginx) starts only on the one-shot's
+   `service_completed_successfully`, blocks until it can read the address, writes `/config.js`
+   and execs nginx.
+4. `up.sh` then waits for the container healthcheck **and reads the address back off the
+   volume**, naming it in the summary line. `service_completed_successfully` alone is not
+   enough: it is equally satisfied by a one-shot that took the JOIN path against a volume left
+   over from a previous chain.
+
+The first bring-up is the slow one — funding plus a real contract deploy proved on a cold
+chain — which is why `SHIELDED_NIGHT_WAIT_TIMEOUT` defaults to 900 s rather than the core
+services' 120–420 s.
+
+### Redeploy semantics
+
+The contract is deployed **once per stack**, and that is a correctness property rather than an
+optimisation: the sNight token colour is derived from the contract address, so a silent
+redeploy turns every sNight coin already minted into a different, unspendable token.
+
+* `./up.sh` again, `--force-recreate`, a restarted deploy container → **same address**
+  (the one-shot logs `JOIN: … already exists — NOT deploying a second contract`).
+* `./down.sh` (no `-v`) → the volume survives with the chain; the same contract comes back.
+* `./down.sh -v` → the volume goes with the chain, and the next bring-up deploys a **new**
+  contract at a new address. That is the only supported way to get one.
+
+After a redeploy the page must be restarted to pick the new address up, because the entrypoint
+reads the volume once at container start. `./up.sh` orders this correctly on its own; if you
+drop the volume by hand, `docker compose … restart shielded-night`.
+
+### Locking
+
+`SHIELDED_NIGHT_LOCK=true` makes the one-shot run upstream's `deploy-and-lock.ts`, which
+dissolves the contract's maintenance committee. That is a **one-way door** meant for hosted
+releases: no verifier key and no rule can ever be changed again. A throwaway devnet contract
+that dies with `./down.sh -v` gains nothing from it, so it is off by default — and `verify.sh`
+asserts the authority state in **both** directions, failing if the contract is locked when
+nobody asked for it.
+
+Note that upstream's `verify-deployment.ts` exits non-zero on an unlocked contract *even when
+all 11 verifier keys match*, because its own contract is "the code matches AND the contract is
+immutable". The verify container therefore parses the key result rather than trusting the exit
+status — see `images/shielded-night/entrypoint-verify.sh`.
+
+### What the verify section asserts
+
+`scripts/verify-shielded-night.sh`, in order: the page serves HTML; `/config.js` is the
+**generated** one (upstream ships a placeholder, so a 200 proves nothing) and carries *exactly*
+the address on the volume; `index.html` loads it as a classic script; the deploy record names
+`networkId=undeployed` and the fields the docs promise; all 33 ZK artifacts (11 circuits ×
+prover/verifier/bzkir) answer with non-empty non-HTML bytes; `compiler/contract-manifest.json`
+is served, names compactc 0.34.0 and covers all 11 circuits; a circuit that does not exist
+answers **404**, never the SPA shell; the on-chain verifier keys equal the served ones 11/11;
+and a funded driver wallet distinct from the deployer completes **both** round trips — atomic
+and two-step — with exact balance assertions, by running the *upstream* integration suite
+against this stack (`MN_EXTERNAL_STACK=1`).
+
+**Budget minutes for the round trips.** The same two tests take ~280 s against the 1.x triple
+and were measured at 487–537 s in the `ledger-v9` branch's own CI: proving on the 2.x line runs
+about 1.25–1.6× slower.
