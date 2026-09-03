@@ -53,7 +53,7 @@ ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2
 ARG SHIELDED_NIGHT_REPO=https://github.com/effectstream/shielded-night.git
 # effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port, full CI green on this
 # stack's triple (unit, frontend, byte-exact rebuild, 17/17 integration).
-ARG SHIELDED_NIGHT_REF=36caf59999bd9336b49009253b168bc3024ea4fb
+ARG SHIELDED_NIGHT_REF=bc483aeb61e1cc9c789be83ca2d1f43ec24ec979
 # NOT a free choice: the pinned tree's package.json runs `compact compile +0.34.0` and its CI
 # pins COMPACT_VERSION 0.34.0. Stage `source` asserts the tree still says so, so this ARG and
 # the source can never drift apart silently.
