@@ -456,7 +456,7 @@ NIGHT. Eleven circuits, and two conversion models:
 This stack is Midnight **2.x**. shielded-night's `main` is the **1.x / ledger-v8** line — that
 is what its live preview deployment runs, and what the sibling repository `midnight-1-offers`
 pins for the same profile. So this repository pins the long-lived **`ledger-v9`** branch
-(`0ff6ae14…`, [PR #10](https://github.com/effectstream/shielded-night/pull/10)), whose own CI
+(`36caf599…`, [PR #10](https://github.com/effectstream/shielded-night/pull/10)), whose own CI
 runs the unit tier, the frontend build, the byte-exact contract rebuild and the full
 integration suite against node 2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5.
 
@@ -526,6 +526,18 @@ What makes it run first is that it is a classic script, not where it sits in the
 Vite hoists the bundle's `<script type="module">` into `<head>` while the config tag stays in
 `<body>`, and a module script is deferred by specification. `verify.sh` asserts that property
 rather than document order, because asserting the order would be both wrong and red.
+
+### The network dropdown now also offers PreProd
+
+Since `ledger-v9` @ `36caf599…` (project 00007 phase F2) merged shielded-night `main`'s own PR
+#11, `frontend/.env`'s `PREPROD_ADDRESS` is baked into the bundle at build time alongside
+`PREVIEW_ADDRESS` — so the page this profile serves shows **Preview**, **PreProd** and
+**Local (undeployed)** in its network dropdown, not just the first and third. This is a
+consequence of the re-pin, not new code in this repository: nothing here adds, wires or tests a
+PreProd lane. **Selecting PreProd talks to the real, public preprod network and its live,
+unlocked contract — not this stack's own devnet.** The devnet deploy this profile drives is
+always `Local (undeployed)`, which is what `/config.js` points the dropdown at by default and
+what `verify.sh` and the round-trip driver both exercise.
 
 ### No browser-endpoint lane, on purpose
 
