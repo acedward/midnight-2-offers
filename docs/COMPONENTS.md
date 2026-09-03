@@ -456,7 +456,7 @@ NIGHT. Eleven circuits, and two conversion models:
 This stack is Midnight **2.x**. shielded-night's `main` is the **1.x / ledger-v8** line — that
 is what its live preview deployment runs, and what the sibling repository `midnight-1-offers`
 pins for the same profile. So this repository pins the long-lived **`ledger-v9`** branch
-(`36caf599…`, [PR #10](https://github.com/effectstream/shielded-night/pull/10)), whose own CI
+(`30af63f3…`, [PR #10](https://github.com/effectstream/shielded-night/pull/10)), whose own CI
 runs the unit tier, the frontend build, the byte-exact contract rebuild and the full
 integration suite against node 2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5.
 
@@ -529,7 +529,7 @@ rather than document order, because asserting the order would be both wrong and 
 
 ### The network dropdown now also offers PreProd
 
-Since `ledger-v9` @ `36caf599…` (project 00007 phase F2) merged shielded-night `main`'s own PR
+Since `ledger-v9` @ `30af63f3…` (project 00007 phase F2) merged shielded-night `main`'s own PR
 #11, `frontend/.env`'s `PREPROD_ADDRESS` is baked into the bundle at build time alongside
 `PREVIEW_ADDRESS` — so the page this profile serves shows **Preview**, **PreProd** and
 **Local (undeployed)** in its network dropdown, not just the first and third. This is a

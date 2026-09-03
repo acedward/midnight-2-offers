@@ -163,7 +163,7 @@ they cannot.
   contract is immutable" — so the verify container passes `--allow-unlocked`, which still
   measures and prints the lock state but folds only the verifier-key/circuit-set check into the
   exit code (project 00007 Q8, delivered as upstream PR #12; consumed here from `ledger-v9` @
-  `36caf599…`, project 00007 phase F2).
+  `30af63f3…`, project 00007 phase F2).
 - **`./down.sh -v` changes the token.** The sNight colour is derived from the contract address,
   so a full reset does not merely redeploy: every sNight coin from the previous chain becomes a
   different, unspendable token. That is why the deploy is a JOIN-or-deploy one-shot and why

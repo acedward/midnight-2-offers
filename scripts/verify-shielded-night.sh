@@ -121,7 +121,7 @@ fi
 # THE PREPROD NETWORK, BAKED AT BUILD TIME. Unlike UNDEPLOYED_ADDRESS (runtime-injected via
 # /config.js, checked above), PREVIEW_ADDRESS and PREPROD_ADDRESS come from the pinned tree's
 # own committed `frontend/.env` and are inlined into the module bundle by Vite at build time —
-# there is no container-side lane to check them through. Since ledger-v9 @ 36caf599… (project
+# there is no container-side lane to check them through. Since ledger-v9 @ 30af63f3… (project
 # 00007 phase F2) merged shielded-night main's PR #11, that file carries a real PreProd address,
 # so the page this profile serves now offers Preview / PreProd / Local (undeployed) in its
 # network dropdown, not just the first and third. This is a consequence of the re-pin, not new

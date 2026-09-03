@@ -206,7 +206,7 @@ nobody asked for it.
 Note that upstream's `verify-deployment.ts`, by default, exits non-zero on an unlocked contract
 *even when all 11 verifier keys match*, because its own contract is "the code matches AND the
 contract is immutable" — wrong for a throwaway devnet deploy, which is deliberately never
-locked. Since shielded-night `ledger-v9` @ `36caf599…` (project 00007 phase F2, upstream PR #12)
+locked. Since shielded-night `ledger-v9` @ `30af63f3…` (project 00007 phase F2, upstream PR #12)
 the script takes `--allow-unlocked`: the lock state is still measured and printed, but only the
 verifier-key/circuit-set check decides the exit code, so `images/shielded-night/entrypoint-verify.sh`
 now trusts that exit status directly instead of parsing stdout (project 00007 Q8/F2).

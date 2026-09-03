@@ -93,7 +93,7 @@ services:
         # 1.x/ledger-v8 line and is what the sibling repository midnight-1-offers pins. The
         # image ASSERTS the line in both directions and in both resolved lockfiles, because
         # nothing else distinguishes the two builds.
-        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-36caf59999bd9336b49009253b168bc3024ea4fb}'
+        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-30af63f3865d0bc5d5331ae32a7891ad48818303}'
         # DELIBERATELY NOT OVERRIDABLE from the environment. The pinned tree's own package.json
         # runs `compact compile +0.34.0` and the image asserts that line still says so, then
         # recompiles and requires the output to be byte-identical to the committed
