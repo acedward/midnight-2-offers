@@ -1223,6 +1223,46 @@ async function infraStatus() {
     }),
   ]);
 
+  // ── the price feed (profile `prices`) ──────────────────────────────────────
+  // It has NO endpoint of its own: it publishes no port, serves nothing, and
+  // talks only to CoinGecko and Postgres. So it is probed where its output
+  // lands — the KERNEL's GET /v1/prices `feed` block, which is the same row
+  // (`price_feed_status`) the feed upserts after every cycle.
+  //
+  // That row is deliberately NOT seeded by 000-init.sql, so the three states map
+  // onto the three dots exactly:
+  //   absent  no feed row at all — this stack never ran the profile (the normal
+  //           answer, since it is opt-in and needs an API key)
+  //   down    a cycle ran and recorded an error (no key, a 429, a provider
+  //           outage). The stack still quotes: the seeded prices are untouched.
+  //   up      a cycle completed cleanly; last_ok_at says when.
+  const priceFeed = await probe(async () => {
+    const NIGHT = "0".repeat(64);
+    const p = (await fetchJson(`${KERNEL_URL}/v1/prices?tokens=${NIGHT}`)) as any;
+    const feed = p?.feed ?? {};
+    if (!feed.last_run_at && !feed.last_ok_at) {
+      // Distinguished from an unreachable kernel: this IS an answer, and it
+      // says the feed has never run here.
+      throw new Error("no price-feed row — the `prices` profile has not run on this stack");
+    }
+    return {
+      provider: feed.provider ?? null,
+      lastOkAt: feed.last_ok_at ?? null,
+      lastRunAt: feed.last_run_at ?? null,
+      lastError: feed.last_error ?? null,
+      // Which assets are live rather than seeded — the one claim that cannot be
+      // satisfied by the shipped data (`source` is a two-value CHECK column).
+      fedAssets: (p?.assets ?? [])
+        .filter((a: any) => a?.source === "feed")
+        .map((a: any) => a.asset_id),
+    };
+  });
+  // `probe` cannot know that a recorded last_error means DOWN rather than UP.
+  const priceFeedComponent =
+    priceFeed.status === "up" && (priceFeed.info as any)?.lastError
+      ? { status: "down" as const, info: priceFeed.info }
+      : priceFeed;
+
   return {
     at: new Date().toISOString(),
     components: {
@@ -1230,6 +1270,7 @@ async function infraStatus() {
       node, indexer, proofServer, aaProofServer,
       kernel, kernelSync, batcher, celestia,
       evmRpc, frontend, solverSink: sink, solver, solverFrontend, offerPoster,
+      priceFeed: priceFeedComponent,
       // The one store for the whole stack (T11.4): the kernel's offer book
       // (`offerfiles`) and umbra-evm's index (`umbra`) both live here.
       postgres,

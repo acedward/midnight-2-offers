@@ -153,10 +153,20 @@ control is worse than one that is gone.
   through the offer-files contract's permissionless dev faucet circuit, which exists for this
   devnet. Its seed is public like every other seed here, and it must never be scaled past one
   replica — two wallet facades on one seed against one node force each other's connection down.
-- **The `price-feed` service is not run.** The schema ships seeded CoinGecko values captured
-  2026-09-02, so quotes are real ratios but static. Live prices need an API key and internet at
-  runtime, which would be the first real secret in this repository; upstream runs it behind
-  `--profile prices`.
+- **The `price-feed` service is OPT-IN, and off by default.** Without `--with prices` the stack
+  quotes from the CoinGecko values `000-init.sql` seeded on 2026-09-02: real ratios, but static.
+  The profile needs `COINGECKO_API_KEY` — the only genuine secret this repository uses — and
+  internet access at runtime, so `./up.sh --all` skips it (out loud) when no key is set, and
+  `./up.sh --with prices` refuses to start without one. A key is never defaulted, never baked
+  into an image and never committed; it travels as the `x-cg-demo-api-key` header.
+- **The price feed refreshes ASSETS, not colours.** `PRICE_FEED_MAP` and the built-in name map
+  are what decide that `WBTC` means `bitcoin`; a colour whose name is unknown stays unpriced no
+  matter how often the feed runs. Naming is `register-tokens`' job.
+- **A running feed does not guarantee fresh prices.** A provider outage, a `429` or a lost key
+  leaves the last good rows in place — nothing is ever deleted — so the failure mode is STALE,
+  not missing, and it is silent unless you look: `./verify.sh --prices` is what turns it into a
+  failure (`PRICES_MAX_AGE_S`, default 3600 s). On the default 24 h interval a long-lived stack
+  needs that limit raised, or `PRICE_FEED_INTERVAL_MS` lowered.
 - **The AA image is still pinned to `AA_REF=713a2021…`,** six commits behind its `main`. The AA
   repo moved to compactc 0.34.0 / compact-runtime 0.19.0, and this image compiles the AA
   contracts AND the kernel's offer-files contract with ONE compactc and loads both with ONE

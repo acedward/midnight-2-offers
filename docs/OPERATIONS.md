@@ -30,6 +30,7 @@ healthy":
 | proof-server | the port accepts a TCP connection | The image has no curl/wget, and its bash sits behind a per-build `/nix/store/<hash>…` path. Compose has already gated it on the proof-data cache verifying, so reaching this point means the shared generation is active |
 | evm-rpc (`--with evm`) | `eth_chainId` answers over HTTP, **and** the WS port completes a `101 Switching Protocols` handshake | A TCP probe of a *published* port proves nothing: docker's port proxy accepts the connection before it dials the container, so `nc -z` reports a working endpoint that refuses every client |
 | solver-frontend (`--with solver`) | the container healthcheck (`/health` on the monitor itself) | Deliberately says nothing about the solver: a monitor whose health followed the thing it monitors would be reported down exactly when it is needed. The solver's own wait, one line above it in `up.sh`, is what proves the solver is quoting |
+| price-feed (`--with prices`) | nothing container-side — the KERNEL's `GET /v1/prices` is polled until `feed.last_ok_at` is non-null (bounded by `PRICES_WAIT_TIMEOUT`, default 180 s); a timeout is a WARN | The feed publishes no port and has no healthcheck: it is a *writer*, and its liveness signal is a row. `price_feed_status` is deliberately NOT seeded by `000-init.sql`, so a non-null `last_ok_at` means exactly "a cycle completed against THIS database" and nothing weaker. A timeout is a warning because a feed that cannot reach CoinGecko still leaves every quote working from the seeded prices; `./verify.sh --prices` is the gate |
 | offer-poster (`--with poster`) | the container healthcheck (`/health` binds), then `/health` is READ: `degraded` is a WARN, `failed` is a failure | `/health` answers 200 while the poster is `starting` and while it is `degraded` (no DUST yet) — 503-ing on `degraded` would make Compose restart a container that is correctly waiting for NIGHT. So healthy proves only that the server bound, which happens after wallet sync + dust registration + the dust wait + the contract join (hence `POSTER_WAIT_TIMEOUT=900`). `./verify.sh --poster` is the gate that requires a real mint and a posted offer |
 
 ## Verifying and tearing down
@@ -45,6 +46,10 @@ healthy":
                          #   bearer gate (200 with / 401 without), :9100 unpublished, monitor page
 ./verify.sh --poster     # require the poster section: state, mints >= 1, and lastOfferId present
                          #   in the KERNEL's book with a whole-coin give leg and a quoted want leg
+./verify.sh --prices     # require the price-feed section: the container is running, a cycle
+                         #   completed with no error, the rows it wrote are recent, and BOTH legs
+                         #   of a /v1/quote are `source: feed` rather than `seed`
+./scripts/verify-prices.sh --once   # …and spend one CoinGecko credit on an extra synchronous cycle
 ./down.sh                # stop, keep the chain — ./up.sh resumes it
 ./down.sh -v             # FULL RESET: wipes every project volume — node, indexer, postgres,
                          #             celestia, toolkit cache AND the proof-data cache
@@ -150,6 +155,10 @@ new service means a new offset rather than a new fixed number. The current layou
 | +13 | `SOLVER_FRONTEND_PORT` — the COW solver's monitor site | 10802 |
 | +14 | `POSTER_HEALTH_PORT` — the offer poster's health/metrics/journal | 10803 |
 
+The `prices` profile adds **no offset**: `price-feed` publishes nothing at all. It is a writer —
+CoinGecko in, `asset_prices` out — and what it wrote is read back through the kernel's already
+published `GET /v1/prices`.
+
 Two ports are deliberately NOT in that table because they are never published: the shared
 `postgres:5432`, and the COW solver's status listener `solver:9100`, which serves the solver's
 entire internal state behind a Bearer and is read only by the monitor site over the compose
@@ -191,6 +200,56 @@ your own harness:
 - **`verify.sh` alone would not prove the funding worked.** Its wallet section checks the
   *genesis* wallets, which are funded whether or not anything ran. Asserting the script-funded
   ones needs the explicit `--include-script-funded`, which is why `ci-check.sh` runs both.
+
+## The `prices` profile — and the one real secret in this repository
+
+```bash
+./up.sh --with offerfiles --with prices   # core + the kernel + the CoinGecko feed
+./verify.sh --prices                      # REQUIRE the section (fail if the profile is not up)
+./verify.sh --no-prices                   # skip it even when the profile is up
+docker compose … run --rm price-feed --once   # one cycle now; exit 0/2/64
+```
+
+**The stack does not need it.** `migrations/000-init.sql` SEEDS real reference prices, so
+`/v1/prices`, `/v1/quote` and the batcher's sponsorship gate all work — a fresh database quotes
+1 WBTC ≈ 32 WETH from day one. The profile buys **fresh** prices, not working ones. That is why
+it is opt-in here, and why upstream keeps its own copy behind `--profile prices`.
+
+**`COINGECKO_API_KEY` is the only genuine secret this repository uses.** Every other "secret"
+here — the wallet seeds, `SOLVER_STATUS_AUTH_TOKEN`, the Celestia auth token — is public dev
+material and documented as such. This one is a third-party credential on a metered quota, so:
+
+- it has **no default anywhere** — not in `compose/prices.yml`, not in a Dockerfile, not in
+  `.env.example` (which carries the variable NAME and a warning, and no value);
+- it lives only in the env file, which `.gitignore` already excludes (`.env`, `.env.*`, with
+  `.env.example` the single exception);
+- it travels as the `x-cg-demo-api-key` **header**, never as a query parameter — a query string
+  lands in access logs, proxy logs, browser history and error reports;
+- the service prints `key=present` / `key=ABSENT` at startup and never the value.
+
+**What happens when it is missing**, and why it is spelled this way:
+
+| Path | Behaviour |
+|---|---|
+| `./up.sh --with prices` | **refuses, before any container is created**, naming the variable and the env file in force (exit 2) |
+| `./up.sh --all` | brings up everything EXCEPT `prices`, and says so on the run. This is what keeps `scripts/ci-check.sh` passing on a host with no key |
+| `docker compose … up price-feed` by hand | the container starts, warns that it has no key, and IDLES — upstream's deliberate design: a non-zero exit under `restart: unless-stopped` is a crash loop, and the stack is perfectly usable on the seeded prices meanwhile |
+| `./verify.sh --prices` | FAILS, naming which of the four things is wrong (container not running, no cycle ever completed, the cycle errored, or the rows are still `seed`-sourced) |
+
+The refusal is in `up.sh` and **not** as `${COINGECKO_API_KEY:?…}` in the compose fragment for a
+measured reason: a profile here IS a fragment filename, `./down.sh` passes *every* fragment on
+every teardown, and compose interpolates the whole file set on *every* command — so a
+required-variable marker in `compose/prices.yml` would break `down.sh`, `ps`, `config` and every
+`up.sh` for anyone without a key, including the teardown of a stack that is already running.
+It is the same split `scripts/lib/common.sh` already makes for image pins: `require_digest_ref`
+reports, `assert_image_pins` dies. Teardown must never depend on a value that only *starting*
+something needs.
+
+**What a cycle costs.** One `simple/price` request per cycle: the five seeded asset ids
+(`bitcoin`, `ethereum`, `usd-coin`, `midnight-3`, `usdm-2`) are batched into a single call
+(`PRICE_FEED_BATCH_SIZE`, default 50), and the default interval is 24 h. A cycle also runs
+immediately at start, which is what `up.sh` waits for. A `429` stops a cycle where it stands and
+keeps everything it already wrote.
 
 ## The `shielded-night` profile
 

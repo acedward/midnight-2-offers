@@ -56,6 +56,12 @@ COMBOS=(
   "core shielded-night"
   "core offerfiles shielded-night"
   "core offerfiles solver"
+  # `core offerfiles prices` is rendered with an EMPTY env file ON PURPOSE, and that is
+  # the point of listing it: the price feed is the one service that needs a real secret,
+  # and this proves the fragment still RENDERS without it. A `${COINGECKO_API_KEY:?…}`
+  # would fail right here — which is exactly what it would do inside `./down.sh` for
+  # every operator who has no key, since down.sh passes every fragment (00010 Q23).
+  "core offerfiles prices"
   "core offerfiles aa evm frontend shielded-night solver"
 )
 

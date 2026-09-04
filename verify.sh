@@ -9,6 +9,9 @@
 #   evm      the umbra-evm read-only JSON-RPC surface (skipped unless the profile is up)
 #   celestia the offerfiles profile's DA devnet: producing blocks, and a blob round trip
 #            through the shared namespace (skipped unless the profile is up)
+#   prices   the CoinGecko feed has refreshed the kernel's reference prices: a cycle
+#            completed against THIS database, the rows it wrote are recent, and the
+#            quote path uses them (skipped unless the profile is up)
 #   shielded-night  the dApp serves, /config.js carries THIS stack's contract address, the 11
 #            circuits' ZK artifacts and the integrity manifest answer with bytes, the on-chain
 #            verifier keys equal the served ones, and a funded wallet distinct from the
@@ -31,6 +34,7 @@ FRONTEND_MODE=auto
 SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
 POSTER_MODE=auto
+PRICES_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -56,6 +60,8 @@ Options:
   --no-solver    skip the solver section even if the profile is up
   --poster       require the offer-poster section (fail if the profile is not up)
   --no-poster    skip the offer-poster section even if the profile is up
+  --prices       require the price-feed section (fail if the profile is not up)
+  --no-prices    skip the price-feed section even if the profile is up
   -h, --help     this text
 
 By default each optional section runs if and only if that profile's containers exist for this
@@ -69,7 +75,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; shift ;;
+    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
     --evm)       EVM_MODE=on; shift ;;
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
@@ -86,6 +92,8 @@ while [[ $# -gt 0 ]]; do
     --no-solver)   SOLVER_MODE=off; shift ;;
     --poster)      POSTER_MODE=on; shift ;;
     --no-poster)   POSTER_MODE=off; shift ;;
+    --prices)      PRICES_MODE=on; shift ;;
+    --no-prices)   PRICES_MODE=off; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -396,6 +404,43 @@ case "$POSTER_MODE" in
     else
       echo
       dim "poster profile not up — skipping (./up.sh --with offerfiles --with poster to include it)"
+    fi
+    ;;
+esac
+
+# ── prices (the CoinGecko reference-price feed) ──────────────────────────────
+# The sentinel is the RUNNING container, checked inside verify-prices.sh, not
+# `docker ps -aq` here: the feed is a loop, and an exited price-feed container is
+# a failure to report rather than a profile to skip. This block only decides
+# whether the section runs at all, which follows the same presence rule as the
+# rest of the file.
+PRICES_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=price-feed" 2>/dev/null)" ]]; then
+  PRICES_PRESENT=1
+fi
+
+case "$PRICES_MODE" in
+  off) ;;
+  on|auto)
+    if (( PRICES_PRESENT )); then
+      echo
+      log "prices"
+      if "$REPO_ROOT/scripts/verify-prices.sh"; then
+        ok "prices assertions passed"
+      else
+        err "prices assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$PRICES_MODE" == "on" ]]; then
+      echo
+      err "--prices was requested but no price-feed container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with offerfiles --with prices   (needs COINGECKO_API_KEY in the env file)"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "prices profile not up — skipping (./up.sh --with offerfiles --with prices to include it; quotes use the seeded prices meanwhile)"
     fi
     ;;
 esac
