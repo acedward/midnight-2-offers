@@ -146,6 +146,15 @@ services:
       celestia: { condition: service_healthy }   # guarantees a valid token on the volume
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
+      # ORDERING ONLY, and it is still worth having. The deploy proves a real
+      # transaction, so it needs the proof server — but the proof server has no
+      # healthcheck compose can wait on (its image ships no curl, and its bash
+      # sits behind a per-build /nix/store path), so `service_started` is the
+      # strongest condition available. It guarantees the container exists, not
+      # that it is listening; entrypoint-common.sh's preflight retry covers the
+      # gap, which on a host where proof-params-init spends minutes downloading
+      # its 223 MB is a real one (measured 2026-09-03).
+      proof-server: { condition: service_started }
 
 
   # ── kernel (T11.2) ──────────────────────────────────────────────────────────
@@ -241,6 +250,7 @@ services:
       celestia: { condition: service_healthy }
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
+      proof-server: { condition: service_started }   # ordering only — see offerfiles-deploy
     restart: 'unless-stopped'
 
 
@@ -307,6 +317,7 @@ services:
       celestia: { condition: service_healthy }
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
+      proof-server: { condition: service_started }   # ordering only — see offerfiles-deploy
     restart: 'unless-stopped'
 
 

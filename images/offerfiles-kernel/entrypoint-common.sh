@@ -36,9 +36,44 @@ load_celestia_env() {
 # Running it per-container (rather than once, as the orchestrator did) means a
 # container that comes back after its dependencies moved re-proves them instead
 # of inheriting a stale all-clear from bring-up.
+#
+# IT RETRIES, and that is not a softening of the fail-fast rule. `preflight-external`
+# probes FOUR endpoints, and compose can only gate this container on three of
+# them: node, indexer and celestia have healthchecks, while the PROOF SERVER has
+# none that compose can wait on — its own image ships no curl and its bash sits
+# behind a per-build /nix/store path, which is why up.sh probes its TCP port from
+# the host instead. So `depends_on` cannot express "the proof server is
+# answering", and on a host where `proof-params-init` takes minutes to download
+# and verify its 223 MB (the proof servers are gated on that one-shot) this
+# container reached its first probe seconds before the proof server bound its
+# port — and a ONE-SHOT probe turned a timing difference into a failed bring-up.
+# Measured 2026-09-03: node/indexer/celestia all OK, proof server "Unable to
+# connect", proof-params-init having reported ACTIVATED in the same second.
+#
+# The retry keeps every property that mattered: a genuinely missing endpoint
+# still fails the container (bounded at PREFLIGHT_TRIES x PREFLIGHT_RETRY_S,
+# 200 s by default), the failure still names the endpoint, and nothing starts
+# against a half-present stack.
 run_preflight() {
-  log "$1" "probing the external Midnight + Celestia stack"
-  bun run /app/packages/node/preflight-external.ts
+  local role="$1"
+  local tries="${PREFLIGHT_TRIES:-40}"
+  local wait_s="${PREFLIGHT_RETRY_S:-5}"
+  local i
+
+  log "$role" "probing the external Midnight + Celestia stack"
+  for (( i = 1; i <= tries; i++ )); do
+    if bun run /app/packages/node/preflight-external.ts; then
+      return 0
+    fi
+    if (( i < tries )); then
+      log "$role" "preflight attempt ${i}/${tries} did not pass — retrying in ${wait_s}s"
+      sleep "$wait_s"
+    fi
+  done
+
+  log "$role" "FATAL: the external stack never became ready after ${tries} attempts"
+  log "$role" "the last attempt's output is above; each line names the endpoint it could not reach"
+  return 1
 }
 
 # ── the contract address ─────────────────────────────────────────────────────
