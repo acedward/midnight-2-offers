@@ -469,7 +469,7 @@ index 3fbbf66..a757c16 100644
            'proof',
            'binding',
 diff --git a/src/services/offerBatch.test.ts b/src/services/offerBatch.test.ts
-index a1152d4..91d4193 100644
+index a1152d4..86511d7 100644
 --- a/src/services/offerBatch.test.ts
 +++ b/src/services/offerBatch.test.ts
 @@ -7,7 +7,7 @@
@@ -481,6 +481,26 @@ index a1152d4..91d4193 100644
  import { OfferFiles } from '@effectstream/mip-zswap-offer/mip5';
  import type { NetworkId } from '@midnight-ntwrk/midnight-js-network-id';
  import {
+@@ -26,6 +26,10 @@ const ttl = () => new Date(Date.now() + 3600_000);
+ const TOKEN = 'cc'.repeat(32);
+ const OWNER = 'dd'.repeat(32);
+ const HASH = 'ee'.repeat(32);
++// ledger-v9 annotates verifying keys with their signature kind: `UtxoSpend.owner`
++// is a `SignatureVerifyingKey` ({ tag, value }), where the v8 package took the bare
++// hex string. `UtxoOutput.owner` is still a plain `UserAddress`, hence two constants.
++const SPEND_OWNER = { tag: 'schnorr' as const, value: OWNER };
+ 
+ const segments = (tx: any): number[] => (tx?.intents ? Array.from(tx.intents.keys()) : []);
+ const encode = (tx: any): string => OfferFiles.encode(tx.serialize());
+@@ -67,7 +71,7 @@ const unshieldedTx = (direction: 'pays' | 'gets', randomize = false) => {
+   const offer =
+     direction === 'gets'
+       ? L.UnshieldedOffer.new(
+-          [{ value: 7n, owner: OWNER, type: TOKEN, intentHash: HASH, outputNo: 0 }],
++          [{ value: 7n, owner: SPEND_OWNER, type: TOKEN, intentHash: HASH, outputNo: 0 }],
+           [],
+           [],
+         )
 diff --git a/src/services/offerBatch.ts b/src/services/offerBatch.ts
 index dbfbb5b..1f6f82d 100644
 --- a/src/services/offerBatch.ts
