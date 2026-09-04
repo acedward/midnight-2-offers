@@ -175,30 +175,51 @@ else
   FAILURES=$(( FAILURES + 1 ))
 fi
 
-# The page's own snapshot: it must have actually READ the solver, not just
-# started. `solver.reachable` false is exactly the SOLVER UNREACHABLE state, and
-# with the solver up it is a failure of the bearer or of the URL.
+# The page's own snapshot. Serving the page proves only that the process bound a
+# port; this proves it actually READ its three sources. `solver.reachable=false`
+# is exactly the rendered SOLVER UNREACHABLE state — correct behaviour when the
+# solver is down, and a failure of the bearer or the URL when it is up, which is
+# the case here because the solver's own assertions above just passed.
 if msnap="$(curl -fsS --max-time 10 "$MBASE/api/snapshot" 2>/dev/null)"; then
   if summary="$(printf '%s' "$msnap" | python3 -c '
 import json, sys
 j = json.load(sys.stdin)
 solver = j.get("solver") or {}
 kernel = j.get("kernel") or {}
-# The monitor spells "I could not read the solver" as a section error or as an
-# explicit unreachable flag depending on the field; treat any of them as a miss.
-def ok_section(v):
+relay  = j.get("relay") or {}
+
+# Every kernel/relay field is a Section<T>: the value, or {"error": "..."}.
+# `None` means "not fetched yet", which on a page that has been up for a poll
+# interval is as much a miss as an error.
+def section_ok(v):
     return isinstance(v, dict) and "error" not in v
+
 checks = {
-  "solverSection": ok_section(solver),
-  "kernelSection": ok_section(kernel),
+  # The bearer worked and a snapshot came back.
+  "solverReachable": solver.get("reachable") is True,
+  # …and the page understands the version the solver speaks.
+  "contractVersionKnown": solver.get("contractVersion") is not None,
+  # Read straight from the kernel, so it stays true while the solver is down.
+  "kernelSync": section_ok(kernel.get("sync")),
+  "kernelBook": section_ok(kernel.get("book")),
+  # The sink is standing in for the relay: this is GET /tokens through the page.
+  "relayConfigured": relay.get("configured") is True,
+  "relayTokens": section_ok(relay.get("tokens")) or isinstance(relay.get("tokens"), list),
 }
-print(json.dumps(checks, separators=(",", ":")))
+detail = {
+  "solverState": solver.get("state"),
+  "transport": solver.get("transport"),
+  "contractVersion": solver.get("contractVersion"),
+  "lastError": solver.get("lastError"),
+}
+print(json.dumps({"checks": checks, "detail": detail}, separators=(",", ":")))
 raise SystemExit(0 if all(checks.values()) else 1)
 ' 2>/dev/null)"; then
-    ok "solver monitor /api/snapshot carries a live solver and kernel section (${summary})"
+    ok "solver monitor read all three sources (${summary})"
   else
-    err "solver monitor /api/snapshot has a degraded section (${summary:-unparseable}) — the page is up but blind"
-    info "  ${msnap:0:300}"
+    err "solver monitor /api/snapshot is degraded — the page is up but blind"
+    info "  ${summary:-unparseable}"
+    info "  ${msnap:0:400}"
     FAILURES=$(( FAILURES + 1 ))
   fi
 else

@@ -376,21 +376,34 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]]; then
   if (( ! FAILED )); then
     POSTER_HEALTH_JSON="$(curl -fsS --max-time 10 \
       "http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health" 2>/dev/null || true)"
+    # `state` is one of starting|ok|degraded|unhealthy|stopping, and `lastFailure`
+    # carries the reason a tick could not mint (e.g. insufficient_dust).
     POSTER_STATE="$(printf '%s' "$POSTER_HEALTH_JSON" \
       | python3 -c 'import json,sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     raise SystemExit(0)
-print(d.get("state", ""), d.get("degraded", "") or "", sep="\t")' 2>/dev/null || true)"
+print(d.get("state") or "unknown")' 2>/dev/null || true)"
+    POSTER_WHY="$(printf '%s' "$POSTER_HEALTH_JSON" \
+      | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+print(d.get("lastFailure") or d.get("lastError") or "")' 2>/dev/null || true)"
     case "$POSTER_STATE" in
-      *degraded*|*insufficient_dust*)
-        warn "offer-poster is degraded (${POSTER_STATE}) — it is up and honest about why it is not minting yet"
-        info "  ./verify.sh --poster is the gate; give it a few minutes, or check: docker compose … logs poster-fund" ;;
-      failed*)
-        err "offer-poster reports state=failed"
+      ok)
+        info "offer-poster is minting and posting (state=ok)" ;;
+      degraded|starting)
+        warn "offer-poster state=${POSTER_STATE}${POSTER_WHY:+ (${POSTER_WHY})} — up, and honest about why it is not minting yet"
+        info "  ./verify.sh --poster is the gate; give it a few minutes, or check: ENV_FILE=${ENV_FILE:-.env} docker compose … logs poster-fund" ;;
+      unhealthy)
+        err "offer-poster state=unhealthy${POSTER_WHY:+ (${POSTER_WHY})} — HEALTH_STALE_TICKS consecutive failed ticks"
         info "  ${POSTER_HEALTH_JSON:0:400}"
         FAILED=1 ;;
+      *)
+        warn "offer-poster /health did not report a state (${POSTER_STATE:-no answer}) — ./verify.sh --poster is the gate" ;;
     esac
   fi
 fi
