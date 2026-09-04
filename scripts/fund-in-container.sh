@@ -23,6 +23,11 @@ FROM_SEED="${FUND_FROM_SEED:-000000000000000000000000000000000000000000000000000
 AMOUNT="${FUND_AMOUNT:-10000000000000}"
 DUST_WAIT="${FUND_DUST_WAIT:-240}"
 WALLETS_JSON="${WALLETS_JSON:-/fund/wallets.json}"
+# Genesis is a shared wallet: `shielded-night-fund` and `poster-fund` spend it too, and they
+# start in parallel on `node: service_healthy`. A transfer built against a stale UTXO view is
+# rejected by the runtime as invalid — contention, not a permanent failure. Retry, bounded.
+SEND_TRIES="${GENESIS_SEND_TRIES:-6}"
+SEND_RETRY_S="${GENESIS_SEND_RETRY_S:-10}"
 
 TOOLKIT_BIN="${TOOLKIT_BIN:-/midnight-node-toolkit}"
 # NOTE: the binary lives at / and / is NOT on PATH in this image, so it must be called by
@@ -109,6 +114,23 @@ mapfile -t SEEDS < <(jq -r '.wallets[] | select(.funding == "fund-script" or .fu
 say "funding ${#SEEDS[@]} wallet(s) with ${AMOUNT} stars each from ${FROM_SEED:0:8}…"
 
 RC=0
+# genesis_tx <label> <tk args...> — one genesis-funded submission, retried while contended.
+genesis_tx() {
+  local label="$1"; shift
+  local try
+  for (( try = 1; try <= SEND_TRIES; try++ )); do
+    if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
+         "$@" >/dev/null; then
+      return 0
+    fi
+    if (( try < SEND_TRIES )); then
+      sub "${label}: rejected (attempt ${try}/${SEND_TRIES}) — genesis contended, retrying in ${SEND_RETRY_S}s"
+      sleep "$SEND_RETRY_S"
+    fi
+  done
+  return 1
+}
+
 for SEED in "${SEEDS[@]}"; do
   echo
   say "seed ${SEED:0:8}…${SEED: -6}"
@@ -121,22 +143,21 @@ for SEED in "${SEEDS[@]}"; do
   sub "unshielded ${UNSHIELDED}"
 
   # 1. NIGHT
-  if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
-       single-tx --source-seed "$FROM_SEED" \
-       --output "addr=${UNSHIELDED},amount=${AMOUNT}" >/dev/null; then
+  if genesis_tx "NIGHT" single-tx --source-seed "$FROM_SEED" \
+       --output "addr=${UNSHIELDED},amount=${AMOUNT}"; then
     sub "NIGHT sent"
   else
-    sub "FAILED to send NIGHT"; RC=1; continue
+    sub "FAILED to send NIGHT after ${SEND_TRIES} attempts"; RC=1; continue
   fi
 
   # 2. DUST registration — must come after the transfer: it respends the wallet's NIGHT
   #    UTXOs so they begin generating DUST.
-  if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
+  if genesis_tx "DUST registration" \
        register-dust-address --wallet-seed "$SEED" --funding-seed "$FROM_SEED" \
-       --destination-dust "$DUST" >/dev/null; then
+       --destination-dust "$DUST"; then
     sub "DUST address registered"
   else
-    sub "FAILED to register DUST"; RC=1; continue
+    sub "FAILED to register DUST after ${SEND_TRIES} attempts"; RC=1; continue
   fi
 
   # 3. Wait for a spendable DUST UTXO — the balance figure moves before the UTXO exists,
