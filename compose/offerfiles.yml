@@ -208,8 +208,11 @@ services:
       SPONSOR_DISCOUNT_BPS: '${SPONSOR_DISCOUNT_BPS:-250}'
       # `NAME_OR_COLOR=<asset_id>[:decimals],…` overrides merged over the
       # built-in price map. Empty = the seeded map, which is what this demo
-      # wants; the `price-feed` service (CoinGecko, needs an API key) is
-      # deliberately NOT part of this stack — see docs/COMPONENTS.md.
+      # wants (WBTC -> bitcoin, WETH -> ethereum, …). Which ASSET a colour
+      # means is decided here; how FRESH that asset's USD price is, is the
+      # `prices` profile's business (compose/prices.yml, opt-in, needs a
+      # CoinGecko key). The stack quotes correctly without it — 000-init.sql
+      # seeds real prices — so the two are independent.
       PRICE_FEED_MAP: '${PRICE_FEED_MAP:-}'
       # ── per-IP rate limit ─────────────────────────────────────────────────
       # The code default is 60 requests, which is a PUBLIC-endpoint number. This

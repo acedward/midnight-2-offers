@@ -1,0 +1,124 @@
+# price-feed — live reference prices from CoinGecko.  Profile: `prices`
+#
+#   ./up.sh --with offerfiles --with prices
+#
+# The feed writes into the KERNEL's schema, so `--with offerfiles` is not
+# optional here — this fragment declares no kernel and no database of its own,
+# exactly like compose/solver.yml and compose/poster.yml.
+#
+# ─── WHAT IT DOES ───────────────────────────────────────────────────────────
+# Once every PRICE_FEED_INTERVAL_MS (upstream default: 24 h, and a cycle also
+# runs immediately at start) it asks CoinGecko `simple/price` for the five
+# seeded asset ids — bitcoin, ethereum, usd-coin, midnight-3, usdm-2 — in ONE
+# batched request, and upserts `asset_prices` + `price_feed_status` over the
+# Postgres wire. It talks to no Midnight service and to no Celestia service: the
+# kernel then serves those rows on GET /v1/prices and GET /v1/quote, and the
+# batcher's fee-sponsorship gate reads them through the kernel.
+#
+# So this is the one component in this repository that talks to a third party on
+# purpose, and the one that holds a secret.
+#
+# ─── WHY IT IS OPT-IN ───────────────────────────────────────────────────────
+# `000-init.sql` SEEDS real reference prices, so every quote in this stack is
+# already a genuine BTC/ETH ratio (1 WBTC ~ 32 WETH) without it. Upstream makes
+# the same call for the same reason — its compose service carries
+# `profiles: ["prices"]` and its dev stack never registers the feed at all. The
+# profile buys you FRESH prices, not working ones.
+#
+# ─── THE KEY ────────────────────────────────────────────────────────────────
+# COINGECKO_API_KEY is the first and only real secret in this repository. Every
+# other "secret" here (seeds, the solver status token, the Celestia token) is
+# public dev material that is documented as such; this one is not ours to
+# publish. Therefore:
+#
+#   * it is passed through from the env file with NO default — the `:-` below
+#     supplies an EMPTY string, i.e. the absence of a key, never a value;
+#   * it is never a build arg, never in a Dockerfile, never in .env.example
+#     (which carries the NAME and a warning, and no value);
+#   * `packages/price-feed/src/coingecko.ts` sends it as the `x-cg-demo-api-key`
+#     HEADER and never as a query parameter — a query string would put it in
+#     every access log, proxy log and error report. Do not "helpfully" add a
+#     URL-parameter form.
+#   * the service's own startup line prints `key=present` / `key=ABSENT` and
+#     never the value.
+#
+# WHY NOT `${COINGECKO_API_KEY:?…}`. Because a profile here IS a compose
+# fragment filename, and `./down.sh` deliberately passes EVERY fragment in
+# compose/ on every teardown ("a narrower file list would orphan the containers
+# of a profile that was brought up earlier"). Compose interpolates the whole
+# file set on EVERY command, so a required-variable marker in this file makes
+# `down.sh`, `up.sh` with any profile, `docker compose ps` and `ci-check.sh`
+# fail for every operator who has no key — including the teardown of a stack
+# that is already running. Measured 2026-09-04; `${VAR?…}` without the colon has
+# the same problem for an env file that simply does not mention the variable.
+#
+# The refusal lives in `up.sh` instead, where it belongs: asking for the
+# `prices` profile without a key is a hard failure BEFORE any container is
+# created, naming the variable and the env file. That is the same split
+# scripts/lib/common.sh already makes for image pins — `require_digest_ref`
+# reports, `assert_image_pins` dies — for the same reason: a missing value must
+# never be able to strand a running stack.
+#
+# `profiles:` (the compose key) is deliberately NOT used, for the same reason as
+# in poster.yml: up.sh never passes `--profile`, so a service carrying one would
+# silently never start.
+
+services:
+  price-feed:
+    image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+    entrypoint: ['/usr/local/bin/entrypoint-price-feed.sh']
+    # `unless-stopped`, unlike the one-shots: this process is DESIGNED not to
+    # exit. Without a key it warns and idles rather than failing (see run.ts),
+    # and a bad cycle is handled by its own bounded retry ladder (5/15/45 min,
+    # then back to the normal interval), so an actual exit here means a crash
+    # and restarting is the right answer.
+    restart: 'unless-stopped'
+    # No `ports:`. The feed serves nothing — it is a writer. Its output is
+    # visible through the kernel's GET /v1/prices, which the offerfiles profile
+    # already publishes.
+    environment:
+      # ── where it writes ──────────────────────────────────────────────────
+      # DB_* rather than a DATABASE_URL, which is what loadPriceFeedConfig()
+      # reads. The same four values `kernel` uses in compose/offerfiles.yml:
+      # this service writes the rows that kernel then serves, so they MUST
+      # point at the same database.
+      DB_HOST: 'postgres'          # container name, never a host port
+      DB_PORT: '5432'
+      DB_NAME: '${OFFERFILES_PG_DB:-offerfiles}'
+      DB_USER: '${OFFERFILES_PG_USER:-offerfiles}'
+      DB_PW: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
+      # ── the secret ───────────────────────────────────────────────────────
+      # Empty here means "no key", not "a default key". See the header: the
+      # loud refusal is up.sh's, because this file is parsed by `down.sh` too.
+      COINGECKO_API_KEY: '${COINGECKO_API_KEY:-}'
+      # ── everything below is BLANK BY DEFAULT on purpose ──────────────────
+      # Blank means "the code's default", and the code is the single place
+      # those numbers are written down (packages/price-feed/src/config.ts).
+      # The defaults that matter: 24 h between cycles, >= 1 s between requests,
+      # up to 50 ids per request — so the five seeded assets are ONE call per
+      # cycle against the demo plan's 10 000 credits a month.
+      #
+      # Override only to point the service at a stub (a local fake CoinGecko).
+      # Empty = https://api.coingecko.com/api/v3.
+      COINGECKO_BASE_URL: '${COINGECKO_BASE_URL:-}'
+      PRICE_FEED_INTERVAL_MS: '${PRICE_FEED_INTERVAL_MS:-}'
+      PRICE_FEED_REQUEST_SPACING_MS: '${PRICE_FEED_REQUEST_SPACING_MS:-}'
+      PRICE_FEED_BATCH_SIZE: '${PRICE_FEED_BATCH_SIZE:-}'
+      PRICE_FEED_REQUEST_TIMEOUT_MS: '${PRICE_FEED_REQUEST_TIMEOUT_MS:-}'
+      # Comma-separated CoinGecko ids. Empty = the five the schema seeds
+      # (bitcoin, ethereum, usd-coin, midnight-3, usdm-2), which is what this
+      # stack's known_tokens map to.
+      PRICE_FEED_ASSETS: '${PRICE_FEED_ASSETS:-}'
+    depends_on:
+      # The database it writes to.
+      postgres: { condition: service_healthy }
+      # ORDERING, and only for the SCHEMA. The kernel is what applies
+      # `000-init.sql`, and `asset_prices` + `price_feed_status` have to exist
+      # before the first upsert — `run.ts` checks for both tables by name and
+      # says so plainly if they are absent, but it says it AFTER a CoinGecko
+      # call has already been spent, which on a metered key is worth avoiding.
+      kernel: { condition: service_healthy }
+    # No healthcheck, and none is possible: the process serves no port, and its
+    # liveness signal is a row in the database. `./verify.sh --prices` reads
+    # THAT — the kernel's GET /v1/prices `feed` block and the per-asset
+    # `source` — which is the only thing that proves the feed did its job.

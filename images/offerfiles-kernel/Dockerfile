@@ -150,16 +150,25 @@ RUN bun install --frozen-lockfile
 #                      one takeable offer per interval (00010 P3).
 #   solver-frontend    the COW solver's read-only monitor site (:8080), served
 #                      by `compose/solver.yml` from this same image (00010 P2).
+#   price-feed         LOOP (profile `prices`, compose/prices.yml). The daily
+#                      CoinGecko refresh of `asset_prices`. Serves no port and
+#                      talks to no Midnight service: it reads CoinGecko and
+#                      writes the kernel's schema over the Postgres wire, and
+#                      it is the ONLY process in this stack that holds a real
+#                      secret (COINGECKO_API_KEY, .env only) (00010 P7).
 #
-# The last three run kernel-repo entrypoints that this image ALSO ships as its
+# The last four run kernel-repo entrypoints that this image ALSO ships as its
 # own scripts: the upstream copies under /app/deploy/images/kernel/ source an
 # `entrypoint-common.sh` written for the kernel's own deployment (different
 # volume paths, a different contract-share directory), so this repo carries
 # thin equivalents that use ITS conventions and exec the same upstream code.
 #
-# All three share entrypoint-common.sh: the Celestia token handoff, then
-# preflight-external (T11.1 — a per-container fail-fast, not a service), then
-# the contract address for the two that need one.
+# The three that need the external stack share entrypoint-common.sh: the
+# Celestia token handoff, then preflight-external (T11.1 — a per-container
+# fail-fast, not a service), then the contract address for the two that need
+# one. `solver-frontend` and `price-feed` deliberately share none of it: the
+# monitor must render an unreachable solver rather than refuse to start, and
+# the price feed touches neither Midnight nor Celestia.
 #
 # The Celestia auth-token handoff (offerfiles.yml note #1) is unchanged: the
 # token does not exist until the celestia container initialises its bridge
@@ -168,13 +177,14 @@ RUN bun install --frozen-lockfile
 COPY entrypoint-common.sh /usr/local/lib/offerfiles/entrypoint-common.sh
 COPY entrypoint-kernel.sh entrypoint-batcher.sh entrypoint-deploy.sh \
      entrypoint-register-tokens.sh entrypoint-offer-poster.sh \
-     entrypoint-solver-frontend.sh /usr/local/bin/
+     entrypoint-solver-frontend.sh entrypoint-price-feed.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint-kernel.sh \
              /usr/local/bin/entrypoint-batcher.sh \
              /usr/local/bin/entrypoint-deploy.sh \
              /usr/local/bin/entrypoint-register-tokens.sh \
              /usr/local/bin/entrypoint-offer-poster.sh \
              /usr/local/bin/entrypoint-solver-frontend.sh \
+             /usr/local/bin/entrypoint-price-feed.sh \
  # Kept as an alias so an older compose fragment (or a habit) still lands on
  # something that works — it is the sync node, which is what `kernel` meant.
  && ln -s /usr/local/bin/entrypoint-kernel.sh /usr/local/bin/kernel-entrypoint

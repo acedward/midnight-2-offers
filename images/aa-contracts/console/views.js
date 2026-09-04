@@ -233,6 +233,10 @@ const INFRA_NODES = [
   { id: "proofServer",   label: "proof-server 9.0.0-rc.5",   sub: "plain · zkir-v2 / [v6] + wallet lane", x: 240, y: 356, w: 250, h: 52 },
   { id: "aaProofServer", label: "proof-server 9.0.0-rc.5 experimental", sub: "zkir-v3 / [v7] — the AA circuits", x: 530, y: 356, w: 290, h: 52 },
   { id: "postgres",      label: "postgres (shared)",         sub: "offerfiles + umbra · one store", x: 845, y: 356, w: 200, h: 52 },
+  // No port, no endpoint: a writer. Same row as the store it writes to — the
+  // Infrastructure band is [208, 452], so it goes beside proof-server rather
+  // than under postgres, where it would cross the Blockchain separator.
+  { id: "priceFeed",     label: "price-feed (CoinGecko)",    sub: "no port · profile `prices`, opt-in", x: 25, y: 356, w: 200, h: 52 },
   // Blockchain
   { id: "node",          label: "midnight-node 2.0.0-rc.4",  sub: ":9944 · the chain",  x: 280, y: 496, w: 240, h: 56 },
   { id: "celestia",      label: "celestia (DA devnet)",      sub: ":26658 · the offer blobs", x: 600, y: 496, w: 240, h: 56 },
@@ -257,6 +261,11 @@ const INFRA_EDGES = [
   ["indexer", "node"],
   // The one store (T11.4): the kernel's offer book and umbra's index.
   ["kernel", "postgres"], ["evmRpc", "postgres"],
+  // The price feed writes asset_prices STRAIGHT into the store and reads
+  // CoinGecko — it never talks to the kernel, the node or Celestia. The kernel
+  // edge on the canvas is the compose dependency (the kernel applies the schema)
+  // and the path the console probes it by; the data edge is the postgres one.
+  ["priceFeed", "postgres"], ["priceFeed", "kernel"],
 ];
 // Short names for the table (long text hover-only — it was forcing a scroll).
 const INFRA_LABELS = {
@@ -266,6 +275,7 @@ const INFRA_LABELS = {
   celestia: "celestia", evmRpc: "umbra-evm RPC", frontend: "zswap-da frontend",
   solverSink: "solver sink", solver: "cow-solver", postgres: "postgres (shared)",
   solverFrontend: "solver monitor", offerPoster: "offer-poster",
+  priceFeed: "price-feed",
 };
 const INFRA_TITLES = {
   console: "the relay: serves this page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this table",
@@ -277,6 +287,7 @@ const INFRA_TITLES = {
   solver: "observation mode. Probed on its OWN status listener :9100 (open GET /health, no internal data); /status/* is bearer-gated and unpublished, and the monitor site is its only intended reader. Falls back to the sink's view of the relay socket",
   solverFrontend: "the read-only monitor site :10802 — is the solver quoting, and if not why. Holds no wallet, opens no relay socket, mutates nothing; depends on the KERNEL only, so it stays up (and says SOLVER UNREACHABLE) exactly when the solver is down",
   offerPoster: "profile `poster`: every interval it re-offers a released coin or mints one fresh coin from the faucet circuit and posts a single takeable offer, paying with its own dust. /health carries state, mints and lastOfferId",
+  priceFeed: "profile `prices` (opt-in, needs COINGECKO_API_KEY): refreshes asset_prices from CoinGecko once a day. It has no endpoint — it is probed through the kernel's /v1/prices feed block, which is the row it upserts. ABSENT means the profile never ran here (the schema's seeded prices still serve every quote); DOWN means a cycle recorded an error",
 };
 const DOT = { up: "#6fd18b", down: "#e57373", absent: "#4a5563" };
 
@@ -433,6 +444,16 @@ const REPOS = [
     ref: "pinned 4af1025… — deploy/scripts/offer-poster.ts from the same commit",
     notes: [
       ["PR #57 / #60 / #66", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/66", "the poster, its journal, and the randomised give size (GIVE_MIN/GIVE_MAX)"],
+    ],
+  },
+  {
+    repo: "effectstream/zswap-offerfiles-kernel (price feed)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
+    role: "the CoinGecko reference-price feed (profile prices, OPT-IN) — refreshes asset_prices, which /v1/prices, /v1/quote and the batcher's sponsorship gate all read",
+    ref: "pinned 4af1025… — packages/price-feed from the same commit",
+    notes: [
+      ["PR #54 / #55 / #56", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/56", "the token price service and the feed that keeps it fresh"],
+      ["", "", "OPT-IN: 000-init.sql seeds real prices, so every quote works without it — the profile buys FRESH prices, not working ones"],
+      ["", "", "the ONLY real secret in this stack: COINGECKO_API_KEY, .env only, no default anywhere, sent as the x-cg-demo-api-key header (never a query string). ./up.sh --all skips this profile when it is unset"],
     ],
   },
   {

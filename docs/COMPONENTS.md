@@ -267,11 +267,58 @@ healthy container proves very little, and `./verify.sh --poster` is the real gat
 `state` not degraded, `mints ≥ 1`, and `lastOfferId` present **in the kernel's open book** with a
 whole-coin give leg and a non-zero, actually-quoted want leg.
 
-**The `price-feed` service is deliberately not here.** The schema ships seeded reference prices
-captured from CoinGecko, so every quote in this stack is a real BTC/ETH ratio without it — and it
-is the one upstream service that needs an internet-reachable third party and an API key, which
-would be the first real secret in this repository. Upstream runs it behind `--profile prices`; if
-you want live prices, that is where to look.
+## The price feed (profile `prices`) — opt-in, and the one real secret here
+
+`price-feed` is the same kernel image again, running
+`packages/price-feed/price-feed.dev.ts`. Once a cycle (default: at start, then every 24 h) it
+asks CoinGecko's `simple/price` for the five asset ids the schema seeds — `bitcoin`, `ethereum`,
+`usd-coin`, `midnight-3`, `usdm-2` — in **one** batched request, and upserts `asset_prices` and
+`price_feed_status` over the Postgres wire. The kernel then serves those rows on `GET /v1/prices`
+and `GET /v1/quote`, and the batcher's fee-sponsorship gate reads them *through* the kernel, so
+one refresh moves every consumer at once.
+
+**It is the only service here that talks to a third party, and the only one that holds a real
+secret.** It talks to no Midnight service and to no Celestia service at all: CoinGecko in,
+Postgres out. That is why its compose service gates on `postgres: service_healthy` and
+`kernel: service_healthy` (the kernel is what applies `000-init.sql`, and `run.ts` refuses to
+spend a request against a database missing `asset_prices` / `price_feed_status`) and on nothing
+else, and why it publishes no port.
+
+**It is OPT-IN, and the stack is complete without it.** `000-init.sql` seeds real reference
+prices, so a fresh database already quotes 1 WBTC ≈ 32 WETH rather than a colour-hash rate. The
+profile buys *fresh* prices, not working ones — the same call upstream makes for its own copy
+(`profiles: ["prices"]`, and its dev stack never registers the feed at all). `./up.sh --all`
+therefore skips it unless `COINGECKO_API_KEY` is set, out loud, so a host without a key still
+brings up everything else and still passes `scripts/ci-check.sh`.
+
+**`COINGECKO_API_KEY` has no default anywhere** — not in `compose/prices.yml`, not in a
+Dockerfile, not in `.env.example`, which carries the variable name and a warning and no value. It
+lives in the env file (`.gitignore` excludes `.env` and `.env.*`), travels as the
+`x-cg-demo-api-key` **header** and never as a query parameter, and the service's own startup line
+prints `key=present` / `key=ABSENT`. `./up.sh --with prices` refuses to start without it, naming
+the variable; `docker compose … up price-feed` by hand starts a container that warns and IDLES,
+which is upstream's deliberate design (a non-zero exit under `restart: unless-stopped` is a crash
+loop, and the seeded prices keep the stack usable meanwhile). The refusal deliberately does NOT
+live in the compose fragment as `${COINGECKO_API_KEY:?…}`: `./down.sh` passes every fragment on
+every teardown and compose interpolates the whole set on every command, so that spelling would
+break teardown for everyone without a key. See docs/OPERATIONS.md, "The `prices` profile".
+
+**What `./verify.sh --prices` proves**, and why it reads the KERNEL rather than the feed's logs:
+the feed serves nothing, so the only claim worth making is that the rows the rest of the stack
+consumes are the ones it wrote. `price_feed_status` is deliberately **not** seeded — an absent
+row is how "the feed never ran here" is spelled — so a non-null `feed.last_ok_at` means one thing
+only. On top of that: `last_error` is null, the timestamps are inside `PRICES_MAX_AGE_S`, every
+priced asset carries `source: "feed"` rather than `"seed"` (a CHECK-constrained column with
+exactly those two values, so the seed data cannot satisfy it), and both legs of a live
+`GET /v1/quote` report `from_source`/`to_source` = `feed`. `scripts/verify-prices.sh --once`
+additionally runs one synchronous cycle and requires exit 0 — which spends a credit, hence the
+flag.
+
+**Failure grading, inherited from upstream and worth knowing:** one bad id inside an otherwise
+good response fails only that id; a failed *request* is recorded against every id it carried
+(blaming one would be a guess); a `429` stops the cycle where it stands, keeping everything
+already written. Nothing is ever deleted, and a row is only overwritten by a successful fetch —
+so the worst case of a broken feed is stale prices, never missing ones.
 
 ## The two proof servers, and the one cache they share (profile `core` + `aa`)
 

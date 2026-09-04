@@ -34,9 +34,12 @@ Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
                      A profile is a compose fragment in compose/, named after the profile. An
                      unknown name is an error, not a no-op.
-                     Available now: aa, evm, frontend, offerfiles, shielded-night, solver.
-  --all              bring up every shipped profile in compose/. All currently documented
-                     profiles have fragments and are included.
+                     Available now: aa, evm, frontend, offerfiles, poster, prices,
+                     shielded-night, solver.
+  --all              bring up every shipped profile in compose/, EXCEPT `prices` unless
+                     COINGECKO_API_KEY is set — that profile is the only one that needs a
+                     third-party secret, and a host without one must still be able to run
+                     `--all` (and scripts/ci-check.sh). It is named either way on the run.
   --converge         the opposite of additive: bring up EXACTLY core + the named profiles and
                      STOP any other profile that is currently up. `./up.sh --converge` on its
                      own therefore means "core alone". Every profile it is about to stop is
@@ -59,7 +62,9 @@ Every shipped profile is complete: offerfiles includes Celestia, the kernel and 
 frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA; aa deploys and serves its console; solver is
 the observation-mode solver, its authenticated sink and the read-only monitor site; poster funds a dedicated
 wallet and keeps the book non-empty by minting one coin and posting one offer per interval (it needs
-offerfiles); shielded-night funds its own wallets,
+offerfiles); prices runs the CoinGecko feed that refreshes the kernel's reference prices (it needs
+offerfiles AND a COINGECKO_API_KEY in the env file — the stack quotes from seeded prices without
+it); shielded-night funds its own wallets,
 deploys the NIGHT <-> sNight wrapper contract ONCE per stack and serves its dApp, depending on
 nothing but core. `--all` selects all of them.
 
@@ -74,10 +79,16 @@ Examples:
   ./up.sh --with offerfiles     # …and Celestia + kernel + batcher, without stopping evm
   ./up.sh --with frontend       # …and the zswap-da SPA
   ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
+  ./up.sh --with offerfiles --with prices   # …and live CoinGecko reference prices (needs a key)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
 EOF
 }
+
+# Profiles named with an explicit `--with`. `--all` does NOT add to this list: asking for a
+# profile by name and sweeping every fragment up are different intentions, and `prices` (the
+# one profile that needs a secret) is treated differently in each — see the key gate below.
+EXPLICIT_PROFILES=""
 
 # A `--with` name that has no fragment must FAIL. It used to be accepted and then quietly
 # dropped by compose_files(), so `./up.sh --with umbra-evm` (the fragment is evm.yml) came
@@ -92,6 +103,7 @@ add_profile() {
     exit 2
   fi
   PROFILES="$PROFILES $p"
+  EXPLICIT_PROFILES="$EXPLICIT_PROFILES $p"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -116,6 +128,54 @@ load_env
 # Nothing starts against a weak identity. load_env only warns (so `./down.sh` can always
 # clean up); this is the fatal form, and it runs before a single container is created.
 assert_image_pins
+
+# ── the `prices` profile needs a real secret (00010 P7 / Q23) ────────────────
+#
+# `price-feed` is the one service here that talks to a third party, and
+# COINGECKO_API_KEY is the one value in this repository that is NOT public dev
+# material. It is passed through from the env file with no default — an empty
+# variable means "no key", never a fake one — so the refusal has to live here.
+#
+# WHY HERE AND NOT IN THE COMPOSE FRAGMENT. `${COINGECKO_API_KEY:?…}` would be
+# the obvious spelling, and it is wrong for this repository: a profile IS a
+# fragment filename, `./down.sh` passes EVERY fragment on every teardown, and
+# compose interpolates the whole file set on EVERY command — so a required-
+# variable marker in compose/prices.yml breaks `down.sh`, `ps`, `config` and
+# every `up.sh` for anyone who has no key, including the teardown of a stack
+# that is already running. This is the same split scripts/lib/common.sh already
+# makes for image pins: `require_digest_ref` reports, `assert_image_pins` dies.
+# Teardown must never depend on a value that only STARTING something needs.
+#
+# Two different intentions, two different answers:
+#   --with prices   an explicit request → a hard failure naming the variable.
+#   --all           a sweep → drop `prices` and say so, so a keyless host (and
+#                   scripts/ci-check.sh, which uses --all) still passes.
+if [[ " $PROFILES " == *" prices "* && -z "${COINGECKO_API_KEY:-}" ]]; then
+  if [[ " $EXPLICIT_PROFILES " == *" prices "* ]]; then
+    err "the 'prices' profile needs COINGECKO_API_KEY, and it is not set"
+    info "  the price feed refreshes asset_prices from CoinGecko; there is no default key and"
+    info "  there never will be — it is the only real secret this repository uses."
+    info "  put it in the env file in force (${ENV_FILE}) and NOWHERE else — .gitignore"
+    info "  covers .env and .env.*, and this value must never be committed:"
+    info "      COINGECKO_API_KEY=<your CoinGecko demo key>"
+    info "  a free demo key comes from https://www.coingecko.com/en/developers/dashboard"
+    info "  the stack works fine WITHOUT it: 000-init.sql seeds real reference prices, so"
+    info "  /v1/quote already returns a genuine BTC/ETH ratio — the profile buys FRESH prices."
+    exit 2
+  fi
+  # --all (or a carried-over profile) on a host with no key: drop it, out loud.
+  # Rebuilt word by word rather than by a substitution, so the list keeps the
+  # exact " a b c" shape the rest of the script (and the summary lines) assume.
+  _kept=""
+  for _p in $PROFILES; do
+    [[ "$_p" == "prices" ]] && continue
+    _kept="$_kept $_p"
+  done
+  PROFILES="$_kept"
+  unset _kept _p
+  export PROFILES
+  PRICES_SKIPPED=1
+fi
 
 # ── `--with` is ADDITIVE (question Q12) ──────────────────────────────────────
 #
@@ -155,6 +215,8 @@ info "         proof=${PROOF_VERSION} plain ${PROOF_IMAGE#*@}"
 info "         proof-data generation ${PROOF_DATA_GENERATION:0:16}… (one shared read-only cache)"
 info "ports    node=${HOST_ADDR}:${NODE_HOST_PORT}  indexer=${HOST_ADDR}:${INDEXER_HOST_PORT}  proof=${HOST_ADDR}:${PROOF_HOST_PORT}"
 [[ -n "${PROFILES// /}" ]] && info "profiles core${PROFILES// /, }"
+# Never silent: a profile that was asked for and did not start must be named.
+(( ${PRICES_SKIPPED:-0} )) && info "skipped  prices — COINGECKO_API_KEY is not set in ${ENV_FILE} (seeded prices still serve every quote)"
 # Say what was carried over and what is about to be stopped. Both directions are named out loud:
 # the whole complaint behind Q12 was that a profile got stopped silently, mid-command.
 [[ -n "${CARRIED// /}" ]] && info "kept     already up, so left running:${CARRIED}"
@@ -408,6 +470,53 @@ print(d.get("lastFailure") or d.get("lastError") or "")' 2>/dev/null || true)"
   fi
 fi
 
+# The price feed. It publishes no port and has no healthcheck — it is a WRITER, and
+# its liveness signal is a row in the database — so "usable" here is read from the
+# DATA, through the kernel that serves it: `price_feed_status` is deliberately NOT
+# seeded by 000-init.sql, so a non-null `feed.last_ok_at` on GET /v1/prices means
+# exactly one thing, "a cycle completed against THIS database". A cycle runs at
+# start, so this is seconds, not the 24 h interval.
+#
+# It is a WARNING and not a failure, for the same reason the poster's `degraded` is:
+# a feed that cannot reach CoinGecko (offline host, rate limit, provider outage)
+# leaves a perfectly usable stack — every quote still answers from the seeded
+# prices. `./verify.sh --prices` is the gate that turns it into a FAIL.
+#
+# One case reaches here without a key despite the gate above: a price-feed container
+# that was ALREADY running is folded back into PROFILES by the additive rule, after
+# the gate has run. That is deliberate — silently STOPPING a running profile is the
+# surprise `--converge` exists to avoid (Q12) — but there is no point spending the
+# wait's whole budget on a cycle that cannot happen, so say why and move on.
+if (( ! FAILED )) && [[ " $PROFILES " == *" prices "* ]] && [[ -z "${COINGECKO_API_KEY:-}" ]]; then
+  warn "price-feed is running WITHOUT COINGECKO_API_KEY — it warns and idles; no cycle will run"
+  info "  set it in ${ENV_FILE} and re-run, or drop the profile: ./up.sh --converge --with offerfiles"
+elif (( ! FAILED )) && [[ " $PROFILES " == *" prices "* ]]; then
+  PRICES_DEADLINE=$(( SECONDS + ${PRICES_WAIT_TIMEOUT:-180} ))
+  PRICES_FEED_OK=0
+  NIGHT_COLOR='0000000000000000000000000000000000000000000000000000000000000000'
+  info "waiting for the price feed's first cycle (up to ${PRICES_WAIT_TIMEOUT:-180}s)"
+  while (( SECONDS < PRICES_DEADLINE )); do
+    if curl -fsS --max-time 10 \
+        "http://${HOST_ADDR}:${KERNEL_HOST_PORT:-9999}/v1/prices?tokens=${NIGHT_COLOR}" 2>/dev/null \
+        | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if (d.get("feed") or {}).get("last_ok_at") else 1)' 2>/dev/null; then
+      PRICES_FEED_OK=1
+      break
+    fi
+    sleep 5
+  done
+  if (( PRICES_FEED_OK )); then
+    ok "price feed completed a cycle (asset_prices now carries live values)"
+  else
+    warn "the price feed has not completed a cycle yet — the stack still quotes from the seeded prices"
+    info "  ./verify.sh --prices is the gate; the reason is in: ENV_FILE=${ENV_FILE:-.env} docker compose … logs price-feed"
+  fi
+fi
+
 if (( FAILED )); then
   echo
   err "stack did not come up. Last 40 log lines per service:"
@@ -446,6 +555,10 @@ if [[ " $PROFILES " == *" solver "* ]]; then
 fi
 if [[ " $PROFILES " == *" poster "* ]]; then
   info "offer poster       http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health   (mints one coin, posts one offer, every interval)"
+fi
+if [[ " $PROFILES " == *" prices "* ]]; then
+  # No URL of its own: the feed serves nothing. What it produced is read here.
+  info "price feed         http://${HOST_ADDR}:${KERNEL_HOST_PORT:-9999}/v1/prices?tokens=<color>   (writes asset_prices; serves no port)"
 fi
 echo
 info "next: ./verify.sh    (health + prefunded wallet assertions)"

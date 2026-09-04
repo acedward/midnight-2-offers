@@ -36,7 +36,7 @@ consumed as-is with no code changes of ours.
 | **AA web console** (this stack's UI) | `aa` | **`http://127.0.0.1:10700`** | this repo (`images/aa-contracts/console/`) — tabs: AA+EVM, AA+Midnight (preview), COW solver feed, infrastructure canvas, Memos, Repos |
 | `@effectstream` packages | (npm) | — | [effectstream/effectstream](https://github.com/effectstream/effectstream) — the versions the kernel pin resolves: `@effectstream/celestia`, `midnight-contracts`, `orchestrator` `@0.200.2` · `mip-zswap-offer@0.4.0-v9.0` · `@midnightntwrk/ledger-v9@1.0.0-rc.3` (a root `overrides` entry, so ONE ledger WASM per process) · midnight-js network-id `5.0.0-beta.6` |
 | Midnight Intents relay | (dropped) | — | [shieldedtech/midnight-intents-swaps](https://github.com/shieldedtech/midnight-intents-swaps) *(upstream)* — pinned `d444c83` by the solver branch; NOT run (the solver observes only). `solver-sink` stands in for its RECEIVE half, plus the one public route the monitor reads (`GET /tokens`) |
-| Price feed (CoinGecko) | (not run) | — | upstream's `price-feed` service, `--profile prices` in the kernel's own deployment. Deliberately absent: the schema ships seeded reference prices, and this would be the first component here needing an API key |
+| Price feed (CoinGecko) | `prices` (opt-in) | no port — writes `asset_prices`, read back through the kernel's `/v1/prices` | same repo/commit — the daily CoinGecko refresh of the USD reference prices behind `/v1/prices`, `/v1/quote` and the batcher's sponsorship gate. **Opt-in and skipped by `--all` unless `COINGECKO_API_KEY` is set**: the schema seeds real prices, so quotes work without it, and this is the only component here that talks to a third party and holds a genuine secret |
 | Web Memo (Memos tab) | (embedded) | `https://web-memo.pages.dev` | [acedward/web-memo](https://github.com/acedward/web-memo) — `main`, Cloudflare Pages · builds on [acedward/midnight-ledger PR #2](https://github.com/acedward/midnight-ledger/pull/2) (memo-v3 ledger fork) |
 | dusk-wallet | (related work) | — | [acedward/dusk-wallet](https://github.com/acedward/dusk-wallet/tree/00001-utxo-pinning) — branch `00001-utxo-pinning` · PRIVATE repo |
 
@@ -116,7 +116,8 @@ Open the console at **http://127.0.0.1:10700** when it is up.
 
 ```bash
 ./up.sh                               # core only (node + indexer + proof server + wallets)
-./up.sh --with aa --with offerfiles   # pick profiles: aa · evm · offerfiles · frontend · shielded-night · solver · poster
+./up.sh --with aa --with offerfiles   # pick profiles: aa · evm · offerfiles · frontend · shielded-night · solver · poster · prices
+./up.sh --with offerfiles --with prices  # live CoinGecko prices — needs COINGECKO_API_KEY in .env
 ./up.sh --with shielded-night         # NIGHT ⇄ sNight on :10900 — needs nothing but core
 ./up.sh --converge --with aa          # EXACTLY core + the named profiles; stops the rest
 ./up.sh --build | --pull              # rebuild local images / pull upstream ones first
@@ -130,6 +131,7 @@ ENV_FILE=.env.test ./up.sh --all      # …for a second stack beside the first
 ./verify.sh                           # health + wallets + every profile that is up
 ./verify.sh --shielded-night          # …and REQUIRE the NIGHT ⇄ sNight section (fail if absent)
 ./verify.sh --solver --poster         # …and REQUIRE the solver monitor + the offer poster
+./verify.sh --prices                  # …and REQUIRE the price feed (a cycle landed, rows are live)
 ./scripts/fund-wallet.sh --all-demo   # fund the demo-* wallets (10M NIGHT + DUST each)
 ./scripts/aa-e2e.sh                   # end-to-end of the EVM-signed AA path
 ./down.sh                             # stop, keep the chain (./up.sh resumes)
