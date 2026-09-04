@@ -120,6 +120,50 @@ control is worse than one that is gone.
   toolkit that transacts happily against a ledger-v9 chain, so only its `Node:` line is used as a
   compatibility signal.
 
+## The ledger-v9 kernel re-pin (2026-09-03)
+
+- **⚠ An existing `postgres-data` volume must be wiped.** The pin moves
+  `migrations/000-init.sql` (the token price service's `asset_prices`,
+  `price_feed_status` and `known_tokens.decimals`, with seeded reference prices), and the
+  kernel applies that file only on an EMPTY database — it has no migration path for a database
+  that already exists. A stale volume produces a stack where every container is healthy and
+  every quote is wrong. `scripts/verify-kernel.sh` asserts `GET /v1/prices` returns the seeded
+  asset table so the situation is loud, and the fix is `./down.sh -v && ./up.sh …`.
+- **Every token now has 6 decimals and faucets mint whole coins.** Amounts in the book are
+  whole coins × 10⁶. The `frontend` profile's zswap-da SPA is still pinned to an upstream
+  template that displays BASE UNITS, so it shows a 1-coin offer as `1000000` until that image
+  is re-pinned. Nothing is wrong on the chain; the SPA's labels are.
+- **The AA console's shielded token colours moved.** The console used to derive them from
+  private domain separators, which produced a `wBTC` no other component in the stack could
+  mint or take. It now uses the faucet's own `domainSepFromName`, so console, offer poster,
+  `register-tokens` and the SPA faucet all mean ONE colour per name — and both legs price
+  against real reference rates. Breaking only in the sense that the colours differ from a
+  previous stack's; they already differed after every `./down.sh -v`, which this pin requires.
+- **The solver's status token is public.** `SOLVER_STATUS_AUTH_TOKEN` has a fixed default in
+  `compose/solver.yml`, exactly like `SOLVER_RELAY_AUTH_TOKEN` and every other secret in this
+  repository. It must exist (the solver refuses a value under 32 characters) but it only
+  guards the compose network, because `:9100` is never published. If you uncomment that ports
+  block for a debugging session, change the token first — `/status/*` is the solver's entire
+  internal state.
+- **The monitor site has no authentication of its own.** It binds `BIND_ADDR` (127.0.0.1) like
+  everything else here. Put a reverse proxy in front of it before it reaches any wider network,
+  and note that its SSE feed needs response buffering off and a read timeout longer than the
+  five-minute stream lifetime.
+- **The `poster` profile only works on `undeployed`,** and needs `--with offerfiles`: it mints
+  through the offer-files contract's permissionless dev faucet circuit, which exists for this
+  devnet. Its seed is public like every other seed here, and it must never be scaled past one
+  replica — two wallet facades on one seed against one node force each other's connection down.
+- **The `price-feed` service is not run.** The schema ships seeded CoinGecko values captured
+  2026-09-02, so quotes are real ratios but static. Live prices need an API key and internet at
+  runtime, which would be the first real secret in this repository; upstream runs it behind
+  `--profile prices`.
+- **The AA image is still pinned to `AA_REF=713a2021…`,** six commits behind its `main`. The AA
+  repo moved to compactc 0.34.0 / compact-runtime 0.19.0, and this image compiles the AA
+  contracts AND the kernel's offer-files contract with ONE compactc and loads both with ONE
+  runtime — while the kernel line still declares 0.33.0-rc.2. Moving AA alone would compile the
+  offer-files contract with a different toolchain than the kernel deploys. The image now fails
+  the build loudly if the kernel leaves the 0.33 line, rather than doing it silently.
+
 ## The `shielded-night` profile
 
 These are properties of the upstream dApp and of the 2.x line, not defects introduced here.

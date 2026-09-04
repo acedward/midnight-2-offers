@@ -14,15 +14,56 @@ local Celestia DA devnet. `./up.sh --all && ./verify.sh` exercises all of it.
 batcher `:3334`, one-shot contract deploy + dev-token mint at bring-up) and the **`frontend`
 profile** (the zswap-da make→take swap SPA on `:10600`). They were previously blocked on the
 `@effectstream/*` ledger-v8 → ledger-v9 migration; that migration published as
-`@effectstream/*@0.200.1` + `@effectstream/mip-zswap-offer@0.4.0-v9.0`, and the kernel's own
-migration rides PR #49 of `effectstream/zswap-offerfiles-kernel`; the image pins PR #50 commit
-`b1420c4…`, which includes that migration plus the offer-update WS route required by the solver.
+`@effectstream/*@0.200.2` + `@effectstream/mip-zswap-offer@0.4.0-v9.0`.
+
+## The kernel source pin — one branch, one SHA
+
+Everything this stack builds from the kernel repository — the sync node, the batcher, the COW
+solver, the two new services below, and the offer-files contract the AA console calls — comes
+from ONE commit:
+
+> **`effectstream/zswap-offerfiles-kernel` @ `4af102536f02f137b696a4734bd8c936eddf3672`**
+> — branch `ledger-v9`, [PR #65](https://github.com/effectstream/zswap-offerfiles-kernel/pull/65).
+
+**THE SHA IS THE IDENTITY, NOT THE BRANCH OR THE PR.** PR #65 was a DRAFT when this pin was
+taken ("DO NOT MERGE UNTIL LEDGER V9 IS THE STANDARD"), and that is fine: the images fetch by
+full SHA, GitHub keeps a PR's commits reachable, and `scripts/verify-source-pins.sh` reads the
+commit baked into each running image. If the branch is force-refreshed, or the PR merges to
+`main`, the pin stays valid and only the wording here ages. That is why the SHA is written out
+in full above rather than only in `.env.example`.
+
+The previous pin was the CLOSED PR #50 branch `00001-solver-v9`, at `b1420c4…` — and in
+`compose/offerfiles.yml` alone at `706301e…`, a split nothing in the repository noticed because
+every check compared a running image against ONE of the copies. `scripts/verify-pin-defaults.sh`
+now fails offline when any two defaults of one pin disagree, and `ci-check.sh` runs it.
+
+What this pin brings that the old one did not:
+
+| Change | Kernel PRs | What it means here |
+|---|---|---|
+| **Token price service** — seeded `asset_prices`, `GET /v1/prices`, `GET /v1/quote`, and the batcher's fee-sponsorship gate | #54–#56 | ⚠ **BREAKING**: it moves `migrations/000-init.sql`, which the kernel applies only on an EMPTY database. An existing `postgres-data` volume needs `./down.sh -v`. The kernel and batcher carry the matching `BATCHER_SPONSOR_*` / `SPONSOR_DISCOUNT_BPS` env |
+| **Offer poster** — mints one exact coin and posts one takeable offer per interval | #57, #60, #66 | the new `poster` profile |
+| **Solver status listener** (`:9100`, bearer-gated) and the **`solver-frontend` monitor site** | #58, #59 | the solver's own view of itself, and a page for it |
+| **6 decimals on every token**; faucets mint whole coins; sNight seeded as a known token | #61, #63 | amounts in the book are whole coins × 10⁶. The pinned zswap-da SPA still displays BASE UNITS — re-pinning it is a separate change |
+| Randomised poster give size (`GIVE_MIN`/`GIVE_MAX`) | #66 | `OFFER_POSTER_GIVE_MIN`/`_MAX` in `.env.example` |
+
+**The compactc version travels with that SHA.** Both images that compile the offer-files
+contract — `images/offerfiles-kernel` and `images/aa-contracts` — read
+`infra/compact-version.txt` out of the fetched tree (`0.33.0-rc.2` at this pin) instead of
+carrying a hard-coded `ARG`. A hard-coded default is exactly the kind that keeps compiling
+after a kernel bump: the contract still builds, and the deployed keys are simply not the ones
+the pinned kernel expects. `--build-arg COMPACT_VERSION=…` still overrides for an experiment,
+and the AA image additionally REFUSES a kernel that has left the 0.33 line, because one
+compactc compiles both contract sets in that image (see `issues/00011-…`).
 
 **Cow solver source pin.** Cow solver source is not copied into this repository. Its image fetches
-[`effectstream/zswap-offerfiles-kernel` PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50)
-directly at build time at exact SHA `4af102536f02f137b696a4734bd8c936eddf3672`
-(`SOLVER_REF`). Compose supplies the separately built kernel image only for its generated Compact
-artifacts.
+the same commit at build time (`SOLVER_REF` — a separate knob, the same value since the kernel
+and the solver live on one branch now). Compose supplies the separately built kernel image only
+for its generated Compact artifacts. The image runs `start.solver.ts` behind this repo's own
+`undeployed`-only gate (`images/cow-solver/entrypoint-solver.sh`): the older entrypoint,
+`packages/solver/solver.dev.ts`, carries that gate itself but calls `runSolver()` without a
+`status` option — and the status listener is inert unless that option is present, so the monitor
+site would have had nothing to read.
 
 **Frontend source pin.** The zswap-da template's ledger-v9 migration is not published upstream
 (`effectstream/effectstream@templates/zswap-da` remains on ledger-v8). The image therefore fetches
@@ -112,6 +153,123 @@ is when a fresh deploy is correct.
 
 Practical consequences: `kernel` and `batcher` restart independently of each other, and
 `docker compose logs batcher` is the batcher's log alone rather than six processes interleaved.
+
+## The offer-files profile grew a fourth service: `register-tokens`
+
+A one-shot, non-fatal, run once the kernel is healthy. It names this stack's three demo
+colours in the kernel's registry (`POST /v1/known-tokens`, `decimals: 6`).
+
+It exists because of two problems that meet at the same place. First, `mint-test-tokens.ts`
+— which the deploy one-shot runs — already tries to register names and CANNOT succeed here: it
+posts to `/api/known-tokens`, a path the node has never served, and to its own loopback while
+the kernel does not yet exist (`kernel` waits on the deploy one-shot completing). Both failures
+are swallowed by a try/catch that only logs. That is the kernel's own `issues/00008`, and only
+Compose knows when the kernel is healthy, so this is where the ordering can actually be fixed.
+
+Second, and new at this pin: **names are no longer cosmetic**. Since the token price service,
+`known_tokens.name` is what prices a colour — `WBTC` resolves to the `bitcoin` asset and `WETH`
+to `ethereum` through the node's built-in map. Before this one-shot the only thing naming those
+colours was the AA console, i.e. only under the `aa` profile, so `./up.sh --with offerfiles`
+alone priced nothing and the batcher's sponsorship gate had nothing to work with.
+
+**One derivation for the whole stack.** A colour is `rawTokenType(domain_sep, contractAddress)`,
+so it is a property of THIS deployment and changes on every fresh stack — there is nothing to
+write down. The domain separator now comes from the kernel's own `docs/src/wallet/mintable.ts`
+(`domainSepFromName`, the zswap-da faucet's function) in every place this stack derives one: the
+`register-tokens` one-shot, the AA console, the offer poster and the SPA faucet. Before this
+change the console used private separators (`0xa1`/`0xb2`/`0xc3`) while the poster used the
+faucet's, which meant two different colours competing for the one `WBTC` row — `known_tokens.name`
+is `UNIQUE`, so one side always lost with a 409 and quoted unpriced, and a console taker could
+never take a poster offer because they held different tokens under the same label. **This is
+breaking for an existing stack**: the console's shielded colours move. They already moved on
+every `./down.sh -v`, which this pin requires anyway.
+
+## The COW solver reports on itself: status listener + `solver-frontend` (profile `solver`)
+
+The `solver` profile is now three services.
+
+**The status listener** is the solver's own read-only surface, on `:9100` inside the compose
+network: `GET /health` (open — no internal data, so a healthcheck needs no secret) plus
+`GET /status/snapshot` and `GET /status/stream` behind a Bearer. It is OPT-IN BY THE PORT and by
+nothing else — with `SOLVER_STATUS_PORT` unset the solver behaves byte-for-byte as before.
+Collection reads in-memory state only: no wallet call, no proof, no kernel or relay I/O, and no
+route mutates anything.
+
+`:9100` is **never published to the host**. `/status/*` is the solver's entire internal state —
+book, inventory, journal tail, ladder, configuration — so the token that guards it is the only
+thing between that state and whatever can reach the port. `verify-solver.sh` asserts the port is
+unpublished and that the gate answers 200 with the bearer and 401 without, in one exec against
+the same process. The token itself (`SOLVER_STATUS_AUTH_TOKEN`) is a **fixed public default**,
+exactly like `SOLVER_RELAY_AUTH_TOKEN` and every other secret in this repository; it has to exist
+(the solver refuses a value shorter than 32 characters) and with the port unpublished it only
+guards the compose network.
+
+**The monitor site** (`solver-frontend`, `:10802` on the host) is the page that reads it: "is the
+solver quoting, and if not, why". Six-stage health strip, the ladders it published, the kernel's
+book and sync state, the relay's advertised tokens, a bounded transition history.
+
+It is a SEPARATE service and not a route on the solver for one reason: *the moment anyone
+actually opens it is the moment the solver is down.* So it depends on `kernel` only — never on
+`solver`, and least of all with `service_healthy` on it — and it comes up, renders the book, and
+says SOLVER UNREACHABLE with the time it was last seen instead of dying alongside the process it
+exists to describe. It holds no wallet, no seed and no journal, opens no relay socket, and has no
+route that mutates anything. It has **no authentication of its own**, which is why its host port
+binds `BIND_ADDR` (127.0.0.1) like everything else here.
+
+**Two pages about one solver, on purpose.** The `solver-sink` feed page (`:10800`) shows what the
+RELAY received — the outside view, and the only place the observation-safety property
+(`framesSentToSolver == 0`) can be demonstrated, because the sink is the thing that would have
+had to send. The monitor shows the solver's own account of itself. The console's COW solver tab
+embeds both.
+
+The sink also gained `GET /tokens` on its relay port — unauthenticated, as on the reference
+relay, and the only relay route the monitor knows. It answers from the last `solver-capabilities`
+frame the sink accepted, which on a one-solver stack is exactly what the relay would advertise.
+It is a READ: nothing was added that can construct or send a frame towards the solver.
+
+## The book fills itself: the `poster` profile
+
+`./up.sh --with offerfiles --with poster` (or `--all`) adds two services.
+
+`poster-fund` is a one-shot on the toolkit image: it sends the poster's dedicated wallet
+4 × 5 000 000 000 000 stars of unshielded NIGHT from genesis. Several LARGE UTXOs rather than
+one, because DUST is generated per NIGHT UTXO and the poster pays for a mint AND an offer every
+interval out of its own dust. It is idempotent by a CHAIN READ of the wallet's current total, not
+by a marker file — a marker would survive a `./down.sh -v` of the chain it describes. It does NOT
+register the DUST address: the poster does that itself at startup, and a second registrant for a
+value the service already owns would make "the poster could not register" unreportable.
+
+`offer-poster` is the loop. Every `POST_INTERVAL_MS` it either re-offers a coin its journal says
+came back, or mints ONE fresh `GIVE_TOKEN` coin from the offer-files faucet circuit and posts a
+single ZSwap offer whose only input is that exact coin. The want leg is sized from the kernel's
+`GET /v1/quote` each tick, which is what keeps the offer sponsorable by the batcher. Health,
+metrics and the journal are on `:9977`, published as `POSTER_HEALTH_PORT`.
+
+**A dedicated seed, and it must stay dedicated.** Two wallet facades on one seed against one
+Midnight node force each other's connection down, silently. The poster refuses to start (exit 78)
+if its seed equals any of seven named wallet variables, and `scripts/verify-poster.sh --static`
+asserts offline that the shipped default (`0ffe…`, listed in `wallets/wallets.json`) differs from
+every seed declared in `compose/`, `.env.example` and that file. This service must never be scaled
+past one replica.
+
+**Idempotence lives in the journal, not in a marker.** `poster-fund` and the other one-shots write
+a marker and exit early on a restart; a marker here would make a restart a permanent no-op, since
+this service's whole job is to keep posting. The journal (on its own volume, KEYED by the deployed
+contract address) is written before a mint is submitted and after every state change, so a restart
+re-adopts the coins this poster already owns. Deleting that volume is what "start over" means.
+
+`/health` answers 200 while the poster is `starting` and while it is `degraded` (no DUST yet) —
+503 arrives only after `HEALTH_STALE_TICKS` consecutive FAILED ticks, because 503-ing on
+`degraded` would make Compose restart a container that is correctly waiting for NIGHT. So a
+healthy container proves very little, and `./verify.sh --poster` is the real gate: it requires
+`state` not degraded, `mints ≥ 1`, and `lastOfferId` present **in the kernel's open book** with a
+whole-coin give leg and a non-zero, actually-quoted want leg.
+
+**The `price-feed` service is deliberately not here.** The schema ships seeded reference prices
+captured from CoinGecko, so every quote in this stack is a real BTC/ETH ratio without it — and it
+is the one upstream service that needs an internet-reachable third party and an API key, which
+would be the first real secret in this repository. Upstream runs it behind `--profile prices`; if
+you want live prices, that is where to look.
 
 ## The two proof servers, and the one cache they share (profile `core` + `aa`)
 

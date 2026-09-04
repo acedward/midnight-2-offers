@@ -4,10 +4,17 @@
 // Run:  bun test images/cow-solver/sink
 //
 // `fixtures/relay-ws/v1/` here is a byte-copy of
-// `packages/solver-core/fixtures/relay-ws/v1/` in the kernel repo (branch
-// 00001-solver-v9), MANIFEST.sha256 included. The first test re-verifies every
-// hash, so a copy that was edited — or a stale copy taken before the kernel's
-// fixtures moved — fails here rather than at 3am against a live solver.
+// `packages/solver-core/fixtures/relay-ws/v1/` in the kernel repo, MANIFEST.sha256
+// included. The first test re-verifies every hash, so a copy that was edited fails
+// here rather than at 3am against a live solver.
+//
+// WHAT THAT TEST CANNOT SEE is an upstream change: it hashes the local files
+// against the local manifest, so both moving together would still pass. The
+// manifest is therefore checked BY HAND against the kernel pin whenever the pin
+// moves. Last compared 2026-09-03 at
+// `4af102536f02f137b696a4734bd8c936eddf3672` (branch `ledger-v9`, PR #65):
+// all seven hashes IDENTICAL to the copy here, so the wire contract did not move
+// across the whole PR #50 → PR #65 range.
 
 import { expect, test, describe } from "bun:test";
 import { createHash } from "node:crypto";

@@ -158,6 +158,19 @@ services:
       AA_OFFER_ALLOW_FALLIBLE: '${AA_OFFER_ALLOW_FALLIBLE:-1}'
       # Host-reachable sink page URL for the Offers+Solver tab's iframe.
       AA_SINK_PUBLIC_URL: '${AA_SINK_PUBLIC_URL:-http://127.0.0.1:${SOLVER_SINK_HOST_PORT:-10800}}'
+      # …and the COW solver's read-only MONITOR SITE, same tab, second frame.
+      # A HOST url, like the sink's above: the browser is what loads it, so a
+      # compose hostname would resolve to nothing.
+      AA_SOLVER_FRONTEND_PUBLIC_URL: '${AA_SOLVER_FRONTEND_PUBLIC_URL:-http://127.0.0.1:${SOLVER_FRONTEND_PORT:-10802}}'
+      # The three the CONSOLE PROCESS reaches over the compose network, for the
+      # infrastructure tab's probes. `solver:9100` is the solver's status
+      # listener: the console asks only its OPEN GET /health (no internal data,
+      # no bearer needed, and it is deliberately given none) — /status/* stays
+      # between the solver and the monitor site. All three answer `absent` when
+      # their profile is not up, which is the normal case for an aa-only stack.
+      AA_SOLVER_FRONTEND_URL: '${AA_SOLVER_FRONTEND_URL:-http://solver-frontend:8080}'
+      AA_SOLVER_STATUS_URL: '${AA_SOLVER_STATUS_URL:-http://solver:9100}'
+      AA_OFFER_POSTER_URL: '${AA_OFFER_POSTER_URL:-http://offer-poster:9977}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
     volumes:

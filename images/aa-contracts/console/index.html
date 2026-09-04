@@ -477,6 +477,24 @@
     <p class="note">If it does not load, the solver profile is down — or
       <a id="solver-frame-link" href="#" target="_blank" rel="noopener">open the sink page in its own tab</a>.</p>
   </section>
+
+  <section class="wide">
+    <h2>Solver monitor <span class="pill dim">solver-frontend</span></h2>
+    <!-- TWO PAGES ABOUT ONE SOLVER, on purpose. The feed above is what the RELAY
+         received — the outside view, and the only place "nothing was ever sent
+         to the solver" can be shown. This is the solver's OWN view of itself,
+         read from its status listener on :9100 (unpublished, bearer-gated; this
+         page is its only intended reader): the six-stage health strip, the
+         ladders it published, the kernel book it derived them from, and why it
+         is not quoting when it is not. src is set lazily from /api/info's
+         solverFrontendUrl on first tab activation. -->
+    <iframe id="solver-monitor-frame" title="COW solver monitor" style="width:100%;height:70vh;border:1px solid var(--edge);border-radius:8px;background:#0d1117;display:block"></iframe>
+    <p class="note">Reads the solver's status listener, the kernel API and the sink's
+      <code>GET /tokens</code>; it holds no wallet and mutates nothing. If it says
+      SOLVER UNREACHABLE the page is fine and the solver is not — that is the state it
+      exists to show. Or
+      <a id="solver-monitor-frame-link" href="#" target="_blank" rel="noopener">open the monitor in its own tab</a>.</p>
+  </section>
 </main>
 
 <main id="view-infra" class="view">

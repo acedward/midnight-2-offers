@@ -1,6 +1,6 @@
 // cow-solver-sink — the demo's OBSERVATION endpoint for the ported COW solver.
 //
-// WHAT THIS IS. The solver (kernel branch 00001-solver-v9) is, by design, an
+// WHAT THIS IS. The solver (kernel branch `ledger-v9`, PR #65) is, by design, an
 // outbound WebSocket CLIENT of a "Midnight Intents relay": it connects with a
 // shared Bearer, registers `solver-capabilities`, and re-pushes `price-levels`
 // once a second. The real relay (`shieldedtech/midnight-intents-swaps`) is

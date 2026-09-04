@@ -7,9 +7,9 @@
 // (@ d444c8379415093460d83a6ba27536af396f759d). The sink cannot import it
 // because its isolated image context does not contain the upstream solver tree.
 // That tree is public and not copied here: the Cow solver image fetches
-// effectstream/zswap-offerfiles-kernel PR #50 directly at exact SHA
-// 4af102536f02f137b696a4734bd8c936eddf3672. The separate browser SPA is fetched
-// through FRONTEND_REPO/FRONTEND_REF.
+// effectstream/zswap-offerfiles-kernel PR #65 (branch `ledger-v9`) directly at
+// exact SHA 4af102536f02f137b696a4734bd8c936eddf3672. The separate browser SPA
+// is fetched through FRONTEND_REPO/FRONTEND_REF.
 //
 // The canonical JSON bodies are pinned by that package's
 // `fixtures/relay-ws/v1/` + `MANIFEST.sha256`; `wire.test.ts` next to this

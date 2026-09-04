@@ -72,6 +72,20 @@ const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
 // The HOST-reachable form of the sink page, for the browser's iframe (the
 // compose-network URL above is meaningless to a browser).
 const SINK_PUBLIC_URL = process.env["AA_SINK_PUBLIC_URL"] ?? "http://127.0.0.1:10800";
+// The COW solver's read-only MONITOR SITE, as the BROWSER must reach it (a host
+// URL, like SINK_PUBLIC_URL — the console embeds it in an iframe, so a compose
+// hostname would resolve to nothing).
+const SOLVER_FRONTEND_PUBLIC_URL =
+  process.env["AA_SOLVER_FRONTEND_PUBLIC_URL"] ?? "http://127.0.0.1:10802";
+// …and as THIS PROCESS reaches it, over the compose network, for the infra probe.
+const SOLVER_FRONTEND_URL = process.env["AA_SOLVER_FRONTEND_URL"] ?? "http://solver-frontend:8080";
+// The solver's own status listener. Never published to the host: /status/* is
+// the solver's entire internal state and is bearer-gated. The console probes
+// only GET /health, which is OPEN by design and carries no internal data — so
+// the console needs no bearer and is given none.
+const SOLVER_STATUS_URL = process.env["AA_SOLVER_STATUS_URL"] ?? "http://solver:9100";
+// The offer poster's own read-only surface.
+const OFFER_POSTER_URL = process.env["AA_OFFER_POSTER_URL"] ?? "http://offer-poster:9977";
 // Shielded funding runs on the aa-deploy wallet (genesis-3): prefunded, and it
 // already holds the shielded colour minted at bring-up. The RELAY wallet stays
 // shielded-free (T7.5 rule) — that is the entire reason for the second seed.
@@ -1169,21 +1183,53 @@ async function infraStatus() {
       }),
       probe(probePostgres),
     ]);
-  // The solver has no HTTP surface of its own — its liveness is what the sink
-  // sees on the authenticated relay socket.
+
+  // Since the ledger-v9 re-pin the solver DOES have an HTTP surface of its own:
+  // GET /health on its status listener, open by design (no internal data, so a
+  // healthcheck needs no secret). Probe it directly — it is the solver speaking
+  // for itself — and keep the sink's view as the fallback, because a solver
+  // whose listener is off is still visible through the relay socket.
+  const solverStatus = await probe(async () => (await fetchJson(`${SOLVER_STATUS_URL}/health`)) as any);
   const solver: ProbeResult =
-    sink.status !== "up"
-      ? { status: "absent", info: "sink not up — no visibility" }
-      : (sink.info as any).solverConnected
-        ? { status: "up", info: { via: "sink relay socket" } }
-        : { status: "down", info: "sink up, no solver connected" };
+    solverStatus.status === "up"
+      ? {
+          status: "up",
+          info: {
+            via: "status listener :9100 (unpublished)",
+            health: solverStatus.info,
+            relaySocket: sink.status === "up" ? ((sink.info as any).solverConnected ?? false) : "unknown",
+          },
+        }
+      : sink.status !== "up"
+        ? { status: "absent", info: "no status listener and no sink — no visibility" }
+        : (sink.info as any).solverConnected
+          ? { status: "up", info: { via: "sink relay socket (status listener unreachable)" } }
+          : { status: "down", info: "sink up, no solver connected" };
+
+  // The monitor site and the offer poster. Both are opt-in profiles, so `absent`
+  // (which `probe` reports for a name that does not resolve) is the normal
+  // answer on a stack that did not bring them up — not an error.
+  const [solverFrontend, offerPoster] = await Promise.all([
+    probe(async () => (await fetchJson(`${SOLVER_FRONTEND_URL}/health`)) as any),
+    probe(async () => {
+      const h = (await fetchJson(`${OFFER_POSTER_URL}/health`)) as any;
+      return {
+        state: h.state,
+        mints: h.mints,
+        liveOffers: h.liveOffers,
+        lastOfferId: typeof h.lastOfferId === "string" ? h.lastOfferId.slice(0, 12) : null,
+        lastFailure: h.lastFailure ?? null,
+      };
+    }),
+  ]);
+
   return {
     at: new Date().toISOString(),
     components: {
       console: { status: "up", info: { relayFunded: relay.funded, takerFunded: taker.funded, jobsQueued: queue.length } },
       node, indexer, proofServer, aaProofServer,
       kernel, kernelSync, batcher, celestia,
-      evmRpc, frontend, solverSink: sink, solver,
+      evmRpc, frontend, solverSink: sink, solver, solverFrontend, offerPoster,
       // The one store for the whole stack (T11.4): the kernel's offer book
       // (`offerfiles`) and umbra-evm's index (`umbra`) both live here.
       postgres,
@@ -1244,6 +1290,7 @@ Bun.serve({
           tokensError: tokens.error,
           kernelUrl: KERNEL_URL,
           sinkPublicUrl: SINK_PUBLIC_URL,
+          solverFrontendUrl: SOLVER_FRONTEND_PUBLIC_URL,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
           // Withdraw's node-rejection (Custom error 214, recipient Either arm
           // inversion) was FIXED upstream in AA PR #10 (713a2021…) and this

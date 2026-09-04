@@ -97,6 +97,31 @@ need roughly 45 minutes of accrual to clear a single fee. Funded with **10,000,0
 same wallet pays its fees as soon as the DUST UTXO appears. Lower `--amount` only if you are
 prepared to wait.
 
+### Funded by its own profile
+
+One wallet is funded by neither genesis nor `fund-wallet.sh`:
+
+| Wallet | Seed | Who funds it |
+|---|---|---|
+| `offer-poster` | `0ffe0ffe…0ffe` | `compose/poster.yml`'s `poster-fund` one-shot, before the poster starts |
+
+It carries `funding: "compose-one-shot"` in `wallets/wallets.json`, a kind that neither
+`fund-in-container.sh` nor `verify-wallets.sh` selects — both filter on `genesis` /
+`fund-script` / `mnemonic` — because this wallet's lifecycle belongs to the profile, not to the
+funding script. `poster-fund` sends it 4 × 5 000 000 000 000 stars of unshielded NIGHT (several
+LARGE UTXOs, because DUST is generated per UTXO and the poster pays for a mint AND an offer
+every interval) and stops there: the POSTER registers its own DUST address at startup and waits
+for a spendable UTXO. A second registrant for a value the service already owns would make "the
+poster could not register" unreportable.
+
+**It must stay dedicated.** The poster refuses to start (exit 78) if its seed equals
+`MIDNIGHT_WALLET_SEED` / `MIDNIGHT_GENESIS_SEED`, `BATCHER_WALLET_SEED`, `SOLVER_SEED`,
+`MAKER_SEED` / `MAKER_OFFER_SEED` or `TAKER_SEED` — two wallet facades on one seed against one
+Midnight node force each other's connection down, silently. `scripts/verify-poster.sh --static`
+asserts that OFFLINE against every seed declared in `wallets/wallets.json`, in `compose/*.yml`
+and in `.env.example`, so a future edit to any of those is caught before a build rather than by
+an exit 78 on a live stack.
+
 ## Import into Lace
 
 Lace imports a wallet from a **mnemonic**, never from a raw hex seed, so the wallets below are

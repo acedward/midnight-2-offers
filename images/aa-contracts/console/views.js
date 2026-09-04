@@ -21,13 +21,24 @@ function showView(name) {
   document.getElementById("head-note").textContent = HEAD_NOTES[name] ?? "";
   if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
   if (name === "solver") {
-    const frame = document.getElementById("solver-frame");
-    if (frame && !frame.src) {
-      const setSrc = (url) => { frame.src = url; document.getElementById("solver-frame-link").href = url; };
-      const url = (window.state && state.info && state.info.sinkPublicUrl) || null;
-      if (url) setSrc(url);
-      else fetch("/api/info").then((r) => r.json()).then((i) => setSrc(i.sinkPublicUrl || "http://127.0.0.1:10800")).catch(() => setSrc("http://127.0.0.1:10800"));
-    }
+    // Two frames, one lazy load each: the sink's feed (what the relay received)
+    // and the solver's own monitor site (what the solver says about itself).
+    const lazyFrame = (frameId, linkId, infoKey, fallback) => {
+      const frame = document.getElementById(frameId);
+      if (!frame || frame.src) return;
+      const setSrc = (url) => {
+        frame.src = url;
+        const link = document.getElementById(linkId);
+        if (link) link.href = url;
+      };
+      const known = (window.state && state.info && state.info[infoKey]) || null;
+      if (known) setSrc(known);
+      else fetch("/api/info").then((r) => r.json())
+        .then((i) => setSrc(i[infoKey] || fallback))
+        .catch(() => setSrc(fallback));
+    };
+    lazyFrame("solver-frame", "solver-frame-link", "sinkPublicUrl", "http://127.0.0.1:10800");
+    lazyFrame("solver-monitor-frame", "solver-monitor-frame-link", "solverFrontendUrl", "http://127.0.0.1:10802");
   }
   if (name === "infra") startInfraPoll(); else stopInfraPoll();
   if (name === "memos") {
@@ -208,15 +219,17 @@ const INFRA_NODES = [
   // Browser
   { id: "browser",       label: "Your browser",              sub: "MetaMask + these pages", x: 460, y: 28,  w: 200, h: 46, fixed: "up" },
   // dApps
-  { id: "console",       label: "aa-relay (console backend)", sub: "serves this page + API · :10700", x: 80,  y: 122, w: 220, h: 56 },
-  { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static, backend = kernel", x: 430, y: 122, w: 220, h: 56 },
-  { id: "solverSink",    label: "solver-sink (ladder feed)", sub: ":10800 · relay-WS receive half", x: 780, y: 122, w: 220, h: 56 },
+  { id: "console",       label: "aa-relay (console backend)", sub: "serves this page + API · :10700", x: 30,  y: 122, w: 210, h: 56 },
+  { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static, backend = kernel", x: 265, y: 122, w: 210, h: 56 },
+  { id: "solverSink",    label: "solver-sink (ladder feed)", sub: ":10800 · relay-WS receive half", x: 500, y: 122, w: 205, h: 56 },
+  { id: "solverMonitor", label: "solver-frontend (monitor)", sub: ":10802 · read-only, no wallet", x: 730, y: 122, w: 205, h: 56 },
   // Infrastructure
-  { id: "indexer",       label: "indexer",                   sub: ":8088 · GraphQL v4", x: 55,  y: 240, w: 165, h: 52 },
-  { id: "evmRpc",        label: "umbra (eth JSON-RPC)",      sub: ":8545 · read-only",  x: 240, y: 240, w: 185, h: 52 },
-  { id: "kernel",        label: "offer-files kernel",        sub: ":9999 · contract deployed once", x: 445, y: 240, w: 200, h: 52 },
-  { id: "batcher",       label: "batcher",                   sub: ":3334 · own container", x: 665, y: 240, w: 155, h: 52 },
-  { id: "solver",        label: "cow (solver)",              sub: "observation mode",   x: 840, y: 240, w: 165, h: 52 },
+  { id: "indexer",       label: "indexer",                   sub: ":8088 · GraphQL v4", x: 30,  y: 240, w: 150, h: 52 },
+  { id: "evmRpc",        label: "umbra (eth JSON-RPC)",      sub: ":8545 · read-only",  x: 195, y: 240, w: 175, h: 52 },
+  { id: "kernel",        label: "offer-files kernel",        sub: ":9999 · contract deployed once", x: 385, y: 240, w: 190, h: 52 },
+  { id: "batcher",       label: "batcher",                   sub: ":3334 · own container", x: 590, y: 240, w: 140, h: 52 },
+  { id: "offerPoster",   label: "offer-poster",              sub: ":9977 · mints + posts, profile `poster`", x: 745, y: 240, w: 175, h: 52 },
+  { id: "solver",        label: "cow (solver)",              sub: "observation · status :9100", x: 935, y: 240, w: 155, h: 52 },
   { id: "proofServer",   label: "proof-server 9.0.0-rc.5",   sub: "plain · zkir-v2 / [v6] + wallet lane", x: 240, y: 356, w: 250, h: 52 },
   { id: "aaProofServer", label: "proof-server 9.0.0-rc.5 experimental", sub: "zkir-v3 / [v7] — the AA circuits", x: 530, y: 356, w: 290, h: 52 },
   { id: "postgres",      label: "postgres (shared)",         sub: "offerfiles + umbra · one store", x: 845, y: 356, w: 200, h: 52 },
@@ -225,11 +238,19 @@ const INFRA_NODES = [
   { id: "celestia",      label: "celestia (DA devnet)",      sub: ":26658 · the offer blobs", x: 600, y: 496, w: 240, h: 56 },
 ];
 const INFRA_EDGES = [
-  ["browser", "console"], ["browser", "frontend"], ["browser", "solverSink"],
+  ["browser", "console"], ["browser", "frontend"], ["browser", "solverSink"], ["browser", "solverMonitor"],
   ["console", "kernel"], ["console", "proofServer"], ["console", "aaProofServer"],
   ["console", "node"], ["console", "indexer"],
   ["frontend", "kernel"], ["frontend", "batcher"],
   ["solver", "solverSink"], ["solver", "kernel"],
+  // The monitor reads three sources and writes to none of them. `solver` is the
+  // UNPUBLISHED :9100 status listener — this edge exists entirely inside the
+  // compose network, which is the point: the page is the listener's only
+  // intended reader.
+  ["solverMonitor", "solver"], ["solverMonitor", "kernel"], ["solverMonitor", "solverSink"],
+  // The poster: it mints and posts through the kernel, and pays with its own
+  // dust — so it needs the chain, the indexer and a prover of its own.
+  ["offerPoster", "kernel"], ["offerPoster", "node"], ["offerPoster", "indexer"], ["offerPoster", "proofServer"],
   ["kernel", "batcher"], ["kernel", "node"], ["kernel", "indexer"], ["kernel", "celestia"],
   ["batcher", "celestia"], ["batcher", "node"],
   ["evmRpc", "indexer"],
@@ -244,6 +265,7 @@ const INFRA_LABELS = {
   kernel: "offer-files kernel", kernelSync: "kernel sync", batcher: "batcher",
   celestia: "celestia", evmRpc: "umbra-evm RPC", frontend: "zswap-da frontend",
   solverSink: "solver sink", solver: "cow-solver", postgres: "postgres (shared)",
+  solverFrontend: "solver monitor", offerPoster: "offer-poster",
 };
 const INFRA_TITLES = {
   console: "the relay: serves this page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this table",
@@ -252,6 +274,9 @@ const INFRA_TITLES = {
   postgres: "the one store for the stack: the kernel's offer book (db offerfiles) + umbra's index (db umbra); no host port, TCP-level probe",
   aaProofServer: "9.0.0-rc.5 experimental — zkir-v3 / [v7], the AA circuits; internal only, digest-pinned from the ghcr.io/effectstream mirror",
   proofServer: "9.0.0-rc.5 plain — zkir-v2 / [v6] + the wallet standard lane; digest-pinned from the ghcr.io/effectstream mirror. Both read ONE verified proof-data generation, read-only",
+  solver: "observation mode. Probed on its OWN status listener :9100 (open GET /health, no internal data); /status/* is bearer-gated and unpublished, and the monitor site is its only intended reader. Falls back to the sink's view of the relay socket",
+  solverFrontend: "the read-only monitor site :10802 — is the solver quoting, and if not why. Holds no wallet, opens no relay socket, mutates nothing; depends on the KERNEL only, so it stays up (and says SOLVER UNREACHABLE) exactly when the solver is down",
+  offerPoster: "profile `poster`: every interval it re-offers a released coin or mints one fresh coin from the faucet circuit and posts a single takeable offer, paying with its own dust. /health carries state, mints and lastOfferId",
 };
 const DOT = { up: "#6fd18b", down: "#e57373", absent: "#4a5563" };
 
@@ -385,15 +410,30 @@ const REPOS = [
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
-    role: "offer-files kernel + batcher (profile offerfiles; pinned to the solver-compatible descendant)",
-    ref: "b1420c4… (branch 00001-solver-v9)",
-    notes: [["PR #50", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/50", "includes PR #49's v8→v9 migration plus the solver WS route"]],
+    role: "offer-files kernel + batcher + the token price service (profile offerfiles) — ONE commit for the whole kernel line",
+    ref: "4af102536f02f137b696a4734bd8c936eddf3672 (branch ledger-v9)",
+    notes: [
+      ["PR #65", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/65", "the unified ledger-v9 line — DRAFT when pinned; the SHA is the identity, not the branch or the PR"],
+      ["", "", "brings /v1/prices + /v1/quote and the batcher sponsorship gate (#54–#56) — BREAKING: it moves 000-init.sql, so an older postgres volume needs ./down.sh -v"],
+      ["", "", "and 6 decimals on every token (#61, #63): the book's amounts are whole coins × 10⁶"],
+    ],
   },
   {
-    repo: "effectstream/zswap-offerfiles-kernel (solver)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/00001-solver-v9",
-    role: "COW solver, observation mode (profile solver; the kernel also builds from this branch when the solver runs)",
-    ref: "pinned b1420c4… from branch 00001-solver-v9",
-    notes: [["PR #50", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/50", "the v9 port, pointing into PR #48"]],
+    repo: "effectstream/zswap-offerfiles-kernel (solver)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
+    role: "COW solver, observation mode, + its status listener :9100 and the solver-frontend monitor site (profile solver)",
+    ref: "pinned 4af1025… — the SAME commit as the kernel (SOLVER_REF is a separate knob)",
+    notes: [
+      ["PR #58 / #59", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/59", "the read-only status listener and the monitor page it feeds"],
+      ["", "", "runs start.solver.ts behind this repo's undeployed-only gate: solver.dev.ts never passes the status option, so the listener could not come up on it"],
+    ],
+  },
+  {
+    repo: "effectstream/zswap-offerfiles-kernel (offer poster)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
+    role: "the offer poster (profile poster) — mints one exact coin and posts one takeable offer per interval, from its own dedicated wallet",
+    ref: "pinned 4af1025… — deploy/scripts/offer-poster.ts from the same commit",
+    notes: [
+      ["PR #57 / #60 / #66", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/66", "the poster, its journal, and the randomised give size (GIVE_MIN/GIVE_MAX)"],
+    ],
   },
   {
     repo: "effectstream/effectstream", url: "https://github.com/effectstream/effectstream",
