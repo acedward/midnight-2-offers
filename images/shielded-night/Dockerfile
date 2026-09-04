@@ -350,11 +350,19 @@ COPY --from=build /src/scripts /app/scripts
 COPY --from=build /src/test    /app/test
 COPY --from=build /src/envs    /app/envs
 COPY --from=source /.shielded-night-commit /.shielded-night-commit
+# Lives INSIDE /app so `import "graphql"` resolves against /app/node_modules. Passed to the
+# deploy script with `bun run --preload`; see the file's own header for the crash it prevents.
+COPY preload-graphql.ts /app/preload-graphql.ts
 
 COPY entrypoint-common.sh /usr/local/lib/shielded-night/entrypoint-common.sh
-COPY entrypoint-deploy.sh entrypoint-verify.sh /usr/local/bin/
+# entrypoint-register-token.sh teaches the offer-files kernel THIS stack's sNight colour. It
+# lives on this target because the colour derivation needs @midnightntwrk/ledger-v9, which is
+# in the root node_modules copied above, and because this is the target that already mounts
+# the volume the contract address is published on.
+COPY entrypoint-deploy.sh entrypoint-verify.sh entrypoint-register-token.sh /usr/local/bin/
 RUN set -eux; \
-    chmod 0755 /usr/local/bin/entrypoint-deploy.sh /usr/local/bin/entrypoint-verify.sh; \
+    chmod 0755 /usr/local/bin/entrypoint-deploy.sh /usr/local/bin/entrypoint-verify.sh \
+               /usr/local/bin/entrypoint-register-token.sh; \
     chmod 0644 /usr/local/lib/shielded-night/entrypoint-common.sh; \
     # The one-shot publishes here; compose mounts a named volume over it. Creating it in the
     # image means a `docker run` without the volume fails on the deploy rather than on a

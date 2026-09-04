@@ -87,12 +87,17 @@ cd "${REPO_ROOT}" || die "no ${REPO_ROOT}"
 SHIELDED_NIGHT_COMMIT="$(cat /.shielded-night-commit 2>/dev/null || true)"
 export SHIELDED_NIGHT_COMMIT
 
+# `--preload /app/preload-graphql.ts` is not a nicety: without it this deploy dies at IMPORT
+# time, intermittently, with `require() async module ".../graphql/index.mjs" is unsupported`
+# from inside graphql-tag's UMD bundle. Importing graphql through Bun's ESM path first caches
+# the resolution the later CJS require() reuses. Upstream applies the same remedy to
+# scripts/verify-deployment.ts at this very pin; measured here on 2026-09-04 (questions Q30).
 MN_SEED="${SHIELDED_NIGHT_WALLET_SEED}" \
 DEPLOY_OUT="${RECORD_TMP}" \
 CV_NAME="${SHIELDED_NIGHT_NAME:-Shielded Night}" \
 CV_SYMBOL="${SHIELDED_NIGHT_SYMBOL:-sNight}" \
 CV_DECIMALS="${SHIELDED_NIGHT_DECIMALS:-6}" \
-  bun run "${SCRIPT}" || die "${SCRIPT} failed"
+  bun run --preload /app/preload-graphql.ts "${SCRIPT}" || die "${SCRIPT} failed"
 
 [ -f "${RECORD_TMP}" ] \
   || die "the deploy reported success but wrote no record to DEPLOY_OUT (${RECORD_TMP})"

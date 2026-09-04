@@ -161,6 +161,16 @@ control is worse than one that is gone.
   everything else here. Put a reverse proxy in front of it before it reaches any wider network,
   and note that its SSE feed needs response buffering off and a read timeout longer than the
   five-minute stream lifetime.
+- **sNight is named in the kernel's registry by a direct `UPDATE`, because the API has no
+  update route.** The kernel serves only `GET` and `POST /v1/known-tokens`, and the schema
+  always seeds a `SNIGHT` row, so the POST always answers 409. `shielded-night-register`
+  therefore issues one `UPDATE known_tokens SET token_color=… WHERE name='SNIGHT'` — the exact
+  command the kernel's own `000-init.sql` prints for this situation — and then re-reads the row
+  through the API. Two consequences worth knowing: this repository writes one row of a table the
+  kernel owns, and the registration only happens when the `offerfiles` profile is up (with no
+  kernel the one-shot exits 0 after saying so, and sNight simply has no name anywhere). The real
+  fix is an upsert route upstream; it is recorded as a follow-up rather than done here, because
+  the kernel pin is deliberately frozen for this project.
 - **The solver sink is internal, and that is a deliberate loss of a debugging surface.** Its feed
   page (`:10800`) and its relay-inspection port (`:10801`) were removed on 2026-09-04 so the
   monitor site is the ONE page about the solver. The sink still holds the only proof that nothing

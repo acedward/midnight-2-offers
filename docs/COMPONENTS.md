@@ -711,8 +711,48 @@ inside the compose network against this stack's indexer.
 |---|---|---|
 | `shielded-night-fund` | one-shot (toolkit) | gives the profile's two dedicated wallets NIGHT + a registered DUST address, and **skips** either one that already has both |
 | `shielded-night-deploy` | one-shot (`restart: "no"`) | deploys the contract ONCE per stack and publishes `contract.json` atomically to a named volume |
+| `shielded-night-register` | one-shot (`restart: "no"`) | teaches the offer-files kernel THIS stack's sNight colour, when the `offerfiles` profile is in the stack. No kernel → one log line and exit 0 |
 | `shielded-night` | nginx | serves the SPA and the compiled artifacts; its entrypoint waits for that address and writes `/config.js` before starting nginx |
 | `shielded-night-verify` | never started by `up.sh` | the bun-side assertions `./verify.sh` runs with `compose run --rm` (a compose `profiles:` key keeps it out of `up -d`, exactly as `core.yml`'s `fund` service does) |
+
+### Naming sNight in the kernel's token registry
+
+The kernel's schema seeds a `SNIGHT` row in `known_tokens`, and the colour it seeds is
+**preview's** — because sNight's colour is not a constant. The contract mints
+`tokenType(pad(32,"shielded-night:wrapper"), self())`, so the colour follows the contract
+ADDRESS, and this profile deploys a fresh contract on every `./down.sh -v`. Left alone, the
+registry names a colour this stack can never hold while the colour it does hold has no name:
+the swap SPA and the solver monitor show short hex, and neither `/v1/quote` nor the batcher's
+sponsorship gate can price it.
+
+`shielded-night-register` fixes that at bring-up. It reads the address from the deploy volume,
+derives the colour offline with `rawTokenType` (the deploy image already carries
+`@midnightntwrk/ledger-v9`), and then:
+
+| registry state | what it does |
+|---|---|
+| `SNIGHT` already carries this colour | logs and exits 0 — re-running is the normal case |
+| no `SNIGHT` row at all | `POST /v1/known-tokens` |
+| `SNIGHT` carries a different colour | **one** `UPDATE known_tokens SET token_color=… WHERE name='SNIGHT'` |
+
+That last row is the interesting one. The kernel serves exactly two routes for this table, `GET`
+and `POST`; there is no `PUT`, `PATCH` or `DELETE`, and `POST` answers **409 `Token name
+"SNIGHT" is already taken`** — which for `SNIGHT` is *always*, because the migration seeded it.
+The SQL is not an end run around the API: it is the remedy the kernel's own `000-init.sql`
+prints in the comment above that seed, under `!!! PATCH THIS ROW WHEN DEPLOYING TO ANOTHER
+NETWORK !!!`. Whatever path is taken, the result is re-read through `GET /v1/known-tokens` and
+the one-shot fails if the colour did not land — it never trusts its own write. The row carries
+`decimals: 6` and `asset_id: midnight-3`, NIGHT's own asset: sNight is locked 1:1, so one sNight
+base unit is one Star and an equal-base-unit NIGHT ⇄ sNight offer must price at par.
+
+**It is conditional, and it cannot be a compose dependency.** A profile here IS a fragment
+filename, so `compose/shielded-night.yml` may not name a service from `compose/offerfiles.yml`
+(the same constraint that ruled out the obvious fix in the funding race). The one-shot
+discriminates by DNS instead: if the hostname `kernel` does not resolve, the `offerfiles`
+profile is not in this stack and it exits 0 after saying so. If it resolves but is not answering
+yet, that is a race, and it waits. `up.sh` waits for its exit code only when both profiles are
+present, and `./verify.sh --shielded-night` asserts the registry through the kernel's API — with
+the expected colour derived independently, inside the kernel container.
 
 **Deployed once, deliberately.** The sNight token colour is derived from the contract address
 (`tokenType(pad(32,"shielded-night:wrapper"), self())`), so a silent redeploy would not merely

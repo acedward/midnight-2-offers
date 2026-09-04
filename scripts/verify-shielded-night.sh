@@ -28,6 +28,11 @@
 #   round trip  a funded wallet distinct from the deployer completes NIGHT -> sNight -> NIGHT
 #               both ways the contract offers — atomic (one transaction each) and two-step —
 #               with EXACT balance assertions.
+#   registry    ONLY when the `offerfiles` profile is also up: the kernel's GET /v1/known-tokens
+#               names SNIGHT with THIS stack's colour, not the PREVIEW colour its schema seeds.
+#               The colour is derived here from the deployed address, offline, and compared
+#               exactly — a name pointing at a colour nobody on this stack can hold is worse
+#               than no name at all, because every display believes it.
 #
 # The last two run inside a container from the same image the contract was deployed from
 # (`docker compose run --rm shielded-night-verify`), so this script needs no bun, no node and
@@ -314,6 +319,69 @@ if dc --profile shielded-night-verify run --rm -T shielded-night-verify roundtri
   ok "both round trips completed with exact balance assertions"
 else
   fail "a NIGHT <-> sNight round trip failed (see the output above)"
+fi
+
+# ── the kernel's token registry (only when offerfiles is up) ─────────────────
+#
+# The kernel seeds a SNIGHT row carrying PREVIEW's colour, and sNight's colour follows the
+# CONTRACT ADDRESS — which this profile deploys fresh per stack. `shielded-night-register`
+# corrects it at bring-up (infra issue 00012, questions Q29); this is where that is proved,
+# through the kernel's own API rather than through the writer.
+#
+# Skipped, not failed, when there is no kernel: `--with shielded-night` alone is a supported
+# stack and has nothing to register into.
+echo
+KERNEL_CID="$(docker ps -q \
+  --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+  --filter "label=com.docker.compose.service=kernel" 2>/dev/null | head -1)"
+if [[ -z "$KERNEL_CID" ]]; then
+  log "shielded-night: sNight token registration — SKIPPED (no offerfiles profile in this stack)"
+elif [[ -z "$ADDRESS" ]]; then
+  log "shielded-night: sNight token registration — SKIPPED (no contract address to derive from)"
+else
+  log "shielded-night: sNight is named in the kernel's token registry"
+  # Derived INDEPENDENTLY of the writer, in the already-running kernel container — it carries
+  # @midnightntwrk/ledger-v9 in its own workspace, and `docker exec` starts nothing (a
+  # `compose run` on the one-shot would drag its deploy dependency along). This is the same
+  # rawTokenType(pad32("shielded-night:wrapper"), address) the contract itself mints with.
+  EXPECTED_COLOUR="$(docker exec -w /app -e SN_ADDRESS="$ADDRESS" "$KERNEL_CID" bun -e '
+        const { rawTokenType } = await import("@midnightntwrk/ledger-v9");
+        const d = new Uint8Array(32);
+        d.set(new TextEncoder().encode("shielded-night:wrapper"));
+        process.stdout.write(rawTokenType(d, process.env.SN_ADDRESS.replace(/^0x/, "")).toLowerCase());
+      ' 2>/dev/null | tr -d '\r' | tail -1 || true)"
+  if [[ ! "$EXPECTED_COLOUR" =~ ^[0-9a-f]{64}$ ]]; then
+    fail "could not derive the sNight colour from ${ADDRESS} (got '${EXPECTED_COLOUR}')"
+  else
+    # Bounded wait: the one-shot runs beside the page and may still be in flight when a fast
+    # bring-up hands over to verify.
+    REGISTERED=""
+    for _ in $(seq 1 30); do
+      REGISTERED="$(docker exec "$KERNEL_CID" bun -e '
+          const r = await fetch("http://127.0.0.1:9999/v1/known-tokens");
+          if (!r.ok) process.exit(1);
+          const b = await r.json();
+          const rows = Array.isArray(b) ? b : (b.tokens ?? b.knownTokens ?? []);
+          const row = rows.find((t) => String(t.name ?? "").toUpperCase() === "SNIGHT");
+          if (!row) process.exit(1);
+          process.stdout.write(JSON.stringify({
+            color: String(row.color ?? row.token_color ?? "").toLowerCase(),
+            decimals: row.decimals ?? null,
+            kind: row.kind ?? null,
+          }));
+        ' 2>/dev/null || true)"
+      [[ "$REGISTERED" == *"$EXPECTED_COLOUR"* ]] && break
+      sleep 2
+    done
+    if [[ "$REGISTERED" == *"$EXPECTED_COLOUR"* ]]; then
+      ok "GET /v1/known-tokens names SNIGHT = ${EXPECTED_COLOUR:0:16}… (${REGISTERED})"
+    else
+      fail "the kernel's SNIGHT row does not carry this stack's colour ${EXPECTED_COLOUR}"
+      info "  registry says: ${REGISTERED:-<no SNIGHT row>}"
+      info "  the schema seeds PREVIEW's colour; shielded-night-register is what corrects it"
+      info "  logs: docker compose … logs shielded-night-register"
+    fi
+  fi
 fi
 
 echo

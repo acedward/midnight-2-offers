@@ -408,6 +408,29 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" shielded-night "* ]]; then
       FAILED=1
     fi
   fi
+  # `shielded-night-register` teaches the kernel this stack's sNight colour. It cannot be
+  # expressed as a compose dependency of anything (a profile here IS a fragment filename, so it
+  # may not name a service from offerfiles.yml, and nothing in offerfiles.yml may name it), so
+  # its completion is waited for HERE — and only when the kernel is actually in this stack,
+  # because with no kernel the one-shot exits 0 immediately by design.
+  if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
+    reg_cid="$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=shielded-night-register" 2>/dev/null | head -1)"
+    if [[ -z "$reg_cid" ]]; then
+      warn "no shielded-night-register container — sNight will keep the schema's seeded preview colour"
+    else
+      reg_code="$(docker wait "$reg_cid" 2>/dev/null || echo "")"
+      if [[ "$reg_code" == "0" ]]; then
+        log "shielded-night-register: sNight is named in the kernel's token registry"
+      else
+        err "shielded-night-register exited ${reg_code:-<unknown>} — sNight keeps the seeded PREVIEW colour"
+        info "  logs: docker logs ${reg_cid}"
+        info "  the swap page and the monitor will show sNight as short hex until this succeeds"
+        FAILED=1
+      fi
+    fi
+  fi
 fi
 
 if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]]; then
