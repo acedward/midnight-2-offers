@@ -164,6 +164,38 @@ Two ports are deliberately NOT in that table because they are never published: t
 entire internal state behind a Bearer and is read only by the monitor site over the compose
 network. `scripts/verify-solver.sh` asserts `docker port <solver> 9100` is empty.
 
+### The swap SPA on a non-default port block
+
+The browser is the one client that cannot be told "talk over the compose network". The kernel's
+`GET /v1/midnight/config` reports the URIs the KERNEL dials — `http://indexer:8088/api/v4/graphql`,
+`http://proof-server:6300` — and reports no node URI at all, so the page falls back to
+`http://<page host>:9944`. Rewriting only the hostname (what this repo did until 2026-09-04) leaves
+the CONTAINER port in place, which is right on the default layout and wrong on every
+`pick-ports.sh` block: the wallet then dials `:9944`/`:8088` while the stack published `:41234`
+and never syncs.
+
+The frontend image closes that gap at container start. `compose/frontend.yml` passes
+`NODE_HOST_PORT`, `INDEXER_HOST_PORT` and `PROOF_HOST_PORT` (defaulting to the container ports),
+`images/zswap-da/docker-entrypoint-frontend.sh` writes them into `/config.js` as
+
+```js
+window.MIDNIGHT_HOST_PORTS = {"node":"41230","indexer":"41231","proof-server":"41232"};
+```
+
+and `images/zswap-da/browser-network-urls.patch` maps every reported URI through that table —
+host to the page host, port to the published one, **scheme and path untouched**, so the kernel
+stays the authority on the indexer's API version. On the default layout the table is the identity
+map and nothing changes. `./verify.sh --frontend` asserts the served table matches the env file
+in force, so a stack whose ports moved without its map is a FAILURE rather than a mystery.
+
+The kernel API and the batcher were already covered a different way and still are:
+`pick-ports.sh` emits `FRONTEND_API_BASE` / `FRONTEND_BATCHER_URL`, which the same `/config.js`
+turns into `window.API_BASE` / `window.BATCHER_URL`.
+
+An extension wallet (Lace, Moth) is still limited to the default block — its `undeployed` preset
+hardcodes `9944`/`8088`/`6300` and no page can change that. See
+[KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md).
+
 ## One-command check (CI)
 
 ```bash

@@ -11,6 +11,12 @@
 #               generates at container start; a 404 means the entrypoint did not run.
 #   wired       index.html references config.js BEFORE the bundle, so window.API_BASE /
 #               window.BATCHER_URL are set when src/config.ts evaluates.
+#   ports       config.js carries window.MIDNIGHT_HOST_PORTS with THIS stack's published
+#               node/indexer/proof-server ports. GET /v1/midnight/config reports the URIs the
+#               KERNEL dials — compose hostnames on container ports — and the SPA's
+#               browser-network-urls.patch maps them through this table. A stale or missing
+#               table is the difference between a wallet that syncs and one that silently
+#               dials :9944 on a stack that published something else.
 #
 # The frontend profile remains standalone by design. When runtime endpoint overrides are present
 # (as they are in every pick-ports/CI env), this script asserts their exact injected values;
@@ -59,6 +65,20 @@ if [[ -n "${FRONTEND_BATCHER_URL:-}" ]]; then
     err "config.js does not inject expected FRONTEND_BATCHER_URL=${FRONTEND_BATCHER_URL}"
     FAILURES=$(( FAILURES + 1 ))
   fi
+fi
+
+# The map is emitted with the CONTAINER ports as defaults, so the expectation here is exactly
+# what compose renders: the .env value if set, else the container port.
+EXPECT_NODE="${NODE_HOST_PORT:-9944}"
+EXPECT_INDEXER="${INDEXER_HOST_PORT:-8088}"
+EXPECT_PROOF="${PROOF_HOST_PORT:-6300}"
+EXPECT_MAP="window.MIDNIGHT_HOST_PORTS = {\"node\":\"${EXPECT_NODE}\",\"indexer\":\"${EXPECT_INDEXER}\",\"proof-server\":\"${EXPECT_PROOF}\"};"
+if printf '%s' "$config_js" | grep -Fq "$EXPECT_MAP"; then
+  ok "config.js injects MIDNIGHT_HOST_PORTS node=${EXPECT_NODE} indexer=${EXPECT_INDEXER} proof-server=${EXPECT_PROOF}"
+else
+  err "config.js does not carry this stack's published ports; expected: ${EXPECT_MAP}"
+  printf '    served config.js: %s\n' "$config_js" >&2
+  FAILURES=$(( FAILURES + 1 ))
 fi
 
 if [[ "$html" == *"config.js"* ]]; then

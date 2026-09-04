@@ -130,9 +130,21 @@ control is worse than one that is gone.
   every quote is wrong. `scripts/verify-kernel.sh` asserts `GET /v1/prices` returns the seeded
   asset table so the situation is loud, and the fix is `./down.sh -v && ./up.sh …`.
 - **Every token now has 6 decimals and faucets mint whole coins.** Amounts in the book are
-  whole coins × 10⁶. The `frontend` profile's zswap-da SPA is still pinned to an upstream
-  template that displays BASE UNITS, so it shows a 1-coin offer as `1000000` until that image
-  is re-pinned. Nothing is wrong on the chain; the SPA's labels are.
+  whole coins × 10⁶. The `frontend` profile's zswap-da SPA is re-pinned to a template that
+  reads and writes WHOLE COINS, so a 1-coin offer reads `1 WBTC` rather than `1000000`. Any
+  external client that predates the re-pin — a saved curl, a script holding base units — is the
+  thing that needs updating now, not the SPA.
+- **The SPA's in-page wallet now works on any port block — but only through the page's own
+  `/config.js`.** `GET /v1/midnight/config` reports the URIs the KERNEL dials: compose
+  hostnames on CONTAINER ports, and no node URI at all. The image injects
+  `window.MIDNIGHT_HOST_PORTS` (compose hostname → published host port) at container start and
+  the SPA maps every reported URI through it, so a `scripts/pick-ports.sh` stack is fully
+  usable in a browser. Two things follow. Serving `dist/` from anything other than this image —
+  a CDN, `vite preview`, a hand-copied build — loses the map and the page falls back to
+  `:9944`/`:8088`/`:6300`. And the map is keyed by the compose SERVICE NAME (`node`, `indexer`,
+  `proof-server`): renaming a service in `compose/core.yml` without updating
+  `images/zswap-da/docker-entrypoint-frontend.sh` silently stops the mapping.
+  `./verify.sh --frontend` asserts the served map matches the stack's ports.
 - **The AA console's shielded token colours moved.** The console used to derive them from
   private domain separators, which produced a `wBTC` no other component in the stack could
   mint or take. It now uses the faucet's own `domainSepFromName`, so console, offer poster,
@@ -187,10 +199,13 @@ they cannot.
   automated proof that the contract works comes from upstream's own Node-side integration
   suite, run against this stack (`./verify.sh --shielded-night`). The browser path is a hand
   test; see [WALLETS.md](WALLETS.md#browser-hand-test-night--snight-with-the-moth-wallet).
-- **A browser wallet only reaches the stack on the DEFAULT port block.** An extension's
-  `undeployed` preset hardcodes node `9944`, indexer `8088`, proof-server `6300`. A stack from
-  `scripts/pick-ports.sh` is unreachable from it. The driver-based `verify.sh` section passes
-  on any port block, so this affects the hand test only. Shared with the `frontend` profile.
+- **An EXTENSION wallet only reaches the stack on the DEFAULT port block.** An extension's
+  `undeployed` preset hardcodes node `9944`, indexer `8088`, proof-server `6300`, and nothing
+  this stack serves can change what a browser extension dials. A stack from
+  `scripts/pick-ports.sh` is therefore unreachable from it. The driver-based `verify.sh` section
+  passes on any port block, so this affects the hand test only. It is NOT shared with the
+  `frontend` profile any more: that SPA's own in-page wallet learns the published ports at
+  runtime (see the `frontend` note above).
 - **On the 2.x line the wallet must also speak ledger-v9.** The wallet measured to do so is
   Moth, built from [`shieldedtech/moth-wallet` PR #30](https://github.com/shieldedtech/moth-wallet/pull/30)
   (`feat/ledger-v9-support`). A ledger-v8 wallet connects and then fails, because the ledger

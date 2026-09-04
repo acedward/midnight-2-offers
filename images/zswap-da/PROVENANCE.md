@@ -38,6 +38,19 @@ commits, so the dependency set is unchanged; two files conflicted (`src/services
 new `src/services/offerBatch.ts` — upstream's shape was taken in both, and the v8→v9 migration moved
 with the code into `offerBatch.ts`. `localTradeOffers.ts` no longer imports the ledger at all.
 
+`browser-network-urls.patch` is the second, much smaller local adaptation, and it exists because
+the page is the only client that cannot talk over the compose network. `GET /v1/midnight/config`
+reports the URIs the KERNEL dials — compose hostnames on CONTAINER ports — and reports no node URI
+at all. The patch fixes both halves in `api.getMidnightConfig`, the one function every consumer
+goes through: the hostname becomes the page's own host, the port becomes the PUBLISHED host port
+read from `window.MIDNIGHT_HOST_PORTS` (written into `/config.js` by
+`docker-entrypoint-frontend.sh` at container start), and the template's `http://<page host>:9944`
+node fallback is completed from the same map. Scheme and path are never touched, so the kernel
+stays the authority on the indexer's API version — this repository holds no copy of it. The
+Dockerfile greps for both `pageHost` and `MIDNIGHT_HOST_PORTS` after applying it, so a patch that
+silently stops doing either half fails the build. Extended on 2026-09-04; before that it rewrote
+only the hostname, which made the SPA browser-usable on the default port layout alone.
+
 No generated `managed/` contract output is committed. The image compiles the upstream tracked
 Compact source and verifies every generated file against the patched manifest before Vite builds.
 The upstream `LICENSE-APACHE` and `LICENSE-MIT` notices are copied from the pinned source into
