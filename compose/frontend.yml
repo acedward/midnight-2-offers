@@ -21,7 +21,7 @@ services:
       context: '../images/zswap-da'
       args:
         FRONTEND_REPO: '${FRONTEND_REPO:-https://github.com/effectstream/effectstream.git}'
-        FRONTEND_REF: '${FRONTEND_REF:-332503c8f9216143a8c805f2a0acbcfd39e5a21d}'
+        FRONTEND_REF: '${FRONTEND_REF:-ea04ff7c16dab5118d4bdfeec6e7455c89981827}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${FRONTEND_HOST_PORT:-10600}:10600'
     environment:

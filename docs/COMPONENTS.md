@@ -67,10 +67,12 @@ site would have had nothing to read.
 
 **Frontend source pin.** The zswap-da template's ledger-v9 migration is not published upstream
 (`effectstream/effectstream@templates/zswap-da` remains on ledger-v8). The image therefore fetches
-[`effectstream/effectstream@332503c8`](https://github.com/effectstream/effectstream/tree/332503c8f9216143a8c805f2a0acbcfd39e5a21d/templates/zswap-da)
-directly, verifies the resolved full commit, and applies the fail-closed 10-file
+[`effectstream/effectstream@ea04ff7c`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da)
+directly, verifies the resolved full commit and its `templates/zswap-da` subtree
+(`ea22913c345da3dae36e113fdbced2bb1897de63`), and applies the fail-closed 11-file
 `images/zswap-da/ledger-v9.patch`. The patch carries only dependency/lockfile, compiler manifest,
-and six TypeScript/API migrations; 64 byte-identical upstream files are no longer copied here.
+and seven TypeScript/API migrations; the other 89 upstream files are taken verbatim and none is
+copied into this repository. The pin is a full SHA and stays the identity even if `v-next` moves.
 Cold builds need GitHub and npm network access. The fetched upstream licenses are preserved in the
 runtime image, and `/.zswap-da-commit` makes the source pin part of CI provenance verification.
 

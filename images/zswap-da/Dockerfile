@@ -4,7 +4,7 @@
 # SOURCE IS FETCHED DIRECTLY from effectstream/effectstream at an immutable
 # full commit, then templates/zswap-da is adapted with ledger-v9.patch. The
 # patch contains only the required dependency/lockfile, compiler manifest, and
-# six TypeScript/API migrations; the third-party source tree is not committed
+# seven TypeScript/API migrations; the third-party source tree is not committed
 # here. Network access to GitHub and npm is therefore required for a cold build.
 #
 # THE CONTRACT IS COMPILED HERE from the template's tracked Compact source.
@@ -23,7 +23,7 @@
 
 # ── stage 0: exact upstream source + fail-closed ledger-v9 adaptation ───────
 ARG FRONTEND_REPO=https://github.com/effectstream/effectstream.git
-ARG FRONTEND_REF=332503c8f9216143a8c805f2a0acbcfd39e5a21d
+ARG FRONTEND_REF=ea04ff7c16dab5118d4bdfeec6e7455c89981827
 ARG COMPACT_VERSION=0.33.0-rc.2
 
 FROM debian:stable-slim AS source
@@ -45,7 +45,7 @@ RUN set -eux; \
     actual="$(git rev-parse FETCH_HEAD)"; \
     test "$actual" = "$FRONTEND_REF"; \
     tree="$(git rev-parse FETCH_HEAD:templates/zswap-da)"; \
-    test "$tree" = "1f63d7eedc9a8aff729b7fe026486cb89cb618de"; \
+    test "$tree" = "ea22913c345da3dae36e113fdbced2bb1897de63"; \
     git checkout -q FETCH_HEAD -- templates/zswap-da; \
     mkdir /src; \
     cp -a templates/zswap-da/. /src/; \
