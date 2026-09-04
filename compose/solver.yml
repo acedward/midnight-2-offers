@@ -26,24 +26,29 @@
 
 services:
   # ── solver-sink ─────────────────────────────────────────────────────────────
-  # Two listeners on purpose, so the authenticated ingress and the public
-  # read-only surface are separable:
+  # INTERNAL ONLY — no `ports:`. The sink used to serve its own ladder-feed page
+  # on the host (10800) and publish its relay port for inspection (10801). Both
+  # were removed when the upstream `solver-frontend` monitor became this stack's
+  # ONE page about the solver: two pages about one solver was one too many, and
+  # the sink is not a page — it is the relay's receive half plus the only place
+  # the observation-safety counters can be read.
+  #
+  # Two listeners on purpose, so the authenticated ingress and the read-only
+  # observation surface stay separable:
   #   :8081  solver-facing — Bearer-authenticated WS upgrade (401 otherwise),
   #          plus `GET /jobs/:jobId`, which a live solver requires as
-  #          SOLVER_RELAY_HTTP_URL for durable recovery. No job can exist in
-  #          observation mode, so it answers an honest 404.
-  #   :8080  browsers — the page, GET /api/snapshot, /api/stream (SSE), /ws.
+  #          SOLVER_RELAY_HTTP_URL for durable recovery (no job can exist in
+  #          observation mode, so it answers an honest 404), plus the
+  #          unauthenticated `GET /tokens` the monitor's Relay panel reads.
+  #   :8080  observation — GET /api/snapshot and /health, read over the compose
+  #          network by scripts/verify-solver.sh (via docker exec) and by the AA
+  #          console's infra probe. No page, no SSE, no browser WebSocket.
   solver-sink:
     image: '${SOLVER_SINK_IMAGE:-midnight-2-offers/cow-solver-sink:local}'
     build:
       context: '../images/cow-solver/sink'
-    ports:
-      - '${BIND_ADDR:-127.0.0.1}:${SOLVER_SINK_HOST_PORT:-10800}:8080'
-      # Published for manual inspection only; the solver reaches it over the
-      # compose network. Bound to loopback like everything else in this repo.
-      - '${BIND_ADDR:-127.0.0.1}:${SOLVER_RELAY_HOST_PORT:-10801}:8081'
     environment:
-      SINK_PUBLIC_PORT: '8080'
+      SINK_SNAPSHOT_PORT: '8080'
       SINK_RELAY_PORT: '8081'
       # The SAME shared secret the solver sends. The relay's own rule is a
       # minimum of 32 characters and the sink enforces it at BOOT, so a short

@@ -550,7 +550,6 @@ if [[ " $PROFILES " == *" shielded-night "* ]]; then
   info "Shielded NIGHT     http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT:-10900}   contract ${SHIELDED_NIGHT_CONTRACT:-unknown}"
 fi
 if [[ " $PROFILES " == *" solver "* ]]; then
-  info "solver feed        http://${HOST_ADDR}:${SOLVER_SINK_HOST_PORT:-10800}   (observation-only)"
   info "solver monitor     http://${HOST_ADDR}:${SOLVER_FRONTEND_PORT:-10802}   (read-only: is it quoting, and if not why)"
 fi
 if [[ " $PROFILES " == *" poster "* ]]; then

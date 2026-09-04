@@ -26,7 +26,7 @@ consumed as-is with no code changes of ours.
 | Offer-files kernel (sync node) | `offerfiles` | API `http://127.0.0.1:9999` | [effectstream/zswap-offerfiles-kernel](https://github.com/effectstream/zswap-offerfiles-kernel) — pinned `4af1025…` (`KERNEL_REF`) from branch **`ledger-v9`** / [PR #65](https://github.com/effectstream/zswap-offerfiles-kernel/pull/65), the unified v9 line: kernel + batcher + solver + the token price service (`/v1/prices`, `/v1/quote`) on ONE commit. Draft at the time of pinning — the SHA is the identity. Contract deploys ONCE per stack (`offerfiles-deploy` one-shot, address persisted) |
 | Offer-files batcher | `offerfiles` | `http://127.0.0.1:3334` | same repo/commit — its own container, restarts independently of the kernel; asks the kernel's `/v1/prices` for each offer's legs (fee sponsorship) |
 | — token-name one-shot | `offerfiles` | internal | `register-tokens` — names wBTC/wETH/wUSD in the kernel's registry once the kernel is healthy (`decimals: 6`). Non-fatal. Names are what price a colour since the price service landed |
-| COW solver (observation mode) + sink | `solver` | feed page `http://127.0.0.1:10800` (relay WS `:10801`) | same repo/commit at `SOLVER_REF`; **not vendored**; generated contract artifacts reuse the service-built kernel image. Runs `start.solver.ts` behind an `undeployed`-only gate |
+| COW solver (observation mode) + sink | `solver` | **nothing published** — see the monitor row below | same repo/commit at `SOLVER_REF`; **not vendored**; generated contract artifacts reuse the service-built kernel image. Runs `start.solver.ts` behind an `undeployed`-only gate. `solver-sink` is the relay's receive half and is internal: it holds the observation-safety counters that `./verify.sh --solver` reads over the compose network |
 | — solver monitor site | `solver` | **`http://127.0.0.1:10802`** | `solver-frontend` from the kernel image — the read-only "is it quoting, and if not why" page. Reads the solver's status listener on the unpublished `:9100`, the kernel API and the sink's `GET /tokens`; holds no wallet, mutates nothing |
 | Offer poster (the book fills itself) | `poster` | health `http://127.0.0.1:10803/health` | same repo/commit — mints one exact coin and posts one takeable offer per interval, paying with its own DUST. Dedicated seed (`0ffe…`), funded by a `poster-fund` one-shot; durable journal on its own volume |
 | zswap-da frontend (swap SPA) | `frontend` | `http://127.0.0.1:10600` | [`effectstream/effectstream@ea04ff7c`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da) — fetched directly at build time and adapted by the checked-in 11-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed. Whole-coin amounts against the 6-decimal kernel, and **usable in a browser on ANY port block**: the image injects `window.MIDNIGHT_HOST_PORTS` at container start and `browser-network-urls.patch` maps the kernel's compose-internal URIs through it |
@@ -160,10 +160,9 @@ address carries the recipient's coin + encryption keys. The relay recovers the s
 key from each EIP-712 signature, proves `execute` (~1 min with the k=18 overlay) and submits —
 the browser never holds a Midnight key. **AA infra** holds the plumbing: funding, faucet,
 mint-and-send to any pasted Midnight address, and the accounts table. The other tabs: the
-offer book plus **two live COW-solver views** — the sink's ladder feed (what the relay received)
-and the solver's own monitor site (what the solver says about itself, from its unpublished status
-listener) — an **infrastructure** canvas probing every component including the monitor and the
-offer poster, an embedded **Memos** app, and the **Repos** pin table.
+offer book plus the **COW solver monitor** (what the solver says about itself, read from its
+unpublished status listener) — an **infrastructure** canvas probing every component including the
+monitor and the offer poster, an embedded **Memos** app, and the **Repos** pin table.
 `AA_CONSOLE_DEV_SIGNER=1` adds a built-in signer for wallet-less runs.
 
 Full component write-ups (the AA/console/swap mechanics and their switches, umbra-evm's

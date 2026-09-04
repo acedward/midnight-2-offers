@@ -105,8 +105,10 @@ BATCHER_HOST_PORT=$(( BASE + 6 ))
 CELESTIA_HOST_PORT=$(( BASE + 7 ))
 FRONTEND_HOST_PORT=$(( BASE + 8 ))
 AA_CONSOLE_HOST_PORT=$(( BASE + 9 ))
-SOLVER_SINK_HOST_PORT=$(( BASE + 10 ))
-SOLVER_RELAY_HOST_PORT=$(( BASE + 11 ))
+# +10 and +11 are deliberately UNUSED: they were the solver sink's feed page and
+# its relay-inspection port, both removed when the monitor site became the one
+# page about the solver. The block keeps its size and every other offset, so an
+# operator comparing two stacks does not find every port shifted by two.
 SHIELDED_NIGHT_HOST_PORT=$(( BASE + 12 ))
 # The COW solver's read-only monitor site. The solver's own status listener
 # (:9100) is deliberately NOT here: it is never published, and the monitor is the

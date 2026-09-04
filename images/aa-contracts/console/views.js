@@ -21,8 +21,9 @@ function showView(name) {
   document.getElementById("head-note").textContent = HEAD_NOTES[name] ?? "";
   if (location.hash !== `#${name}`) history.replaceState(null, "", `#${name}`);
   if (name === "solver") {
-    // Two frames, one lazy load each: the sink's feed (what the relay received)
-    // and the solver's own monitor site (what the solver says about itself).
+    // One lazy frame: the solver's own monitor site. The sink's feed page was
+    // removed — the sink is internal now and proves the safety counters to
+    // scripts/verify-solver.sh, not to a browser.
     const lazyFrame = (frameId, linkId, infoKey, fallback) => {
       const frame = document.getElementById(frameId);
       if (!frame || frame.src) return;
@@ -37,7 +38,6 @@ function showView(name) {
         .then((i) => setSrc(i[infoKey] || fallback))
         .catch(() => setSrc(fallback));
     };
-    lazyFrame("solver-frame", "solver-frame-link", "sinkPublicUrl", "http://127.0.0.1:10800");
     lazyFrame("solver-monitor-frame", "solver-monitor-frame-link", "solverFrontendUrl", "http://127.0.0.1:10802");
   }
   if (name === "infra") startInfraPoll(); else stopInfraPoll();
@@ -59,154 +59,6 @@ window.addEventListener("hashchange", () => {
 // (initial hash routing runs at the BOTTOM of this file — showView touches
 // view state declared below, and a top-level call here lands in the TDZ)
 
-// ── solver view ──────────────────────────────────────────────────────────────
-
-let solverStarted = false;
-let solverEs = null;
-
-function startSolverFeed() {
-  if (solverStarted) return;
-  solverStarted = true;
-  const poll = async () => {
-    try {
-      const r = await fetch("/api/solver/snapshot").then((x) => x.json());
-      if (r.sink) renderSolver(r.snapshot);
-      else renderSolverDown();
-    } catch { renderSolverDown(); }
-  };
-  poll();
-  setInterval(() => { if (!solverEs) poll(); }, 5000); // fallback while no SSE
-  try {
-    solverEs = new EventSource("/api/solver/stream");
-    solverEs.onmessage = (ev) => { try { renderSolver(JSON.parse(ev.data)); } catch {} };
-    solverEs.onerror = () => { solverEs?.close(); solverEs = null; }; // polling takes over
-  } catch { solverEs = null; }
-}
-
-function pillTo(el, kind, text) {
-  el.innerHTML = "";
-  const p = document.createElement("span");
-  p.className = `pill ${kind}`;
-  p.textContent = text;
-  el.append(p);
-}
-
-function renderSolverDown() {
-  pillTo(document.getElementById("sv-state"), "dim", "sink offline — start the solver profile (./up.sh --with offerfiles --with solver)");
-}
-
-function renderSolver(s) {
-  pillTo(document.getElementById("sv-state"), "ok", solverEs ? "live (SSE)" : "polling");
-  const conn = s.solver ?? {};
-  pillTo(document.getElementById("sv-conn"), conn.connected ? "ok" : "warn", conn.connected ? "connected" : "not connected");
-  document.getElementById("sv-conn").append(
-    ` sessions=${conn.connections ?? 0}${conn.lastFrameAt ? ` last frame ${new Date(conn.lastFrameAt).toLocaleTimeString()}` : ""}`);
-  const f = s.frames ?? {};
-  document.getElementById("sv-frames").textContent =
-    `received ${f.received ?? 0} · accepted ${f.accepted ?? 0} · rejected ${f.rejected ?? 0}`;
-  document.getElementById("sv-book").textContent = s.bookError
-    ? `error: ${s.bookError}`
-    : `${(s.book?.offers ?? s.book ?? []).length ?? 0} offer(s)` + (s.kernelSync ? ` · kernel sync ${JSON.stringify(s.kernelSync).slice(0, 80)}` : "");
-  const safety = s.safety ?? {};
-  document.getElementById("sv-safety").textContent =
-    `frames sent to solver ${safety.framesSentToSolver ?? 0} · jobs dispatched ${safety.swapJobsDispatched ?? 0} · unauthorized upgrades ${safety.unauthorizedUpgrades ?? 0}`;
-  const alarm = document.getElementById("sv-alarm");
-  if ((safety.jobFramesReceived ?? 0) > 0) {
-    alarm.style.display = "";
-    alarm.textContent = `ALARM: the solver answered ${safety.jobFramesReceived} job frame(s) nobody sent — this should be impossible in observation mode.`;
-  } else alarm.style.display = "none";
-
-  // Ladders — the real wire shape (measured live 2026-08-26) is ONE
-  // price-levels frame: {type:"price-levels", levels:[{tokenIn, tokenOut,
-  // levels:[{input, output}]}]}. A map-of-pairs fallback stays for safety.
-  const wrap = document.getElementById("sv-ladders");
-  wrap.innerHTML = "";
-  const shortHex = (v) => typeof v === "string" && /^[0-9a-f]{16,}$/i.test(v) ? `${v.slice(0, 8)}…${v.slice(-6)}` : String(v);
-  const NIGHT = "0".repeat(64);
-  const tokenName = (t) => (t === NIGHT ? "NIGHT" : shortHex(t));
-  const raw = s.ladders ?? {};
-  const pairEntries = Array.isArray(raw.levels)
-    ? raw.levels.map((e) => ({
-        label: `${tokenName(e.tokenIn)} → ${tokenName(e.tokenOut)}`,
-        title: `${e.tokenIn} → ${e.tokenOut}`,
-        levels: e.levels ?? [],
-      }))
-    : Object.entries(raw).map(([pair, e]) => ({
-        label: shortHex(pair), title: pair,
-        levels: Array.isArray(e) ? e : e?.levels ?? [e],
-      }));
-  if (!pairEntries.length) {
-    const p = document.createElement("p");
-    p.className = "note";
-    p.textContent = "no ladders published yet" + (conn.connected ? " (solver connected, waiting for price-levels frames)" : "");
-    wrap.append(p);
-  }
-  for (const pair of pairEntries.slice(0, 12)) {
-    const box = document.createElement("div");
-    box.className = "ladder";
-    const h = document.createElement("h3");
-    h.textContent = pair.label;
-    h.title = pair.title;
-    box.append(h);
-    const tbl = document.createElement("table");
-    for (const lvl of pair.levels.slice(0, 10)) {
-      const tr = document.createElement("tr");
-      if (lvl && typeof lvl === "object") {
-        for (const [k, v] of Object.entries(lvl).slice(0, 4)) {
-          const td = document.createElement("td");
-          td.textContent = `${k} ${shortHex(v)}`;
-          td.className = "num";
-          tr.append(td);
-        }
-        if ("input" in lvl && "output" in lvl && Number(lvl.input) > 0) {
-          const td = document.createElement("td");
-          td.textContent = `rate ${(Number(lvl.output) / Number(lvl.input)).toFixed(3)}`;
-          tr.append(td);
-        }
-      } else {
-        const td = document.createElement("td");
-        td.textContent = String(lvl);
-        tr.append(td);
-      }
-      tbl.append(tr);
-    }
-    box.append(tbl);
-    if (s.laddersAt) {
-      const n = document.createElement("p");
-      n.className = "note";
-      n.textContent = `at ${new Date(s.laddersAt).toLocaleTimeString()}`;
-      box.append(n);
-    }
-    wrap.append(box);
-  }
-
-  // Admission (inferred) — array or map of {pair, onBook, published}-ish rows.
-  const tbody = document.getElementById("sv-admission");
-  tbody.innerHTML = "";
-  const adm = s.admission ?? [];
-  const rows = Array.isArray(adm) ? adm : Object.entries(adm).map(([pair, v]) => ({ pair, ...(typeof v === "object" ? v : { value: v }) }));
-  for (const r of rows.slice(0, 20)) {
-    const tr = document.createElement("tr");
-    const cells = [
-      shortHex(String(r.pair ?? r.id ?? "?")),
-      String(r.onBook ?? r.book ?? r.offers ?? "—"),
-      String(r.published ?? r.ladder ?? r.laddered ?? "—"),
-    ];
-    for (const c of cells) {
-      const td = document.createElement("td");
-      td.textContent = c;
-      tr.append(td);
-    }
-    tbody.append(tr);
-  }
-
-  // History — newest first, compact single lines.
-  const hist = document.getElementById("sv-history");
-  hist.textContent = (s.history ?? [])
-    .map((e) => typeof e === "string" ? e : JSON.stringify(e))
-    .join("\n") || "(no frames yet)";
-}
-
 // ── infrastructure view ──────────────────────────────────────────────────────
 
 const INFRA_LAYERS = [
@@ -221,7 +73,7 @@ const INFRA_NODES = [
   // dApps
   { id: "console",       label: "aa-relay (console backend)", sub: "serves this page + API · :10700", x: 30,  y: 122, w: 210, h: 56 },
   { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static, backend = kernel", x: 265, y: 122, w: 210, h: 56 },
-  { id: "solverSink",    label: "solver-sink (ladder feed)", sub: ":10800 · relay-WS receive half", x: 500, y: 122, w: 205, h: 56 },
+  { id: "solverSink",    label: "solver-sink (relay stand-in)", sub: "internal · relay-WS receive half", x: 500, y: 122, w: 205, h: 56 },
   { id: "solverMonitor", label: "solver-frontend (monitor)", sub: ":10802 · read-only, no wallet", x: 730, y: 122, w: 205, h: 56 },
   // Infrastructure
   { id: "indexer",       label: "indexer",                   sub: ":8088 · GraphQL v4", x: 30,  y: 240, w: 150, h: 52 },
@@ -242,7 +94,7 @@ const INFRA_NODES = [
   { id: "celestia",      label: "celestia (DA devnet)",      sub: ":26658 · the offer blobs", x: 600, y: 496, w: 240, h: 56 },
 ];
 const INFRA_EDGES = [
-  ["browser", "console"], ["browser", "frontend"], ["browser", "solverSink"], ["browser", "solverMonitor"],
+  ["browser", "console"], ["browser", "frontend"], ["browser", "solverMonitor"],
   ["console", "kernel"], ["console", "proofServer"], ["console", "aaProofServer"],
   ["console", "node"], ["console", "indexer"],
   ["frontend", "kernel"], ["frontend", "batcher"],
@@ -273,7 +125,7 @@ const INFRA_LABELS = {
   proofServer: "proof-server (plain)", aaProofServer: "proof-server (exp)",
   kernel: "offer-files kernel", kernelSync: "kernel sync", batcher: "batcher",
   celestia: "celestia", evmRpc: "umbra-evm RPC", frontend: "zswap-da frontend",
-  solverSink: "solver sink", solver: "cow-solver", postgres: "postgres (shared)",
+  solverSink: "solver sink (internal)", solver: "cow-solver", postgres: "postgres (shared)",
   solverFrontend: "solver monitor", offerPoster: "offer-poster",
   priceFeed: "price-feed",
 };

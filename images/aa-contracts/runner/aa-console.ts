@@ -66,15 +66,14 @@ const DEV_ADDR = addressForPrivateKey(DEV_KEY) as Hex20;
 // The offer-files kernel (profile `offerfiles`), feature-detected: the swap
 // panel publishes there and degrades gracefully when the profile is down.
 const KERNEL_URL = process.env["AA_KERNEL_URL"] ?? "http://kernel:9999";
-// The cow-solver sink (profile `solver`), feature-detected: the page's solver
-// view reads its snapshot/stream through same-origin proxies here.
+// The cow-solver sink (profile `solver`), feature-detected. INTERNAL ONLY: it
+// publishes nothing to the host since its feed page was retired, so this
+// compose-network URL is the only way to reach it and the only reader here is
+// the infra probe below. Nothing is proxied to the browser any more.
 const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
-// The HOST-reachable form of the sink page, for the browser's iframe (the
-// compose-network URL above is meaningless to a browser).
-const SINK_PUBLIC_URL = process.env["AA_SINK_PUBLIC_URL"] ?? "http://127.0.0.1:10800";
-// The COW solver's read-only MONITOR SITE, as the BROWSER must reach it (a host
-// URL, like SINK_PUBLIC_URL — the console embeds it in an iframe, so a compose
-// hostname would resolve to nothing).
+// The COW solver's read-only MONITOR SITE, as the BROWSER must reach it — a
+// HOST url, because the console embeds it in an iframe and a compose hostname
+// would resolve to nothing. This is the one page about the solver.
 const SOLVER_FRONTEND_PUBLIC_URL =
   process.env["AA_SOLVER_FRONTEND_PUBLIC_URL"] ?? "http://127.0.0.1:10802";
 // …and as THIS PROCESS reaches it, over the compose network, for the infra probe.
@@ -1297,26 +1296,11 @@ Bun.serve({
         return bad("not found", 404);
       }
       if (path === "/api/infra") return json(await infraStatus());
-      if (path === "/api/solver/snapshot") {
-        try {
-          return json({ sink: true, snapshot: await fetchJson(`${SINK_URL}/api/snapshot`, {}, 5000) });
-        } catch {
-          return json({ sink: false, snapshot: null });
-        }
-      }
-      if (path === "/api/solver/stream") {
-        // Pass-through SSE proxy so the browser stays same-origin. No abort
-        // signal here — a timeout signal would kill the LONG-LIVED stream, not
-        // just the connect; connection failures throw fast on their own.
-        try {
-          const upstream = await fetch(`${SINK_URL}/api/stream`);
-          return new Response(upstream.body, {
-            headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
-          });
-        } catch {
-          return bad("solver sink unreachable (start the solver profile)", 503);
-        }
-      }
+      // /api/solver/snapshot and /api/solver/stream were removed with the sink's
+      // feed page: they existed only to proxy that page's data same-origin, and
+      // the sink no longer streams anything. The solver's state reaches a human
+      // through the monitor site (framed by the Offers+Solver tab) and reaches
+      // an automated gate through scripts/verify-solver.sh.
       if (path === "/healthz") {
         return json({ ok: true, relay, taker, jobsQueued: queue.length, deployed: existsSync(ARTIFACT_PATH) });
       }
@@ -1330,7 +1314,6 @@ Bun.serve({
           tokens: tokens.list.map((t) => ({ name: t.name, family: t.family, color: t.color })),
           tokensError: tokens.error,
           kernelUrl: KERNEL_URL,
-          sinkPublicUrl: SINK_PUBLIC_URL,
           solverFrontendUrl: SOLVER_FRONTEND_PUBLIC_URL,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
           // Withdraw's node-rejection (Custom error 214, recipient Either arm
