@@ -25,7 +25,10 @@
 // read-only surface are separable at the firewall:
 //   SINK_RELAY_PORT  (default 8081) — solver-facing. Bearer-authenticated WS
 //                     upgrade, plus `GET /jobs/:jobId` because a live solver
-//                     requires SOLVER_RELAY_HTTP_URL for durable recovery.
+//                     requires SOLVER_RELAY_HTTP_URL for durable recovery, and
+//                     `GET /tokens` (unauthenticated, as on the real relay)
+//                     because it is the one relay route the upstream monitor
+//                     site reads.
 //   SINK_PUBLIC_PORT (default 8080) — browsers. The page, `GET /api/snapshot`,
 //                     `GET /api/stream` (SSE) and `GET /ws` (WebSocket).
 
@@ -380,6 +383,28 @@ Bun.serve({
     }
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ status: "ok", mode: "observation" });
+    }
+
+    // `GET /tokens` — the reference relay's ONLY unauthenticated public route,
+    // and the only relay route the upstream monitor site (`solver-frontend`)
+    // knows. It answers "which tokens does this relay advertise", which on the
+    // real relay is the union of its solvers' registered capabilities; with one
+    // solver, that is exactly the last `solver-capabilities` frame this sink
+    // accepted. Empty before the first frame, which is the honest answer.
+    //
+    // It stays inside the observation-safety property: this is a READ. Nothing
+    // here writes to the solver socket, and the response is derived from a
+    // frame the solver itself sent — no route added to this file may ever
+    // construct or send a frame TOWARDS the solver (see the header).
+    if (request.method === "GET" && url.pathname === "/tokens") {
+      return Response.json(
+        {
+          tokens: state.capabilities?.tokenIds ?? [],
+          updatedAt: state.capabilitiesAt,
+          mode: "observation",
+        },
+        { headers: { "cache-control": "no-store" } },
+      );
     }
 
     if (!authorized(request)) {

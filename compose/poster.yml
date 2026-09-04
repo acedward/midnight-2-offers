@@ -1,0 +1,211 @@
+# offer-poster — the book fills itself.  Profile: `poster`
+#
+#   ./up.sh --with offerfiles --with poster        (or ./up.sh --all)
+#
+# The poster needs the offer-files kernel to post into, so `--with offerfiles`
+# is not optional here — this fragment declares no kernel of its own, exactly
+# like compose/solver.yml.
+#
+# ─── WHAT IT DOES ───────────────────────────────────────────────────────────
+# Every POST_INTERVAL_MS it either re-offers a coin its journal says came back,
+# or mints ONE fresh GIVE_TOKEN coin from the offer-files contract's faucet
+# circuit (fees from its OWN dust) and posts a single ZSwap offer whose only
+# input is that exact coin. The want leg is sized from the kernel's
+# `GET /v1/quote` each tick, which is what keeps the offer sponsorable by the
+# batcher. It keeps a durable journal, and serves /health, /metrics and /journal
+# on :9977.
+#
+# So the demo book is never empty and never stale, without a human — and it is
+# what the solver's monitor site then shows the solver quoting against.
+#
+# ─── TWO SERVICES ───────────────────────────────────────────────────────────
+#   poster-fund   ONE-SHOT (toolkit image): sends the poster's dedicated wallet
+#                 unshielded NIGHT from genesis. Idempotent, chain-read based.
+#   offer-poster  the loop (kernel image).
+#
+# `profiles:` is deliberately NOT used — this repo's notion of a profile is the
+# FRAGMENT FILENAME, and up.sh never passes `--profile`, so a service carrying a
+# compose profile key would silently never start.
+
+services:
+  # ── poster-fund ─────────────────────────────────────────────────────────────
+  # NIGHT only; DUST registration belongs to the poster (see the script header).
+  # Same shape as core.yml's `fund` service, including the host-path fetch cache:
+  # a named volume created outside compose carries no compose labels, so
+  # `down.sh -v` would silently leave it behind and the next run would inherit a
+  # cache built against a genesis that no longer exists.
+  poster-fund:
+    image: '${TOOLKIT_IMAGE:-docker.io/midnightntwrk/midnight-node-toolkit@sha256:c3efb50d483b1216e9582669038dc6d2fac509b33d11ebc0b4e0d0d0b86b4d0f}'
+    entrypoint: ['/bin/bash', '/fund/fund-poster-in-container.sh']
+    restart: 'no'            # a one-shot that "restarts" keeps minting NIGHT
+    environment:
+      TOOLKIT_NODE_URL: 'ws://node:9944'
+      NETWORK_ID: 'undeployed'
+      FUND_FROM_SEED: '${FUND_FROM_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      # THE SAME default as offer-poster below. Two copies of one seed is a
+      # smell, but the alternative — an anchor — would have to be merged into
+      # both services, and the poster's service must NOT inherit an anchor (see
+      # its note). scripts/verify-pin-defaults.sh does not police seeds; the
+      # `verify-poster.sh --static` distinctness check does.
+      POSTER_SEED: '${POSTER_SEED:-0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe}'
+      POSTER_FUND_UTXO_AMOUNT: '${POSTER_FUND_UTXO_AMOUNT:-5000000000000}'
+      POSTER_FUND_UTXO_COUNT: '${POSTER_FUND_UTXO_COUNT:-4}'
+      # Read by the script's collision guard, so an operator who repointed one
+      # of these in .env is checked against the value actually in force.
+      KERNEL_WALLET_SEED: '${KERNEL_WALLET_SEED:-0000000000000000000000000000000000000000000000000000000000000001}'
+      BATCHER_WALLET_SEED: '${BATCHER_WALLET_SEED:-0000000000000000000000000000000000000000000000000000000000000002}'
+      SOLVER_SEED: '${SOLVER_SEED:-0000000000000000000000000000000000000000000000000000000000000021}'
+      AA_TAKER_SEED: '${AA_TAKER_SEED:-7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e}'
+      # Matches the image's own default; the script prepares the cache dir the
+      # way the image entrypoint would.
+      MN_FETCH_CACHE: 'redb:/.cache/toolkit_fetch_cache.db'
+      MN_LEDGER_CACHE_DB: '/.cache/toolkit_ledger_cache_db'
+    volumes:
+      - '../scripts/fund-poster-in-container.sh:/fund/fund-poster-in-container.sh:ro'
+      - '../.cache/${COMPOSE_PROJECT_NAME:-demo-infra}:/.cache'
+    depends_on:
+      node: { condition: service_healthy }
+
+  # ── offer-poster ────────────────────────────────────────────────────────────
+  # ── why no offerfiles env anchor is merged here ─────────────────────────────
+  # `compose/offerfiles.yml`'s anchor carries MIDNIGHT_WALLET_SEED, and that is
+  # one of the SEVEN seeds the poster refuses to share a wallet with: two facades
+  # on one seed against one Midnight node force each other's connection down, so
+  # the poster exits 78 the moment it SEES that variable pointing at its own
+  # seed. Overriding it to "" would not help either — an empty variable is still
+  # PRESENT in the container. So the four endpoints the poster actually needs are
+  # spelled out here and the seed simply never arrives. Keep them in step with
+  # the anchor in offerfiles.yml.
+  #
+  # The Celestia values are left out for a simpler reason: the poster never
+  # touches Celestia. It posts to the kernel; the BATCHER pays for the blob.
+  offer-poster:
+    image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+    entrypoint: ['/usr/local/bin/entrypoint-offer-poster.sh']
+    # A crash is the only way this process ends other than SIGTERM, and its state
+    # is durable (the journal volume), so restarting is always right. A
+    # MISconfiguration restart-loops on exit 78 — deliberately visible, and
+    # `docker compose logs offer-poster` names the variable in one line.
+    restart: 'unless-stopped'
+    ports:
+      # Only /health, /metrics and /journal live here; :9977 is the poster's own
+      # read-only surface and holds no secret.
+      - '${BIND_ADDR:-127.0.0.1}:${POSTER_HEALTH_PORT:-10803}:9977'
+    environment:
+      MIDNIGHT_NETWORK_ID: 'undeployed'
+      MIDNIGHT_NODE_HTTP: 'http://node:9944'
+      MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v4/graphql'
+      MIDNIGHT_INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
+      MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
+      # Where the deploy one-shot published the contract address. The entrypoint
+      # also exports MIDNIGHT_CONTRACT_ADDRESS from it, which the poster prefers;
+      # this is the fallback the poster resolves on its own.
+      CONTRACT_SHARE_DIR: '/deploy-out'
+      ZSWAP_API: 'http://kernel:9999'
+      # A DEDICATED seed, and it must stay dedicated. Public like every other
+      # secret in this repo. `0ffe…` is a mnemonic for "offer"; it collides with
+      # nothing in wallets/wallets.json, with no seed in .env.example, and with
+      # none of the seven the poster itself checks — `scripts/verify-poster.sh
+      # --static` asserts that offline.
+      POSTER_SEED: '${POSTER_SEED:-0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe}'
+      # The alternative wallet input: a BIP-39 phrase, derived Lace-compatibly.
+      # Set exactly ONE of the two — both together is a startup error.
+      POSTER_MNEMONIC: '${POSTER_MNEMONIC:-}'
+      # ── every knob below is BLANK BY DEFAULT on purpose ────────────────────
+      # Blank means "the code's default", and the code is the single place those
+      # numbers are written down (deploy/scripts/lib/poster-config.ts). The
+      # entrypoint unsets the blank ones so the container's environment never
+      # claims otherwise. The defaults that matter: GIVE_TOKEN=WBTC,
+      # WANT_TOKEN=WETH, GIVE_AMOUNT=1 whole coin (10^6 base units),
+      # POST_INTERVAL_MS=60000.
+      #
+      # WBTC/WETH are the FAUCET's names, and since 00010 the AA console, the
+      # zswap-da SPA faucet and `register-tokens` all derive the same colour for
+      # them — so the poster's offers are in the SAME market a console taker
+      # trades in, and both legs price against real reference rates (WBTC =
+      # bitcoin, WETH = ethereum in the kernel's name map).
+      GIVE_TOKEN: '${OFFER_POSTER_GIVE_TOKEN:-}'
+      GIVE_AMOUNT: '${OFFER_POSTER_GIVE_AMOUNT:-}'
+      # A RANGE instead of the fixed amount above: whole coins, at most 6
+      # decimals, drawn log-uniformly per FRESH mint so the book carries a
+      # spread of sizes. Both ends or neither; mutually exclusive with
+      # GIVE_AMOUNT (the poster exits 78 naming both). GIVE_SIZE_SEED makes the
+      # sequence reproducible and is not a secret.
+      GIVE_MIN: '${OFFER_POSTER_GIVE_MIN:-}'
+      GIVE_MAX: '${OFFER_POSTER_GIVE_MAX:-}'
+      GIVE_SIZE_SEED: '${OFFER_POSTER_SIZE_SEED:-}'
+      WANT_TOKEN: '${OFFER_POSTER_WANT_TOKEN:-}'
+      # Blank = the want leg is sized from GET /v1/quote every tick, which is
+      # what keeps the offer sponsorable. Setting it FORCES an amount and
+      # downgrades the sponsorship check to a warning.
+      WANT_AMOUNT: '${OFFER_POSTER_WANT_AMOUNT:-}'
+      POST_INTERVAL_MS: '${OFFER_POSTER_INTERVAL_MS:-}'
+      OFFER_TTL_MINUTES: '${OFFER_POSTER_TTL_MINUTES:-}'
+      COIN_VISIBLE_TIMEOUT_MS: '${OFFER_POSTER_COIN_VISIBLE_TIMEOUT_MS:-}'
+      RECONCILE_INTERVAL_MS: '${OFFER_POSTER_RECONCILE_INTERVAL_MS:-}'
+      POSTER_MAX_REOFFERS_PER_TICK: '${OFFER_POSTER_MAX_REOFFERS_PER_TICK:-}'
+      SHUTDOWN_GRACE_MS: '${OFFER_POSTER_SHUTDOWN_GRACE_MS:-}'
+      HEALTH_STALE_TICKS: '${OFFER_POSTER_HEALTH_STALE_TICKS:-}'
+      # The floor of spendable DUST a tick requires before it will MINT (a
+      # re-offer costs none).
+      POSTER_MIN_DUST: '${OFFER_POSTER_MIN_DUST:-}'
+      POSTER_SYNC_TIMEOUT_MS: '${OFFER_POSTER_SYNC_TIMEOUT_MS:-}'
+      POSTER_DUST_WAIT_TIMEOUT_MS: '${OFFER_POSTER_DUST_WAIT_TIMEOUT_MS:-}'
+      # POST /v1/offers retry ladder (ROOT_UNKNOWN / UTXO_NOT_LIVE only) and the
+      # liveness poll that follows an accepted post.
+      POSTER_POST_RETRIES: '${OFFER_POSTER_POST_RETRIES:-}'
+      POSTER_POST_RETRY_MS: '${OFFER_POSTER_POST_RETRY_MS:-}'
+      POSTER_LIVE_TRIES: '${OFFER_POSTER_LIVE_TRIES:-}'
+      POSTER_LIVE_INTERVAL_MS: '${OFFER_POSTER_LIVE_INTERVAL_MS:-}'
+      # Startup-only: derive the colours, read a quote, report, exit 0. Never
+      # mints, never posts. `restart: unless-stopped` would keep re-running it,
+      # so use `docker compose run --rm offer-poster` for a one-off dry run.
+      DRY_RUN: '${OFFER_POSTER_DRY_RUN:-}'
+      # Refuses to start on a corrupt or foreign journal unless this is true —
+      # silently losing the coin record would defeat the journal's purpose.
+      POSTER_JOURNAL_RESET: '${OFFER_POSTER_JOURNAL_RESET:-}'
+      # Fixed, not a knob: the file has to be on the named volume below, and the
+      # two would drift apart the first time someone changed one of them.
+      POSTER_JOURNAL_FILE: '/var/lib/offer-poster/journal.json'
+      # Fixed for the same reason: the healthcheck and the port publish above are
+      # literals, so the port the process listens on must be one too. Change the
+      # HOST side with POSTER_HEALTH_PORT.
+      POSTER_HEALTH_PORT: '9977'
+    volumes:
+      - 'offerfiles-deploy:/deploy-out:ro'   # read the address, never write it
+      - 'offer-poster-state:/var/lib/offer-poster'
+    depends_on:
+      kernel: { condition: service_healthy }
+      offerfiles-deploy: { condition: service_completed_successfully }
+      # NOT just ordering: without NIGHT the poster has no dust, cannot pay for
+      # a mint, and sits at `degraded: insufficient_dust` forever.
+      poster-fund: { condition: service_completed_successfully }
+      node: { condition: service_healthy }
+      indexer: { condition: service_healthy }
+    healthcheck:
+      # bun, not curl: the oven/bun runtime image ships no curl/wget.
+      test:
+        - 'CMD'
+        - 'bun'
+        - '-e'
+        - 'const r = await fetch("http://127.0.0.1:9977/health"); process.exit(r.ok ? 0 : 1)'
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      # /health answers 200 while the poster is `starting` and while it is
+      # `degraded` (no dust yet) — 503 arrives only after HEALTH_STALE_TICKS
+      # consecutive FAILED ticks. So this window is not about the first 200: it
+      # is how long the SERVER may take to BIND at all, and binding happens after
+      # wallet sync + dust registration + the dust wait + the contract join.
+      start_period: 900s
+
+volumes:
+  # The poster's journal: which coins it minted, which offers they are in, and
+  # which came back. Declared here rather than created ad hoc so it carries the
+  # com.docker.compose.project label `down.sh -v` filters on.
+  #
+  # It MUST die with the Midnight volumes. The journal is KEYED by the deployed
+  # contract address and records coins on THIS chain; a journal that outlived the
+  # genesis it was written against would make the poster refuse to start (best
+  # case) or re-offer coins that no longer exist (worst).
+  offer-poster-state:

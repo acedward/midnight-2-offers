@@ -108,6 +108,12 @@ AA_CONSOLE_HOST_PORT=$(( BASE + 9 ))
 SOLVER_SINK_HOST_PORT=$(( BASE + 10 ))
 SOLVER_RELAY_HOST_PORT=$(( BASE + 11 ))
 SHIELDED_NIGHT_HOST_PORT=$(( BASE + 12 ))
+# The COW solver's read-only monitor site. The solver's own status listener
+# (:9100) is deliberately NOT here: it is never published, and the monitor is the
+# only thing meant to read it.
+SOLVER_FRONTEND_PORT=$(( BASE + 13 ))
+# The offer poster's /health, /metrics and /journal.
+POSTER_HEALTH_PORT=$(( BASE + 14 ))
 
 # The SPA's hostname-relative fallback is valid only on the default :9999/:3334
 # layout. A generated random-port stack must inject its actual host endpoints.
@@ -122,6 +128,11 @@ PROOF_WAIT_TIMEOUT=${PROOF_WAIT_TIMEOUT:-120}
 EVM_WAIT_TIMEOUT=${EVM_WAIT_TIMEOUT:-300}
 CELESTIA_WAIT_TIMEOUT=${CELESTIA_WAIT_TIMEOUT:-300}
 SOLVER_WAIT_TIMEOUT=${SOLVER_WAIT_TIMEOUT:-300}
+# The poster binds :9977 only after wallet sync + DUST registration + the wait for
+# a spendable DUST UTXO + the contract join. On a cold 2.x chain that is minutes,
+# and it is bounded here rather than in the healthcheck so a slow chain reports a
+# timeout instead of a restart loop.
+POSTER_WAIT_TIMEOUT=${POSTER_WAIT_TIMEOUT:-900}
 # The shielded-night page starts only after TWO one-shots: a toolkit funding pass (NIGHT +
 # DUST registration + a wait for a spendable DUST UTXO) and a real contract deploy proved on a
 # cold chain. On the 2.x line proving runs 1.25-1.6x slower than on 1.x, so this is minutes.

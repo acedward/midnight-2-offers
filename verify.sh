@@ -30,6 +30,7 @@ AA_MODE=auto
 FRONTEND_MODE=auto
 SHIELDED_NIGHT_MODE=auto
 SOLVER_MODE=auto
+POSTER_MODE=auto
 
 usage() {
   cat <<'EOF'
@@ -53,6 +54,8 @@ Options:
   --no-shielded-night  skip the shielded-night section even if the profile is up
   --solver       require the solver runtime section (fail if the profile is not up)
   --no-solver    skip the solver section even if the profile is up
+  --poster       require the offer-poster section (fail if the profile is not up)
+  --no-poster    skip the offer-poster section even if the profile is up
   -h, --help     this text
 
 By default each optional section runs if and only if that profile's containers exist for this
@@ -66,7 +69,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; shift ;;
+    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; shift ;;
     --evm)       EVM_MODE=on; shift ;;
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
@@ -81,6 +84,8 @@ while [[ $# -gt 0 ]]; do
     --no-shielded-night) SHIELDED_NIGHT_MODE=off; shift ;;
     --solver)      SOLVER_MODE=on; shift ;;
     --no-solver)   SOLVER_MODE=off; shift ;;
+    --poster)      POSTER_MODE=on; shift ;;
+    --no-poster)   POSTER_MODE=off; shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; echo; usage; exit 2 ;;
   esac
@@ -356,6 +361,41 @@ case "$SOLVER_MODE" in
     else
       echo
       dim "solver profile not up — skipping (./up.sh --with offerfiles --with solver to include it)"
+    fi
+    ;;
+esac
+
+# ── poster (the offer poster: the book fills itself) ─────────────────────────
+# The sentinel is `offer-poster`, never `poster-fund`: the funding one-shot exits,
+# and a stack whose poster is gone but whose exited one-shot lingers must not
+# report a passing section.
+POSTER_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=offer-poster" 2>/dev/null)" ]]; then
+  POSTER_PRESENT=1
+fi
+
+case "$POSTER_MODE" in
+  off) ;;
+  on|auto)
+    if (( POSTER_PRESENT )); then
+      echo
+      log "poster"
+      if "$REPO_ROOT/scripts/verify-poster.sh"; then
+        ok "poster assertions passed"
+      else
+        err "poster assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$POSTER_MODE" == "on" ]]; then
+      echo
+      err "--poster was requested but no offer-poster container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with offerfiles --with poster"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "poster profile not up — skipping (./up.sh --with offerfiles --with poster to include it)"
     fi
     ;;
 esac
