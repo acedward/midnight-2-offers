@@ -20,7 +20,7 @@ migration rides PR #49 of `effectstream/zswap-offerfiles-kernel`; the image pins
 
 **Cow solver source pin.** Cow solver source is not copied into this repository. Its image fetches
 [`effectstream/zswap-offerfiles-kernel` PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50)
-directly at build time at exact SHA `b1420c4af6ed8b2510140418e5138d282365f9c6`
+directly at build time at exact SHA `4af102536f02f137b696a4734bd8c936eddf3672`
 (`SOLVER_REF`). Compose supplies the separately built kernel image only for its generated Compact
 artifacts.
 

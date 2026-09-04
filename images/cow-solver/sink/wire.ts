@@ -8,7 +8,7 @@
 // because its isolated image context does not contain the upstream solver tree.
 // That tree is public and not copied here: the Cow solver image fetches
 // effectstream/zswap-offerfiles-kernel PR #50 directly at exact SHA
-// b1420c4af6ed8b2510140418e5138d282365f9c6. The separate browser SPA is fetched
+// 4af102536f02f137b696a4734bd8c936eddf3672. The separate browser SPA is fetched
 // through FRONTEND_REPO/FRONTEND_REF.
 //
 // The canonical JSON bodies are pinned by that package's

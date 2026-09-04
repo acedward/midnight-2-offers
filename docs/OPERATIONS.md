@@ -61,6 +61,17 @@ count filters on.
 
 ### Full reset
 
+**When it is not optional.** `./up.sh` is normally resumable, but a kernel pin that moves
+`packages/database/migrations/000-init.sql` breaks that: the kernel applies the init file only
+against an EMPTY database, and it has no migration path for a database that already exists
+(new `migrationTable` entries never reach a synced DB). The ledger-v9 pin
+(`4af102536f02f137b696a4734bd8c936eddf3672`) is such a move — it adds the token price
+service's `asset_prices` / `price_feed_status` tables and `known_tokens.decimals`, with seeded
+reference prices. A `postgres-data` volume older than that pin produces a stack where every
+container is healthy and every quote is wrong. `scripts/verify-kernel.sh` asserts
+`GET /v1/prices` returns the seeded asset table for exactly this reason, and its failure names
+the fix.
+
 `./down.sh -v` **is** the full reset — there is no second cleanup step to remember, and no state
 outside what it removes:
 

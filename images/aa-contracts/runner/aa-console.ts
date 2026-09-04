@@ -77,19 +77,51 @@ const SINK_PUBLIC_URL = process.env["AA_SINK_PUBLIC_URL"] ?? "http://127.0.0.1:1
 // shielded-free (T7.5 rule) — that is the entire reason for the second seed.
 const FUNDER_SEED = process.env["MIDNIGHT_WALLET_SEED"]
   ?? "0000000000000000000000000000000000000000000000000000000000000003";
-// ── THE UNIFIED TOKEN SET (user direction 2026-08-26) ────────────────────────
+// ── THE UNIFIED TOKEN SET (user direction 2026-08-26; derivation unified 00010)
 // The demo's tokens are the ones the OFFER-FILES contract mints — the same
-// colours the kernel's own dev mint creates (fixed domain separators → stable
-// colours per contract) — used for every shielded/unshielded flow here. The
-// console-private AA Minter token and the shielded-NIGHT want-leg workaround
-// are RETIRED (shielded NIGHT is not a real mintable token).
-// colour = rawTokenType(sep, offerFilesContractAddress), resolved at startup
-// from the kernel's /v1/midnight/config; names are registered in the kernel's
-// dev token registry so every UI shows the same wBTC/wETH/wUSD.
+// colours the kernel's own faucet creates — used for every shielded/unshielded
+// flow here. The console-private AA Minter token and the shielded-NIGHT
+// want-leg workaround are RETIRED (shielded NIGHT is not a real mintable token).
+// colour = rawTokenType(domainSep, offerFilesContractAddress), resolved at
+// startup from the kernel's /v1/midnight/config; names are registered in the
+// kernel's dev token registry so every UI shows the same wBTC/wETH/wUSD.
+//
+// THE DOMAIN SEPARATOR IS THE FAUCET'S, NOT THIS FILE'S (00010 Q11). It used to
+// be 32 bytes of 0xa1 / 0xb2 / 0xc3 — a console-private derivation. Nothing
+// else in the world produced those colours, so:
+//   * the offer poster (kernel `deploy/scripts/offer-poster.ts`), which derives
+//     WBTC as `rawTokenType(domainSepFromName("WBTC"), addr)`, minted a
+//     DIFFERENT colour under the SAME name. `known_tokens.name` is UNIQUE, so
+//     one of the two registrations lost with 409 and that side's leg quoted
+//     UNPRICED — and the two "WBTC" markets on one contract were disjoint, so a
+//     console taker could never take a poster offer.
+//   * the kernel's price map (`DEFAULT_NAME_ASSET_MAP`) prices WBTC as bitcoin
+//     and WETH as ethereum BY NAME, which the old colours never reached.
+// The derivation below is `domainSepFromName` from the pinned kernel tree's
+// `docs/src/wallet/mintable.ts` (the zswap-da faucet's own function), copied
+// rather than imported: this console image carries the AA repo's node_modules,
+// not the kernel workspace. It is pure and 12 lines; keep it byte-equal.
+const FAUCET_PREFIX = "zswap-da-faucet:";
+function domainSepFromName(name: string): Uint8Array {
+  const out = new Uint8Array(32);
+  const enc = new TextEncoder().encode(FAUCET_PREFIX + name);
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < 32; i++) {
+    h = (h ^ (enc[i % enc.length] ?? i + 7)) >>> 0;
+    h = Math.imul(h, 16777619) >>> 0;
+    out[i] = h & 0xff;
+  }
+  return out;
+}
+// `name` is the display spelling; `faucetName` is what the derivation and the
+// registry see (the registry upper-cases, and the faucet's presets are
+// upper-case). wUSD is unshielded and is NOT one of the faucet's six presets —
+// the derivation is defined for any name, so it stays this stack's own
+// unshielded token, just built the same way as the other two.
 const TOKEN_DEFS = [
-  { name: "wBTC", family: "shielded" as const, sep: 0xa1 },
-  { name: "wETH", family: "shielded" as const, sep: 0xb2 },
-  { name: "wUSD", family: "unshielded" as const, sep: 0xc3 },
+  { name: "wBTC", faucetName: "WBTC", family: "shielded" as const },
+  { name: "wETH", faucetName: "WETH", family: "shielded" as const },
+  { name: "wUSD", faucetName: "WUSD", family: "unshielded" as const },
 ];
 type TokenInfo = { name: string; family: "shielded" | "unshielded"; sep: Uint8Array; color: string };
 const tokens: { list: TokenInfo[]; offerFilesAddress: string | null; error: string | null } = {
@@ -105,11 +137,13 @@ async function resolveTokens() {
     const cfg: any = await (await fetch(`${KERNEL_URL}/v1/midnight/config`, { signal: AbortSignal.timeout(5000) })).json();
     const addr = String(cfg.contractAddress).replace(/^0x/, "");
     tokens.offerFilesAddress = addr;
-    tokens.list = TOKEN_DEFS.map((d) => ({
-      name: d.name, family: d.family,
-      sep: new Uint8Array(32).fill(d.sep),
-      color: rawTokenType(new Uint8Array(32).fill(d.sep), addr).toLowerCase(),
-    }));
+    tokens.list = TOKEN_DEFS.map((d) => {
+      const sep = domainSepFromName(d.faucetName);
+      return {
+        name: d.name, family: d.family, sep,
+        color: rawTokenType(sep, addr).toLowerCase(),
+      };
+    });
     tokens.error = null;
     log(`tokens resolved against offer-files ${addr.slice(0, 12)}…: ` +
       tokens.list.map((t) => `${t.name}=${t.color.slice(0, 8)}…`).join(" "));
@@ -118,7 +152,10 @@ async function resolveTokens() {
       try {
         await fetch(`${KERNEL_URL}/v1/known-tokens`, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ color: t.color, name: t.name, kind: t.family }),
+          // `decimals` is STATED, not left to the column default: every token
+          // this stack mints is whole coins x 10^6, and a wrong scale is off by
+          // a million in every price and sponsorship verdict (kernel 00024).
+          body: JSON.stringify({ color: t.color, name: t.name, kind: t.family, decimals: 6 }),
           signal: AbortSignal.timeout(3000),
         });
       } catch { /* registry off or kernel busy — names are cosmetic */ }

@@ -78,7 +78,7 @@ services:
       context: '../images/cow-solver'
       args:
         SOLVER_REPO: '${SOLVER_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        SOLVER_REF: '${SOLVER_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
+        SOLVER_REF: '${SOLVER_REF:-4af102536f02f137b696a4734bd8c936eddf3672}'
       additional_contexts:
         kernel-image: 'service:kernel'
     environment:

@@ -123,7 +123,7 @@ services:
       context: '../images/offerfiles-kernel'
       args:
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        KERNEL_REF: '${KERNEL_REF:-706301ee96647f90c861090dc09c0a0a69042109}'
+        KERNEL_REF: '${KERNEL_REF:-4af102536f02f137b696a4734bd8c936eddf3672}'
     entrypoint: ['/usr/local/bin/entrypoint-deploy.sh']
     restart: 'no'            # a one-shot that "restarts" is a redeploy loop
     volumes:
@@ -179,6 +179,38 @@ services:
       # Dev-only name registry (POST /v1/known-tokens): the demo registers the
       # unified token names (wBTC/wETH/wUSD) for the offer-files mint colours.
       ENABLE_TOKEN_REGISTRY: 'true'
+      # ── the token price service (kernel PRs #54-#56, new at this pin) ─────
+      # `000-init.sql` now seeds `asset_prices`, and the node serves
+      # GET /v1/prices and GET /v1/quote from it. BREAKING for an existing
+      # volume: the kernel applies 000-init.sql only on an EMPTY database, so a
+      # Postgres volume created before this pin has no asset_prices, /v1/quote
+      # 500s and the offer poster cannot size a want leg. `./down.sh -v`.
+      #
+      # POST /v1/offers MIRRORS the batcher's sponsorship gate so a maker gets a
+      # readable 422 instead of an opaque failure later. The two services MUST
+      # carry the same values — a node in `enforce` with a batcher in `warn`
+      # refuses offers the batcher would have paid for — which is why these
+      # three variables are repeated verbatim on `batcher` below.
+      #   warn  : log what `enforce` would have refused, forward anyway (default)
+      #   allow : an offer whose legs have no price is still sponsored
+      BATCHER_SPONSOR_POLICY: '${BATCHER_SPONSOR_POLICY:-warn}'
+      BATCHER_SPONSOR_UNPRICED: '${BATCHER_SPONSOR_UNPRICED:-allow}'
+      # The maker-visible discount threshold, in basis points (code default 250).
+      SPONSOR_DISCOUNT_BPS: '${SPONSOR_DISCOUNT_BPS:-250}'
+      # `NAME_OR_COLOR=<asset_id>[:decimals],…` overrides merged over the
+      # built-in price map. Empty = the seeded map, which is what this demo
+      # wants; the `price-feed` service (CoinGecko, needs an API key) is
+      # deliberately NOT part of this stack — see docs/COMPONENTS.md.
+      PRICE_FEED_MAP: '${PRICE_FEED_MAP:-}'
+      # ── per-IP rate limit ─────────────────────────────────────────────────
+      # The code default is 60 requests, which is a PUBLIC-endpoint number. This
+      # stack has four co-located automated clients on one container IP — the
+      # solver's book mirror, the sink's book poll, the monitor site and the
+      # console — and the offer poster's settlement polls on top. 6000 is the
+      # value the kernel's own deployment uses for the same reason: a private
+      # network on a throwaway devnet.
+      API_RATE_LIMIT_MAX: '${API_RATE_LIMIT_MAX:-6000}'
+      API_RATE_LIMIT_ALLOWLIST: '${API_RATE_LIMIT_ALLOWLIST:-}'
       # ── the shared Postgres (T11.4) ──────────────────────────────────────
       # PGLITE=false is what selects the real server in @effectstream/db, and
       # it is NOT the default — ENV.PGLITE defaults to TRUE, so omitting this
@@ -242,6 +274,22 @@ services:
       # and signatures still verified; the node verifies the contract proof at
       # settlement) — the batcher twin of ALLOW_CONTRACT_MAKER_OFFERS above.
       BATCHER_ALLOW_CONTRACT_TX: '${BATCHER_ALLOW_CONTRACT_TX:-true}'
+      # ── fee sponsorship (kernel PRs #54-#56, new at this pin) ─────────────
+      # The batcher has no database, so for each offer it asks the KERNEL's
+      # GET /v1/prices?tokens= for that offer's leg colours. Without this URL it
+      # would ask its own loopback — the one-container era's default — and every
+      # offer would be treated as unpriced.
+      BATCHER_NODE_API_URL: '${BATCHER_NODE_API_URL:-http://kernel:9999}'
+      # Same two knobs, same values as the kernel above. They are a MIRROR, not
+      # two opinions: the batcher holds the wallet and stays authoritative, and
+      # the node's 422 exists only so the maker hears about it earlier.
+      BATCHER_SPONSOR_POLICY: '${BATCHER_SPONSOR_POLICY:-warn}'
+      BATCHER_SPONSOR_UNPRICED: '${BATCHER_SPONSOR_UNPRICED:-allow}'
+      # Per-colour price cache TTL, and how stale a cached answer may be when a
+      # re-ask fails (must be >= the TTL). Upstream's deployment defaults.
+      BATCHER_PRICE_TTL_MS: '${BATCHER_PRICE_TTL_MS:-600000}'
+      BATCHER_PRICE_MAX_AGE_MS: '${BATCHER_PRICE_MAX_AGE_MS:-172800000}'
+      SPONSOR_DISCOUNT_BPS: '${SPONSOR_DISCOUNT_BPS:-250}'
     healthcheck:
       # The batcher exposes no health route, so this asserts only that the HTTP
       # listener is up — the same thing scripts/verify-kernel.sh asserts.
@@ -260,6 +308,44 @@ services:
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
     restart: 'unless-stopped'
+
+
+  # ── register-tokens (00010 P1.4) ────────────────────────────────────────────
+  # ONE-SHOT, NON-FATAL: names this stack's three demo colours in the kernel's
+  # token registry once the kernel is healthy.
+  #
+  # WHY IT IS A SERVICE AND NOT A LINE IN THE DEPLOY ONE-SHOT. Only Compose
+  # knows when the kernel is healthy. `mint-test-tokens.ts` (which the deploy
+  # one-shot runs) already tries to register names and cannot succeed: it POSTs
+  # to `/api/known-tokens`, a path the node has never served, and to its own
+  # loopback while the kernel does not yet exist — `kernel` waits on
+  # `offerfiles-deploy: service_completed_successfully`. Kernel issues/00008.
+  #
+  # AND NAMES ARE NO LONGER COSMETIC. Since the token price service (kernel PRs
+  # #54-#56) `known_tokens.name` is what prices a colour: `WBTC` resolves to the
+  # `bitcoin` asset and `WETH` to `ethereum` through the node's built-in name
+  # map. An unnamed colour quotes as "no asset behind this colour", which the
+  # batcher's sponsorship gate then has to treat as unpriced. Before 00010 the
+  # only thing naming these colours was the AA console, i.e. only under the `aa`
+  # profile — so `./up.sh --with offerfiles` alone priced nothing.
+  register-tokens:
+    image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+    build: *offerfiles_build
+    entrypoint: ['/usr/local/bin/entrypoint-register-tokens.sh']
+    restart: 'no'
+    environment:
+      # The colour derives from the deployed contract address, so the network id
+      # is needed to find the address file — and nothing else here opens a
+      # wallet, which is why the offerfiles env anchor (it carries seeds) is
+      # deliberately NOT merged.
+      MIDNIGHT_NETWORK_ID: 'undeployed'
+      ZSWAP_API: 'http://kernel:9999'
+      REGISTER_TOKENS_ENABLED: '${REGISTER_TOKENS_ENABLED:-true}'
+    volumes:
+      - 'offerfiles-deploy:/deploy-out:ro'
+    depends_on:
+      kernel: { condition: service_healthy }
+      offerfiles-deploy: { condition: service_completed_successfully }
 
 
   # ═══════════════════════════════════════════════════════════════════════════

@@ -25,7 +25,7 @@ consumed as-is with no code changes of ours.
 | Celestia DA devnet | `offerfiles` | DA JSON-RPC `http://127.0.0.1:26658` (bearer token: `scripts/celestia-token.sh`) | app `6.4.10` + node `0.28.4` from the same `effectstream/binaries@0.3.120` warehouse, each archive byte-equal to the official celestiaorg release asset (`images/celestia/official-equality.tsv`); one container, native `amd64` **and** `arm64` |
 | Offer-files kernel (sync node) | `offerfiles` | API `http://127.0.0.1:9999` | [effectstream/zswap-offerfiles-kernel](https://github.com/effectstream/zswap-offerfiles-kernel) — pinned `b1420c4…` from [PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50), which includes [PR #49](https://github.com/effectstream/zswap-offerfiles-kernel/pull/49)'s v9 migration plus the solver's offer-update WS route. Contract deploys ONCE per stack (`offerfiles-deploy` one-shot, address persisted) |
 | Offer-files batcher | `offerfiles` | `http://127.0.0.1:3334` | same repo/branch — its own container, restarts independently of the kernel |
-| COW solver (observation mode) + sink | `solver` | feed page `http://127.0.0.1:10800` (relay WS `:10801`) | [effectstream/zswap-offerfiles-kernel PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50) — fetched directly at build time at exact SHA `b1420c4af6ed8b2510140418e5138d282365f9c6` (`SOLVER_REF`); **not vendored**; generated contract artifacts reuse the service-built kernel image |
+| COW solver (observation mode) + sink | `solver` | feed page `http://127.0.0.1:10800` (relay WS `:10801`) | [effectstream/zswap-offerfiles-kernel PR #50](https://github.com/effectstream/zswap-offerfiles-kernel/pull/50) — fetched directly at build time at exact SHA `4af102536f02f137b696a4734bd8c936eddf3672` (`SOLVER_REF`); **not vendored**; generated contract artifacts reuse the service-built kernel image |
 | zswap-da frontend (swap SPA) | `frontend` | `http://127.0.0.1:10600` | [`effectstream/effectstream@332503c8`](https://github.com/effectstream/effectstream/tree/332503c8f9216143a8c805f2a0acbcfd39e5a21d/templates/zswap-da) — fetched directly at build time and adapted by the checked-in 10-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed |
 | Shielded NIGHT dApp (NIGHT ⇄ sNight) | `shielded-night` | `http://127.0.0.1:10900` | [effectstream/shielded-night](https://github.com/effectstream/shielded-night) — branch **`ledger-v9`** @ `30af63f3…` ([PR #10](https://github.com/effectstream/shielded-night/pull/10), the 2.x port; `main` is the 1.x line). Contract, harness and page from ONE commit, no patch of any kind; the contract is **recompiled in-image** with SHA-256-pinned compactc `0.34.0` and the build fails unless the output is byte-identical to the committed `src/managed/`. Deploys ONCE per stack (`shielded-night-deploy` one-shot, address persisted on a volume and injected into the page as `/config.js`) |
 | AA Manager + Minter | `aa` | deploy receipt in the `aa-out` volume | [acedward/AA-midnight-evm-experiment-v3](https://github.com/acedward/AA-midnight-evm-experiment-v3) — `main @ 713a2021` (sha-pinned; key-breaking merges need a redeploy) · [PR #10](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10) fixed withdraw |
@@ -85,6 +85,24 @@ cp .env.example .env       # ports + pinned image digests; defaults are the Midn
 The **first** bring-up (and the first after `./down.sh -v`) also downloads and verifies the
 ~223 MB shared proof-data generation once, about a minute. Every later run finds it already
 active. The proof servers deliberately cannot start until that check passes.
+
+> ### ⚠ Upgrading a checkout that ran an older kernel pin: `./down.sh -v` is REQUIRED
+>
+> The offer-files kernel moved to the unified `ledger-v9` line, which adds the token price
+> service — new tables (`asset_prices`, `price_feed_status`, `known_tokens.decimals`) with
+> seeded reference prices, all in `migrations/000-init.sql`. **The kernel applies that file
+> only on an EMPTY database.** A `postgres-data` volume created before this pin therefore
+> comes up looking healthy while `/v1/prices` prices nothing, `/v1/quote` cannot size a leg,
+> the batcher's sponsorship gate treats every offer as unpriced, and the offer poster stalls.
+>
+> ```bash
+> ./down.sh -v && ./up.sh --all      # the only supported upgrade path
+> ```
+>
+> `verify.sh`'s kernel section asserts the seeded table and fails with this instruction, so
+> the situation is loud rather than silent — but it is a **full reset**: the local chain,
+> book and contract address all go with it. That is correct, not collateral damage: the book
+> is a projection of the chain the reset destroys.
 
 Open the console at **http://127.0.0.1:10700** when it is up.
 

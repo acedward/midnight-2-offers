@@ -6,12 +6,16 @@
 # balancing batcher (:3334) and a deploy one-shot each run this image with their
 # own entrypoint. See the entrypoint block near the bottom.
 #
-# Source: effectstream/zswap-offerfiles-kernel, pinned PR #50 solver-v9 commit
-# (the ledger-v9 migration plus the offer-update WS route the solver consumes).
+# Source: effectstream/zswap-offerfiles-kernel, pinned to the UNIFIED ledger-v9
+# line — PR #65 (branch `ledger-v9`, draft at the time of pinning; the SHA is
+# the identity, not the branch). It carries the v9 migration, the offer-update
+# WS route the solver consumes, the token price service (`asset_prices`,
+# /v1/prices, /v1/quote, the batcher sponsorship gate), the solver status
+# listener + monitor site, and the offer poster.
 # Like images/umbra-evm, built from a REMOTE clone so
 # `git clone <this repo> && ./up.sh --with offerfiles` works with nothing else
 # checked out. KERNEL_REF defaults to exact commit
-# b1420c4af6ed8b2510140418e5138d282365f9c6; the resolved commit is baked at
+# 4af102536f02f137b696a4734bd8c936eddf3672; the resolved commit is baked at
 # /app/.kernel-commit and asserted by the provenance gate.
 #
 # WHY NO ORCHESTRATOR AT ALL. `bun run dev`'s launchMidnight() launches its own
@@ -31,15 +35,25 @@
 # is the target network, not a multi-process launcher.
 #
 # THE CONTRACT IS COMPILED AT BUILD TIME, in a dedicated stage running the
-# pinned compactc 0.33.0-rc.2 fetched from LFDT-Minokawa/compact release
-# assets (the `compact` version manager does not publish the 0.33 line — see
-# the kernel repo's infra/compact-toolchain.Dockerfile, which this stage
-# mirrors). No --feature-zkir-v3: v2 zkir emits verifier-key[v6], which the
+# compactc version THE PINNED KERNEL TREE DECLARES — `infra/compact-version.txt`
+# (0.33.0-rc.2 at this KERNEL_REF), read out of the fetched source rather than
+# hard-coded here, so a kernel bump can never leave this image compiling with a
+# toolchain the kernel no longer uses. The release asset comes from
+# LFDT-Minokawa/compact (the `compact` version manager does not publish the 0.33
+# line — see the kernel repo's infra/compact-toolchain.Dockerfile, which this
+# stage mirrors). No --feature-zkir-v3: v2 zkir emits verifier-key[v6], which the
 # PLAIN 9.0.0-rc.5 proof server (the core one) proves.
 
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=b1420c4af6ed8b2510140418e5138d282365f9c6
-ARG COMPACT_VERSION=0.33.0-rc.2
+ARG KERNEL_REF=4af102536f02f137b696a4734bd8c936eddf3672
+# EMPTY ON PURPOSE. The compactc pin has exactly ONE source of truth and it is
+# not this file: `infra/compact-version.txt` inside the fetched kernel tree
+# (0.33.0-rc.2 at the pin above). A hard-coded default here silently keeps
+# compiling with an old toolchain after a kernel bump — the contract would
+# still build and the deployed keys would simply not be the ones the pinned
+# kernel expects. `--build-arg COMPACT_VERSION=<x>` still overrides, for a
+# deliberate experiment.
+ARG COMPACT_VERSION=
 
 # ── stage 1: fetch the kernel source ─────────────────────────────────────────
 FROM debian:stable-slim AS source
@@ -72,7 +86,13 @@ RUN apt-get update \
 # Musl-static release asset, one per platform triple (mirrors the kernel's
 # infra/compact-toolchain.Dockerfile, including the no-symlink rule: the
 # bundled wrapper resolves siblings from `dirname $0`).
+# The pin travels with the source, not with this Dockerfile — see the ARG note.
+COPY --from=source /src/infra/compact-version.txt /opt/compact-version.txt
+
 RUN set -eux; \
+    COMPACT_VERSION="${COMPACT_VERSION:-$(tr -d ' \t\n\r' < /opt/compact-version.txt)}"; \
+    test -n "${COMPACT_VERSION}" || { echo "infra/compact-version.txt is empty at this KERNEL_REF" >&2; exit 1; }; \
+    echo "compactc pin: ${COMPACT_VERSION} (from the pinned kernel tree)"; \
     case "${TARGETARCH:-arm64}" in \
       arm64) triple="aarch64-unknown-linux-musl" ;; \
       amd64) triple="x86_64-unknown-linux-musl" ;; \
@@ -123,6 +143,19 @@ RUN bun install --frozen-lockfile
 #   kernel             the sync node (:9999). Its store is the shared
 #                      `postgres` service, database `offerfiles` (T11.4).
 #   batcher            the balancing batcher (:3334), alone.
+#   register-tokens    one-shot, non-fatal. NAMES the three demo colours in the
+#                      kernel's registry once the kernel is healthy — which is
+#                      the only place that ordering is knowable (00010 P1.4).
+#   offer-poster       LOOP (profile `poster`). Mints one exact coin and posts
+#                      one takeable offer per interval (00010 P3).
+#   solver-frontend    the COW solver's read-only monitor site (:8080), served
+#                      by `compose/solver.yml` from this same image (00010 P2).
+#
+# The last three run kernel-repo entrypoints that this image ALSO ships as its
+# own scripts: the upstream copies under /app/deploy/images/kernel/ source an
+# `entrypoint-common.sh` written for the kernel's own deployment (different
+# volume paths, a different contract-share directory), so this repo carries
+# thin equivalents that use ITS conventions and exec the same upstream code.
 #
 # All three share entrypoint-common.sh: the Celestia token handoff, then
 # preflight-external (T11.1 — a per-container fail-fast, not a service), then
@@ -133,10 +166,15 @@ RUN bun install --frozen-lockfile
 # store, so it arrives on a read-only volume and anything compose already set
 # wins over it.
 COPY entrypoint-common.sh /usr/local/lib/offerfiles/entrypoint-common.sh
-COPY entrypoint-kernel.sh entrypoint-batcher.sh entrypoint-deploy.sh /usr/local/bin/
+COPY entrypoint-kernel.sh entrypoint-batcher.sh entrypoint-deploy.sh \
+     entrypoint-register-tokens.sh entrypoint-offer-poster.sh \
+     entrypoint-solver-frontend.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint-kernel.sh \
              /usr/local/bin/entrypoint-batcher.sh \
              /usr/local/bin/entrypoint-deploy.sh \
+             /usr/local/bin/entrypoint-register-tokens.sh \
+             /usr/local/bin/entrypoint-offer-poster.sh \
+             /usr/local/bin/entrypoint-solver-frontend.sh \
  # Kept as an alias so an older compose fragment (or a habit) still lands on
  # something that works — it is the sync node, which is what `kernel` meant.
  && ln -s /usr/local/bin/entrypoint-kernel.sh /usr/local/bin/kernel-entrypoint
