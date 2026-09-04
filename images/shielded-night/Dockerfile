@@ -350,6 +350,9 @@ COPY --from=build /src/scripts /app/scripts
 COPY --from=build /src/test    /app/test
 COPY --from=build /src/envs    /app/envs
 COPY --from=source /.shielded-night-commit /.shielded-night-commit
+# Lives INSIDE /app so `import "graphql"` resolves against /app/node_modules. Passed to the
+# deploy script with `bun run --preload`; see the file's own header for the crash it prevents.
+COPY preload-graphql.ts /app/preload-graphql.ts
 
 COPY entrypoint-common.sh /usr/local/lib/shielded-night/entrypoint-common.sh
 # entrypoint-register-token.sh teaches the offer-files kernel THIS stack's sNight colour. It
