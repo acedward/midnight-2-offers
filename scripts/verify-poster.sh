@@ -163,11 +163,17 @@ fi
 
 # One parse, several assertions — and the whole health body is printed on any
 # failure, because the poster's own report is the fastest route to the cause.
+# The separator is US (0x1f), NOT a tab. Tab is an IFS *whitespace* character, so bash
+# collapses runs of it and an EMPTY field simply vanishes, shifting every field after it
+# one place left. `lastOfferId` is null exactly when the poster is degraded — i.e. only on
+# the failure path — so a tab here produced a correct verdict with a nonsense diagnosis
+# ("lastOfferId insufficient_dus... is NOT in the kernel's open book"). US is not IFS
+# whitespace, so empty fields are preserved.
 POSTER_FIELDS="$(printf '%s' "$HEALTH" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 give = d.get("giveRange") or {}
-print("\t".join(str(x) for x in [
+print("\x1f".join(str(x) for x in [
     d.get("state", ""),
     d.get("mints", 0),
     d.get("lastOfferId") or "",
@@ -180,7 +186,7 @@ print("\t".join(str(x) for x in [
     give.get("maxBase") or "",
 ]))
 ' 2>/dev/null || true)"
-IFS=$'\t' read -r P_STATE P_MINTS P_OFFER P_FAILURE P_ERROR P_DUST P_LIVE P_GIVE P_MIN P_MAX <<< "$POSTER_FIELDS"
+IFS=$'\x1f' read -r P_STATE P_MINTS P_OFFER P_FAILURE P_ERROR P_DUST P_LIVE P_GIVE P_MIN P_MAX <<< "$POSTER_FIELDS"
 
 info "state=${P_STATE:-?} mints=${P_MINTS:-?} liveOffers=${P_LIVE:-?} dust=${P_DUST:-?}"
 [[ -n "$P_OFFER" ]] && info "lastOfferId=${P_OFFER}"
