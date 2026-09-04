@@ -48,8 +48,14 @@ UTXO_COUNT="${POSTER_FUND_UTXO_COUNT:-4}"
 # "Extrinsic marked as invalid"). That is a CONTENTION outcome, not a permanent one: the
 # loser's view is merely stale, and the same transfer succeeds once the winner's tx lands.
 # So retry, bounded — the same reasoning `run_preflight` uses for the proof-server race.
-SEND_TRIES="${GENESIS_SEND_TRIES:-6}"
-SEND_RETRY_S="${GENESIS_SEND_RETRY_S:-10}"
+SEND_TRIES="${GENESIS_SEND_TRIES:-10}"
+SEND_RETRY_S="${GENESIS_SEND_RETRY_S:-5}"
+SEND_RETRY_MAX_S="${GENESIS_SEND_RETRY_MAX_S:-30}"
+# The jitter is not decoration. Both one-shots hit the same rejection at the same instant and
+# would otherwise retry on an identical schedule, colliding again in lockstep for as long as
+# the budget lasts — which is exactly what a fixed 10s delay produced. Randomising each wait
+# is what actually breaks the tie.
+SEND_RETRY_JITTER_S="${GENESIS_SEND_JITTER_S:-7}"
 
 TOOLKIT_BIN="${TOOLKIT_BIN:-/midnight-node-toolkit}"
 NIGHT_TOKEN=0000000000000000000000000000000000000000000000000000000000000000
@@ -144,7 +150,7 @@ fi
 
 # send_utxo <label> — one genesis→poster transfer, retried while genesis is contended.
 send_utxo() {
-  local label="$1" try
+  local label="$1" try delay
   for (( try = 1; try <= SEND_TRIES; try++ )); do
     if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
          single-tx --source-seed "$FROM_SEED" \
@@ -152,8 +158,11 @@ send_utxo() {
       return 0
     fi
     if (( try < SEND_TRIES )); then
-      sub "${label}: send rejected (attempt ${try}/${SEND_TRIES}) — genesis contended, retrying in ${SEND_RETRY_S}s"
-      sleep "$SEND_RETRY_S"
+      delay=$(( SEND_RETRY_S * (1 << (try - 1)) ))
+      (( delay > SEND_RETRY_MAX_S )) && delay=$SEND_RETRY_MAX_S
+      delay=$(( delay + RANDOM % SEND_RETRY_JITTER_S ))
+      sub "${label}: rejected (attempt ${try}/${SEND_TRIES}) — genesis contended, retrying in ${delay}s"
+      sleep "$delay"
     fi
   done
   return 1

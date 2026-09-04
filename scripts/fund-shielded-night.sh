@@ -43,8 +43,14 @@ DUST_WAIT="${FUND_DUST_WAIT:-240}"
 # of them, so a transfer built against a stale UTXO view is rejected by the runtime
 # ("Invalid transaction with custom error: 195/196", "Extrinsic marked as invalid"). That is
 # contention, not a permanent failure — retry, bounded.
-SEND_TRIES="${GENESIS_SEND_TRIES:-6}"
-SEND_RETRY_S="${GENESIS_SEND_RETRY_S:-10}"
+SEND_TRIES="${GENESIS_SEND_TRIES:-10}"
+SEND_RETRY_S="${GENESIS_SEND_RETRY_S:-5}"
+SEND_RETRY_MAX_S="${GENESIS_SEND_RETRY_MAX_S:-30}"
+# The jitter is not decoration. Both one-shots hit the same rejection at the same instant and
+# would otherwise retry on an identical schedule, colliding again in lockstep for as long as
+# the budget lasts — which is exactly what a fixed 10s delay produced. Randomising each wait
+# is what actually breaks the tie.
+SEND_RETRY_JITTER_S="${GENESIS_SEND_JITTER_S:-7}"
 
 TOOLKIT_BIN="${TOOLKIT_BIN:-/midnight-node-toolkit}"
 # NOTE: the binary lives at / and / is NOT on PATH in this image, so it must be called by
@@ -162,15 +168,18 @@ RC=0
 # genesis_tx <label> <tk args...> — one genesis-funded submission, retried while contended.
 genesis_tx() {
   local label="$1"; shift
-  local try
+  local try delay
   for (( try = 1; try <= SEND_TRIES; try++ )); do
     if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
          "$@" >/dev/null; then
       return 0
     fi
     if (( try < SEND_TRIES )); then
-      sub "${label}: rejected (attempt ${try}/${SEND_TRIES}) — genesis contended, retrying in ${SEND_RETRY_S}s"
-      sleep "$SEND_RETRY_S"
+      delay=$(( SEND_RETRY_S * (1 << (try - 1)) ))
+      (( delay > SEND_RETRY_MAX_S )) && delay=$SEND_RETRY_MAX_S
+      delay=$(( delay + RANDOM % SEND_RETRY_JITTER_S ))
+      sub "${label}: rejected (attempt ${try}/${SEND_TRIES}) — genesis contended, retrying in ${delay}s"
+      sleep "$delay"
     fi
   done
   return 1
