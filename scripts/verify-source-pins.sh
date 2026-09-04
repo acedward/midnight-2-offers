@@ -168,10 +168,10 @@ if present proof-server && present aa-proof-server; then
   fi
 fi
 
-KERNEL_EXPECTED="${KERNEL_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}"
+KERNEL_EXPECTED="${KERNEL_REF:-4af102536f02f137b696a4734bd8c936eddf3672}"
 # Provenance now, not a build input — and read from the matrix rather than duplicated here.
 INDEXER_EXPECTED="$(pin 'components[indexer-standalone].sourceProvenance.commit')"
-SOLVER_EXPECTED="${SOLVER_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}"
+SOLVER_EXPECTED="${SOLVER_REF:-4af102536f02f137b696a4734bd8c936eddf3672}"
 AA_EXPECTED="${AA_REF:-713a20215f33e02904ea5bd699b7de7f76562e1b}"
 UMBRA_EXPECTED="${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-332503c8f9216143a8c805f2a0acbcfd39e5a21d}"

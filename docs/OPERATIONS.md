@@ -29,6 +29,8 @@ healthy":
 | indexer | GraphQL v4 answers a block query | Its container healthcheck only proves the supervisor is alive — the entrypoint touches the running-file *before* launching the indexer |
 | proof-server | the port accepts a TCP connection | The image has no curl/wget, and its bash sits behind a per-build `/nix/store/<hash>…` path. Compose has already gated it on the proof-data cache verifying, so reaching this point means the shared generation is active |
 | evm-rpc (`--with evm`) | `eth_chainId` answers over HTTP, **and** the WS port completes a `101 Switching Protocols` handshake | A TCP probe of a *published* port proves nothing: docker's port proxy accepts the connection before it dials the container, so `nc -z` reports a working endpoint that refuses every client |
+| solver-frontend (`--with solver`) | the container healthcheck (`/health` on the monitor itself) | Deliberately says nothing about the solver: a monitor whose health followed the thing it monitors would be reported down exactly when it is needed. The solver's own wait, one line above it in `up.sh`, is what proves the solver is quoting |
+| offer-poster (`--with poster`) | the container healthcheck (`/health` binds), then `/health` is READ: `degraded` is a WARN, `failed` is a failure | `/health` answers 200 while the poster is `starting` and while it is `degraded` (no DUST yet) — 503-ing on `degraded` would make Compose restart a container that is correctly waiting for NIGHT. So healthy proves only that the server bound, which happens after wallet sync + dust registration + the dust wait + the contract join (hence `POSTER_WAIT_TIMEOUT=900`). `./verify.sh --poster` is the gate that requires a real mint and a posted offer |
 
 ## Verifying and tearing down
 
@@ -39,6 +41,10 @@ healthy":
 ./verify.sh --no-evm     # skip the evm section even when it is up
 ./verify.sh --celestia   # require the celestia section — fail if the profile is not up
 ./verify.sh --no-celestia # skip the celestia section even when it is up
+./verify.sh --solver     # require the solver section: sink safety counters, the status listener's
+                         #   bearer gate (200 with / 401 without), :9100 unpublished, monitor page
+./verify.sh --poster     # require the poster section: state, mints >= 1, and lastOfferId present
+                         #   in the KERNEL's book with a whole-coin give leg and a quoted want leg
 ./down.sh                # stop, keep the chain — ./up.sh resumes it
 ./down.sh -v             # FULL RESET: wipes every project volume — node, indexer, postgres,
                          #             celestia, toolkit cache AND the proof-data cache
@@ -60,6 +66,17 @@ reason: only a compose-created volume carries the project label that the "nothin
 count filters on.
 
 ### Full reset
+
+**When it is not optional.** `./up.sh` is normally resumable, but a kernel pin that moves
+`packages/database/migrations/000-init.sql` breaks that: the kernel applies the init file only
+against an EMPTY database, and it has no migration path for a database that already exists
+(new `migrationTable` entries never reach a synced DB). The ledger-v9 pin
+(`4af102536f02f137b696a4734bd8c936eddf3672`) is such a move — it adds the token price
+service's `asset_prices` / `price_feed_status` tables and `known_tokens.decimals`, with seeded
+reference prices. A `postgres-data` volume older than that pin produces a stack where every
+container is healthy and every quote is wrong. `scripts/verify-kernel.sh` asserts
+`GET /v1/prices` returns the seeded asset table for exactly this reason, and its failure names
+the fix.
 
 `./down.sh -v` **is** the full reset — there is no second cleanup step to remember, and no state
 outside what it removes:
@@ -118,6 +135,26 @@ ENV_FILE=.env.test ./verify.sh
 ENV_FILE=.env.test ./down.sh -v       # leaves the other stack untouched
 ```
 
+The block is 16 consecutive ports and every published endpoint is derived from its base, so a
+new service means a new offset rather than a new fixed number. The current layout:
+
+| Offset | Variable | Default in `.env.example` |
+|---|---|---|
+| +0 … +2 | `NODE_HOST_PORT`, `INDEXER_HOST_PORT`, `PROOF_HOST_PORT` | 9944 / 8088 / 6300 |
+| +3, +4 | `EVM_RPC_HOST_PORT`, `EVM_WS_HOST_PORT` | 8545 / 10021 |
+| +5, +6 | `KERNEL_HOST_PORT`, `BATCHER_HOST_PORT` | 9999 / 3334 |
+| +7 | `CELESTIA_HOST_PORT` | 26658 |
+| +8, +9 | `FRONTEND_HOST_PORT`, `AA_CONSOLE_HOST_PORT` | 10600 / 10700 |
+| +10, +11 | `SOLVER_SINK_HOST_PORT`, `SOLVER_RELAY_HOST_PORT` | 10800 / 10801 |
+| +12 | `SHIELDED_NIGHT_HOST_PORT` | 10900 |
+| +13 | `SOLVER_FRONTEND_PORT` — the COW solver's monitor site | 10802 |
+| +14 | `POSTER_HEALTH_PORT` — the offer poster's health/metrics/journal | 10803 |
+
+Two ports are deliberately NOT in that table because they are never published: the shared
+`postgres:5432`, and the COW solver's status listener `solver:9100`, which serves the solver's
+entire internal state behind a Bearer and is read only by the monitor site over the compose
+network. `scripts/verify-solver.sh` asserts `docker port <solver> 9100` is empty.
+
 ## One-command check (CI)
 
 ```bash
@@ -131,6 +168,16 @@ It generates its own env file (so it never touches your `.env` or the default po
 the profiles, funds the five non-genesis wallets, runs `verify.sh` **and**
 `verify-wallets.sh --include-script-funded`, then tears everything down and asserts that nothing
 survived. Exit 0 means both halves of that: the stack worked, and the machine is clean.
+
+Its step 1 is a set of OFFLINE gates that need no daemon, no network and no registry — the
+artifact-decision matrix, the fetch pins, the proof-server mirror record, the rendered compose
+pins, and `verify-pin-defaults.sh`, which fails when any two defaults of one SOURCE pin
+(`KERNEL_REF`, `SOLVER_REF`, `FRONTEND_REF`, `AA_REF`, `UMBRA_REF`, `SHIELDED_NIGHT_REF`)
+disagree anywhere in `compose/`, `images/`, `scripts/` or `.env.example`. That check exists
+because the repository once shipped a split kernel pin, and every OTHER check compares a running
+image against ONE of the copies — so the failure read as a stale image rather than as the
+configuration defect it was. Each gate that has a `--self-test` runs it, so a check that stopped
+biting is reported as a failure rather than passing vacuously.
 
 Three details that make it safe to run on a shared box, and that are worth copying if you write
 your own harness:

@@ -1,11 +1,17 @@
 # cow-solver — the ported COW posted-price solver, in OBSERVATION mode.
 #
-# Source: https://github.com/effectstream/zswap-offerfiles-kernel/pull/50,
-# branch `00001-solver-v9`, exact SHA
-# b1420c4af6ed8b2510140418e5138d282365f9c6. Clean-clone builds fetch that
-# upstream commit directly; Cow solver source is not copied into this repo.
+# Source: https://github.com/effectstream/zswap-offerfiles-kernel/pull/65,
+# branch `ledger-v9` (draft at the time of pinning — the SHA is the identity),
+# exact SHA 4af102536f02f137b696a4734bd8c936eddf3672. Clean-clone builds fetch
+# that upstream commit directly; Cow solver source is not copied into this repo.
 # The separate browser SPA is fetched through FRONTEND_REPO/FRONTEND_REF and
 # contains no solver implementation.
+#
+# SOLVER_REF and KERNEL_REF are the same commit since the ledger-v9 re-pin (the
+# kernel and the solver live on one branch now), and they stay two knobs on
+# purpose: the overlay below is what proves the running solver bytes came from
+# the SHA `verify-source-pins.sh` expects, and a future divergence must not need
+# a Dockerfile change to be expressible.
 #
 # The compiled offer-files contract comes from the `kernel-image` named build
 # context. Compose wires that context to `service:kernel`, which both orders the
@@ -15,7 +21,7 @@
 # functional coverage.
 
 ARG SOLVER_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG SOLVER_REF=b1420c4af6ed8b2510140418e5138d282365f9c6
+ARG SOLVER_REF=4af102536f02f137b696a4734bd8c936eddf3672
 
 FROM debian:stable-slim AS source
 
@@ -58,7 +64,14 @@ RUN set -eux; \
     test ! -d /app/node_modules/@midnight-ntwrk/ledger-v8 \
       || { echo "ERROR: ledger-v8 is present — the v9 pin set did not hold" >&2; exit 1; }
 
-# solver.dev.ts is the `undeployed`-only entrypoint: it refuses to start unless
-# MIDNIGHT_NETWORK_ID=undeployed, which is exactly the NO-GO-for-real-funds
-# posture this demo inherits. It also honours SOLVER_ENABLED=false by exiting 0.
-ENTRYPOINT ["bun", "run", "/app/packages/solver/solver.dev.ts"]
+# The entrypoint is `start.solver.ts` behind this repo's own `undeployed` gate.
+# It USED to be packages/solver/solver.dev.ts, which carries that gate itself —
+# but solver.dev.ts calls runSolver() without a `status` option, and the 00007
+# read-only status listener is inert unless that option is present. The monitor
+# site (`solver-frontend`) has nothing to read on solver.dev.ts. The shim keeps
+# the gate and gains the listener; see its header for the full reasoning.
+COPY entrypoint-solver.sh /usr/local/bin/entrypoint-solver.sh
+RUN chmod +x /usr/local/bin/entrypoint-solver.sh \
+ && test -f /app/start.solver.ts \
+ && test -f /app/start.solver-frontend.ts
+ENTRYPOINT ["/usr/local/bin/entrypoint-solver.sh"]

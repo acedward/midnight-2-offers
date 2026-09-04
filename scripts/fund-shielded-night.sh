@@ -38,6 +38,19 @@ NETWORK_ID="${NETWORK_ID:-undeployed}"
 FROM_SEED="${FUND_FROM_SEED:-0000000000000000000000000000000000000000000000000000000000000001}"
 AMOUNT="${FUND_AMOUNT:-10000000000000}"
 DUST_WAIT="${FUND_DUST_WAIT:-240}"
+# Genesis is a SHARED wallet and the one-shots that spend it run in PARALLEL (each gates on
+# `node: service_healthy` and nothing else). Since the `poster` profile landed there are two
+# of them, so a transfer built against a stale UTXO view is rejected by the runtime
+# ("Invalid transaction with custom error: 195/196", "Extrinsic marked as invalid"). That is
+# contention, not a permanent failure — retry, bounded.
+SEND_TRIES="${GENESIS_SEND_TRIES:-10}"
+SEND_RETRY_S="${GENESIS_SEND_RETRY_S:-5}"
+SEND_RETRY_MAX_S="${GENESIS_SEND_RETRY_MAX_S:-30}"
+# The jitter is not decoration. Both one-shots hit the same rejection at the same instant and
+# would otherwise retry on an identical schedule, colliding again in lockstep for as long as
+# the budget lasts — which is exactly what a fixed 10s delay produced. Randomising each wait
+# is what actually breaks the tie.
+SEND_RETRY_JITTER_S="${GENESIS_SEND_JITTER_S:-7}"
 
 TOOLKIT_BIN="${TOOLKIT_BIN:-/midnight-node-toolkit}"
 # NOTE: the binary lives at / and / is NOT on PATH in this image, so it must be called by
@@ -152,6 +165,26 @@ already_funded() {
 }
 
 RC=0
+# genesis_tx <label> <tk args...> — one genesis-funded submission, retried while contended.
+genesis_tx() {
+  local label="$1"; shift
+  local try delay
+  for (( try = 1; try <= SEND_TRIES; try++ )); do
+    if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
+         "$@" >/dev/null; then
+      return 0
+    fi
+    if (( try < SEND_TRIES )); then
+      delay=$(( SEND_RETRY_S * (1 << (try - 1)) ))
+      (( delay > SEND_RETRY_MAX_S )) && delay=$SEND_RETRY_MAX_S
+      delay=$(( delay + RANDOM % SEND_RETRY_JITTER_S ))
+      sub "${label}: rejected (attempt ${try}/${SEND_TRIES}) — genesis contended, retrying in ${delay}s"
+      sleep "$delay"
+    fi
+  done
+  return 1
+}
+
 for i in "${!SEEDS[@]}"; do
   SEED="${SEEDS[$i]}"
   LABEL="${LABELS[$i]}"
@@ -171,22 +204,21 @@ for i in "${!SEEDS[@]}"; do
   sub "unshielded ${UNSHIELDED}"
 
   # 1. NIGHT
-  if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
-       single-tx --source-seed "$FROM_SEED" \
-       --output "addr=${UNSHIELDED},amount=${AMOUNT}" >/dev/null; then
+  if genesis_tx "NIGHT" single-tx --source-seed "$FROM_SEED" \
+       --output "addr=${UNSHIELDED},amount=${AMOUNT}"; then
     sub "NIGHT sent (${AMOUNT} stars)"
   else
-    sub "FAILED to send NIGHT"; RC=1; continue
+    sub "FAILED to send NIGHT after ${SEND_TRIES} attempts"; RC=1; continue
   fi
 
   # 2. DUST registration — AFTER the transfer, because it respends the wallet's NIGHT UTXOs so
   #    they begin generating DUST.
-  if tk -q generate-txs --src-url "$TOOLKIT_NODE_URL" --dest-url "$TOOLKIT_NODE_URL" \
+  if genesis_tx "DUST registration" \
        register-dust-address --wallet-seed "$SEED" --funding-seed "$FROM_SEED" \
-       --destination-dust "$DUST" >/dev/null; then
+       --destination-dust "$DUST"; then
     sub "DUST address registered"
   else
-    sub "FAILED to register DUST"; RC=1; continue
+    sub "FAILED to register DUST after ${SEND_TRIES} attempts"; RC=1; continue
   fi
 
   # 3. Wait for a spendable DUST UTXO. The balance figure moves before the UTXO exists, and

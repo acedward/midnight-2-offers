@@ -11,7 +11,8 @@
     "each other's connection down, silently. That is why every service that holds a wallet",
     "open has its own: genesis-1 = funding faucet + offer-files kernel, genesis-2 = batcher,",
     "genesis-3 = AA deploy, aac0… = AA console relay, 7a4e… = AA taker, 5e5e… = shielded-night",
-    "deployer, d00d… = shielded-night verify driver. `lace-test` is deliberately held by no",
+    "deployer, d00d… = shielded-night verify driver, 0ffe… = the offer poster. `lace-test` is",
+    "deliberately held by no",
     "service at all, so a browser can import it at any time.",
     "",
     "Addresses were produced with `midnight-node-toolkit:2.0.0-rc.4 show-address --network",
@@ -23,6 +24,14 @@
     "                           scripts/verify-wallets.sh.",
     "funding = 'fund-script'  : empty until scripts/fund-wallet.sh (or the `fund` compose",
     "                           service) is run for it.",
+    "funding = 'compose-one-shot' : funded by a compose one-shot belonging to its own profile,",
+    "                           not by scripts/fund-wallet.sh. Today that is the offer poster:",
+    "                           compose/poster.yml's `poster-fund` sends it NIGHT before the",
+    "                           poster starts, and the POSTER registers its own DUST address (a",
+    "                           second registrant for a value the service already owns would make",
+    "                           'the poster could not register' unreportable). Deliberately NOT",
+    "                           selected by fund-in-container.sh or verify-wallets.sh: this",
+    "                           wallet's lifecycle belongs to the profile, not to the fund script.",
     "funding = 'mnemonic'     : same as 'fund-script' (empty until funded), but the wallet is",
     "                           reachable from a BIP-39 mnemonic, so it can be imported into",
     "                           Lace by hand. See the 'mnemonic' and 'derivation' fields and",
@@ -277,6 +286,31 @@
         "shielded": "mn_shield-addr_undeployed15nly804v4yur68l5g5zr8lht6yl3g4p6u7244u8k9k2w2m7f6x5u3vkq9e74uh9w2ul22gtfax5mxtqjrzwud82gzzlhd9etvqclhmqws45wx",
         "dust": "mn_dust_undeployed1wvf40d2r2pl2at04av4hgt08ysj6hn7f7hdatqtflcl5rcuehrdkkuryjls",
         "userAddress": "a178d8696bd24d87f7a2d7ac61f3d13c076876ec7bd83bb1ea16eea71754bdec"
+      }
+    },
+    {
+      "name": "offer-poster",
+      "role": "the offer poster's wallet (profile `poster`): mints one coin and posts one offer per interval",
+      "$comment": [
+        "DEDICATED, and it must stay dedicated: the poster refuses to start (exit 78) if this seed",
+        "equals MIDNIGHT_WALLET_SEED / MIDNIGHT_GENESIS_SEED, BATCHER_WALLET_SEED, SOLVER_SEED,",
+        "MAKER_SEED / MAKER_OFFER_SEED or TAKER_SEED — two wallet facades on one seed against one",
+        "Midnight node force each other's connection down. `scripts/verify-poster.sh --static`",
+        "asserts that offline against every seed declared in this file, in compose/ and in",
+        ".env.example.",
+        "",
+        "Funded by compose/poster.yml's `poster-fund` one-shot with 4 x 5_000_000_000_000 stars of",
+        "unshielded NIGHT — several LARGE UTXOs rather than one, because DUST is generated per",
+        "UTXO and the poster pays for a mint AND an offer every interval out of its own dust."
+      ],
+      "seed": "0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe",
+      "seedBytes": 32,
+      "funding": "compose-one-shot",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1fxtjzss8uptg3pykzapas2rgwkmwtr9w5wmh4zr98xeca22sxz8q27k7rp",
+        "shielded": "mn_shield-addr_undeployed1h2u9dgarcyvxz4g2t33p4avlewy4w0znum56hxk70657wne59c9p62scyzpm959npkj5e52fflxufz8k8n5uhwxdhyaxqavacjlqysq4rla8h",
+        "dust": "mn_dust_undeployed1wdnvu20smxu2f4wgw8m0e5xdjnq0yyv56ndqpykten7u6tpgj9hrzzvnl2p",
+        "userAddress": "4997214207e0568884961743d8286875b6e58caea3b77a886539b38ea950308e"
       }
     }
   ]

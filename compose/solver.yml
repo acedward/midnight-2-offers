@@ -1,5 +1,5 @@
-# cow-solver — the ported COW posted-price solver in OBSERVATION mode, plus the
-# WS sink it pushes to.  Profile: `solver`
+# cow-solver — the ported COW posted-price solver in OBSERVATION mode, the WS
+# sink it pushes to, and the upstream read-only monitor site.  Profile: `solver`
 #
 #   ./up.sh --with offerfiles --with solver
 #
@@ -71,14 +71,14 @@ services:
     image: '${SOLVER_IMAGE:-midnight-2-offers/cow-solver:local}'
     build:
       # Small context (just the Dockerfile). Cow solver source is not copied here:
-      # it is fetched directly from effectstream/zswap-offerfiles-kernel PR #50
-      # at the exact SOLVER_REF below. The separate SPA uses FRONTEND_REPO/REF.
+      # it is fetched directly from effectstream/zswap-offerfiles-kernel PR #65
+      # (branch `ledger-v9`) at the exact SOLVER_REF below. The separate SPA uses FRONTEND_REPO/REF.
       # generated Compact artifacts arrive from the kernel service's image so
       # they are compiled only once.
       context: '../images/cow-solver'
       args:
         SOLVER_REPO: '${SOLVER_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        SOLVER_REF: '${SOLVER_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
+        SOLVER_REF: '${SOLVER_REF:-4af102536f02f137b696a4734bd8c936eddf3672}'
       additional_contexts:
         kernel-image: 'service:kernel'
     environment:
@@ -116,6 +116,50 @@ services:
       # client is the thing being observed. Safety comes from the sink never
       # dispatching a job, not from this flag.
       SOLVER_DRY_RUN: '${SOLVER_DRY_RUN:-false}'
+      # ── read-only status listener (kernel PR #58; new at the ledger-v9 pin) ─
+      # OPT-IN BY THE PORT and by nothing else: with SOLVER_STATUS_PORT unset the
+      # solver behaves byte-for-byte as it did before. Set, it serves GET /health
+      # (open, no internal data, so a healthcheck needs no secret) plus
+      # GET /status/snapshot and GET /status/stream. Collection reads IN-MEMORY
+      # state only — no wallet call, no proof, no kernel or relay I/O — and no
+      # route mutates anything. It exists for `solver-frontend` below.
+      #
+      # 0.0.0.0 INSIDE THE CONTAINER is not a relaxation: :9100 is deliberately
+      # NOT published (see the note under `volumes:`), so the only thing that can
+      # reach it is a sibling on this compose network. The solver WARNS about a
+      # non-loopback status host rather than refusing, precisely so a container
+      # can bind the network it lives on.
+      SOLVER_STATUS_HOST: '0.0.0.0'
+      SOLVER_STATUS_PORT: '9100'
+      # MANDATORY whenever the port is set, and >= 32 characters — /status/*
+      # serves the solver's ENTIRE internal state (book, inventory, journal tail,
+      # ladder, configuration), so the listener must never be able to come up
+      # open. A missing or short value is a listed startup problem, not a late
+      # 401.
+      #
+      # PUBLIC BY DESIGN, exactly like SOLVER_RELAY_AUTH_TOKEN above and every
+      # other secret in this repository: this is a dev stack, the port is not
+      # published, and the token only guards the compose network. Override it in
+      # `.env` if you publish :9100 for a debugging session. The SAME variable
+      # feeds `solver-frontend`, so the two sides cannot drift.
+      SOLVER_STATUS_AUTH_TOKEN: '${SOLVER_STATUS_AUTH_TOKEN:-demo-cow-solver-status-token-000000000000}'
+    # NO PUBLISHED PORT FOR :9100, deliberately.
+    #
+    # The status snapshot is the solver's whole internal state. The monitor site
+    # reaches it over this compose network — that is what `solver-frontend` is
+    # for, and IT is the service with a host port and the readable page. Reading
+    # the raw JSON by hand needs nothing published either:
+    #
+    #   docker compose … exec solver bun -e 'const r = await fetch(
+    #     "http://127.0.0.1:9100/status/snapshot",
+    #     { headers: { authorization: `Bearer ${process.env.SOLVER_STATUS_AUTH_TOKEN}` } });
+    #     console.log(await r.text());'
+    #
+    # `verify-solver.sh` asserts this port is NOT in `docker compose port`.
+    # Uncomment only for a debugging session, and never with a non-loopback
+    # BIND_ADDR.
+    # ports:
+    #   - '${BIND_ADDR:-127.0.0.1}:${SOLVER_STATUS_HOST_PORT:-19100}:9100'
     volumes:
       - 'cow-solver-journal:/var/lib/cow-solver'
     depends_on:
@@ -140,6 +184,92 @@ services:
     # kernel branch's own start.dev.ts records for not making it a
     # system-dependency. The stack is fully usable without a solver.
     restart: 'unless-stopped'
+
+  # ── solver-frontend — the COW solver's read-only monitor site ───────────────
+  # The operations page: "is the solver quoting, and if not, why". Six-stage
+  # health strip, published ladders, the kernel's book and sync state, the
+  # relay's advertised tokens, and a bounded transition history.
+  #
+  # IT IS A SEPARATE SERVICE AND NOT A ROUTE ON THE SOLVER for one reason: the
+  # moment anyone actually opens it is the moment the solver is down. So it
+  # depends on `kernel` ONLY — never on `solver`, and least of all with
+  # `service_healthy` on it — and it comes up, renders the kernel's book, and
+  # says SOLVER UNREACHABLE with the time it was last seen instead of dying
+  # alongside the process it exists to describe.
+  #
+  # WHAT IT DOES NOT DO: it holds no wallet, no seed and no journal; it opens no
+  # relay socket; it has no route that mutates anything; and it never proxies an
+  # arbitrary path anywhere. It reads three sources — the solver's bearer-gated
+  # /status/* across this network, the kernel's REST API, and the sink's public
+  # GET /tokens — and serves one page plus /api/snapshot, /api/stream and its
+  # own /health.
+  #
+  # IT HAS NO AUTHENTICATION OF ITS OWN, which is why its host port binds
+  # ${BIND_ADDR} (127.0.0.1) like everything else here.
+  #
+  # It runs from the KERNEL image, not the solver image: the site lives in the
+  # same kernel workspace (`start.solver-frontend.ts`) and the kernel image is
+  # already built for the offerfiles profile this fragment requires. Using the
+  # solver image would make the monitor's lifetime depend on the solver build.
+  solver-frontend:
+    image: '${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}'
+    entrypoint: ['/usr/local/bin/entrypoint-solver-frontend.sh']
+    ports:
+      - '${BIND_ADDR:-127.0.0.1}:${SOLVER_FRONTEND_PORT:-10802}:8080'
+    environment:
+      # 0.0.0.0 inside the container so the published port above reaches it. The
+      # site's own resolver warns about a non-loopback host (it has no
+      # authentication) and starts anyway, which is right here.
+      SOLVER_FRONTEND_HOST: '0.0.0.0'
+      SOLVER_FRONTEND_PORT: '8080'
+      # The solver's status listener, over this network. The bearer is the SAME
+      # variable the solver enforces, so the two cannot drift; it is sent as
+      # `Authorization: Bearer` to the solver and reaches neither the browser
+      # nor /api/*.
+      SOLVER_FRONTEND_SOLVER_STATUS_URL: 'http://solver:9100'
+      SOLVER_FRONTEND_SOLVER_STATUS_TOKEN: '${SOLVER_STATUS_AUTH_TOKEN:-demo-cow-solver-status-token-000000000000}'
+      # Read directly, not through the solver: the page must keep showing the
+      # book and the sync state while the solver is down.
+      SOLVER_FRONTEND_ZSWAP_API: 'http://kernel:9999'
+      # The sink's RELAY port, not its page port. `GET /tokens` is the only
+      # relay route this site knows and the only unauthenticated one the
+      # reference relay has; the sink answers it from the last
+      # `solver-capabilities` frame (00010 Q13). Left unset the panel would just
+      # say "not configured" — pointing it at a port that 401s would be worse
+      # than either.
+      SOLVER_FRONTEND_RELAY_HTTP_URL: 'http://solver-sink:8081'
+      # How often the kernel and the sink are polled. The solver half prefers
+      # SSE and only polls while the stream is down. 4000 is also the code
+      # default, so a blank .env entry lands on the same number either way.
+      SOLVER_FRONTEND_POLL_MS: '${SOLVER_FRONTEND_POLL_MS:-4000}'
+      # Monitor-side transition history (solver up/down, relay connected,
+      # quoting/withdrawn, kernel sync). Bounded, in memory, never persisted.
+      SOLVER_FRONTEND_HISTORY_LIMIT: '${SOLVER_FRONTEND_HISTORY_LIMIT:-500}'
+    depends_on:
+      # The kernel, and NOTHING else. `solver` is deliberately absent — see the
+      # note above. `solver-sink` is absent too: an unreachable relay is one
+      # degraded panel, not a reason to keep the page down.
+      kernel: { condition: service_healthy }
+    healthcheck:
+      # /health is the SITE's own liveness (three keys, no internal data) and
+      # says nothing about the solver — a monitor whose health followed the
+      # thing it monitors would restart itself exactly when it is needed.
+      test:
+        - 'CMD'
+        - 'bun'
+        - '-e'
+        - 'const r = await fetch("http://127.0.0.1:8080/health"); process.exit(r.ok ? 0 : 1)'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    # unless-stopped, unlike the solver's own restart policy: this process
+    # trades nothing, so restarting it costs nothing and a monitor that stays
+    # down after a blip is worse than useless. A CONFIGURATION problem is still
+    # visible — start.solver-frontend.ts exits 1 with EVERY problem listed at
+    # once, and the loop reprints the same list rather than burying it.
+    restart: 'unless-stopped'
+
 
 volumes:
   # Declared here rather than created ad hoc: only a compose-created volume

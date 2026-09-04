@@ -27,8 +27,18 @@
 ARG AA_REPO=https://github.com/acedward/AA-midnight-evm-experiment-v3.git
 ARG AA_REF=713a20215f33e02904ea5bd699b7de7f76562e1b
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=b1420c4af6ed8b2510140418e5138d282365f9c6
-ARG COMPACT_VERSION=0.33.0-rc.2
+ARG KERNEL_REF=4af102536f02f137b696a4734bd8c936eddf3672
+# EMPTY ON PURPOSE — the compactc pin is READ FROM THE PINNED KERNEL TREE
+# (`infra/compact-version.txt`, 0.33.0-rc.2 at this KERNEL_REF), exactly as
+# images/offerfiles-kernel/Dockerfile does. This image compiles the kernel's
+# offer-files contract next to the AA contracts, and the console's offer
+# actions only work if those keys are the ones the kernel deploys — so the
+# version cannot be a second hard-coded copy that drifts. The AA contracts
+# compile with the SAME toolchain (the AA repo pins the same release asset);
+# the 0.33-line guard in stage 2 is what makes that assumption fail loudly
+# instead of silently if the kernel moves to 0.34 (see issues/00011-…).
+# `--build-arg COMPACT_VERSION=<x>` still overrides.
+ARG COMPACT_VERSION=
 # 1 (default): prune the Manager's .prover files — deploys need only verifier keys.
 # 0: keep them — required by the E2E, which CALLS execute (scripts/aa-e2e.sh builds
 # that variant as the :e2e tag; expect ~1.2 GB extra in the image).
@@ -75,7 +85,17 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates unzip bash \
  && rm -rf /var/lib/apt/lists/*
 
+# The compactc pin travels with the pinned kernel source — see the ARG note.
+COPY --from=source /kernel-src/infra/compact-version.txt /opt/compact-version.txt
+
 RUN set -eux; \
+    COMPACT_VERSION="${COMPACT_VERSION:-$(tr -d ' \t\n\r' < /opt/compact-version.txt)}"; \
+    test -n "${COMPACT_VERSION}" || { echo "infra/compact-version.txt is empty at this KERNEL_REF" >&2; exit 1; }; \
+    case "${COMPACT_VERSION}" in \
+      0.33.*) : ;; \
+      *) echo "FAIL: the pinned kernel declares compactc ${COMPACT_VERSION}, but the AA contracts at this AA_REF are a 0.33-line build. One compactc and one compact-runtime compile BOTH contract sets in this image — moving the kernel off 0.33 needs the AA re-pin tracked in issues/00011-aa-v3-repin-compactc-0.34.md, not a silent cross-toolchain build." >&2; exit 1 ;; \
+    esac; \
+    echo "compactc pin: ${COMPACT_VERSION} (from the pinned kernel tree)"; \
     case "${TARGETARCH:-arm64}" in \
       arm64) triple="aarch64-unknown-linux-musl" ;; \
       amd64) triple="x86_64-unknown-linux-musl" ;; \

@@ -3,9 +3,21 @@
   "private": true,
   "type": "module",
   "//": [
-    "The exact pin set the rest of this stack runs on (kernel PR #50 commit b1420c4 /",
-    "@effectstream/*@0.200.1). The override collapses ledger-v9 to ONE wasm copy \u2014",
-    "two copies in one process fail instanceof checks (the documented trap)."
+    "The AA console/deploy runner's OWN dependency tree. It is a separate process from the",
+    "kernel and does not share its lockfile, so this list is maintained here rather than",
+    "inherited. What MUST agree with the kernel pin",
+    "(effectstream/zswap-offerfiles-kernel @ 4af102536f02f137b696a4734bd8c936eddf3672,",
+    "branch ledger-v9 / PR #65) is what crosses the wire between them:",
+    "@midnightntwrk/ledger-v9 1.0.0-rc.3 (the offer blob's ledger types),",
+    "@effectstream/mip-zswap-offer 0.4.0-v9.0 (the MIP-0005 encoding the kernel parses),",
+    "and @midnight-ntwrk/compact-runtime 0.18.0-rc.1 next to compactc 0.33.0-rc.2, which is",
+    "the version the pinned kernel tree declares in infra/compact-version.txt and which the",
+    "image reads from there rather than hard-coding.",
+    "@effectstream/midnight-contracts and @effectstream/utils stay at 0.200.1 here while the",
+    "kernel resolves 0.200.2: they are used for this process's own network config and",
+    "contract helpers, never for anything the kernel deserializes.",
+    "The override collapses ledger-v9 to ONE wasm copy \u2014 two copies in one process fail",
+    "instanceof checks (the documented trap)."
   ],
   "dependencies": {
     "@effectstream/midnight-contracts": "0.200.1",

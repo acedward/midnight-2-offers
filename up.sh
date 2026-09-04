@@ -57,7 +57,9 @@ without it (that profile only).
 
 Every shipped profile is complete: offerfiles includes Celestia, the kernel and batcher;
 frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA; aa deploys and serves its console; solver is
-the observation-mode solver and authenticated sink; shielded-night funds its own wallets,
+the observation-mode solver, its authenticated sink and the read-only monitor site; poster funds a dedicated
+wallet and keeps the book non-empty by minting one coin and posting one offer per interval (it needs
+offerfiles); shielded-night funds its own wallets,
 deploys the NIGHT <-> sNight wrapper contract ONCE per stack and serves its dApp, depending on
 nothing but core. `--all` selects all of them.
 
@@ -350,6 +352,60 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]]; then
   # A running process is not enough: it must finish kernel discovery, connect
   # to the observation sink, and publish capabilities + its first ladder.
   wait_compose_healthy solver "${SOLVER_WAIT_TIMEOUT:-300}" || FAILED=1
+  # The monitor site. Its healthcheck is the SITE's own /health and says nothing
+  # about the solver — deliberately, since a monitor whose health followed the
+  # thing it monitors would be down exactly when it is needed. So this wait
+  # proves the page is served, not that the solver is quoting; the solver wait
+  # above is what proves the latter.
+  if (( ! FAILED )); then
+    wait_compose_healthy solver-frontend 120 || FAILED=1
+  fi
+fi
+
+# The offer poster. Its healthcheck cannot come up until the wallet has synced,
+# registered its dust address and seen a spendable DUST UTXO, and the contract
+# has been joined — minutes on a cold 2.x chain, which is why the timeout is its
+# own variable.
+#
+# `degraded` is a WARNING here and not a failure: the poster is up, it is telling
+# the truth about why it is not minting yet, and the funding one-shot may simply
+# still be settling. `./verify.sh --poster` is the gate that turns that into a
+# FAIL, because a gate that also had to wait would either be flaky or slow.
+if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]]; then
+  wait_compose_healthy offer-poster "${POSTER_WAIT_TIMEOUT:-900}" || FAILED=1
+  if (( ! FAILED )); then
+    POSTER_HEALTH_JSON="$(curl -fsS --max-time 10 \
+      "http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health" 2>/dev/null || true)"
+    # `state` is one of starting|ok|degraded|unhealthy|stopping, and `lastFailure`
+    # carries the reason a tick could not mint (e.g. insufficient_dust).
+    POSTER_STATE="$(printf '%s' "$POSTER_HEALTH_JSON" \
+      | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+print(d.get("state") or "unknown")' 2>/dev/null || true)"
+    POSTER_WHY="$(printf '%s' "$POSTER_HEALTH_JSON" \
+      | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+print(d.get("lastFailure") or d.get("lastError") or "")' 2>/dev/null || true)"
+    case "$POSTER_STATE" in
+      ok)
+        info "offer-poster is minting and posting (state=ok)" ;;
+      degraded|starting)
+        warn "offer-poster state=${POSTER_STATE}${POSTER_WHY:+ (${POSTER_WHY})} — up, and honest about why it is not minting yet"
+        info "  ./verify.sh --poster is the gate; give it a few minutes, or check: ENV_FILE=${ENV_FILE:-.env} docker compose … logs poster-fund" ;;
+      unhealthy)
+        err "offer-poster state=unhealthy${POSTER_WHY:+ (${POSTER_WHY})} — HEALTH_STALE_TICKS consecutive failed ticks"
+        info "  ${POSTER_HEALTH_JSON:0:400}"
+        FAILED=1 ;;
+      *)
+        warn "offer-poster /health did not report a state (${POSTER_STATE:-no answer}) — ./verify.sh --poster is the gate" ;;
+    esac
+  fi
 fi
 
 if (( FAILED )); then
@@ -386,6 +442,10 @@ if [[ " $PROFILES " == *" shielded-night "* ]]; then
 fi
 if [[ " $PROFILES " == *" solver "* ]]; then
   info "solver feed        http://${HOST_ADDR}:${SOLVER_SINK_HOST_PORT:-10800}   (observation-only)"
+  info "solver monitor     http://${HOST_ADDR}:${SOLVER_FRONTEND_PORT:-10802}   (read-only: is it quoting, and if not why)"
+fi
+if [[ " $PROFILES " == *" poster "* ]]; then
+  info "offer poster       http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health   (mints one coin, posts one offer, every interval)"
 fi
 echo
 info "next: ./verify.sh    (health + prefunded wallet assertions)"

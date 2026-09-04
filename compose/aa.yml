@@ -84,7 +84,7 @@ services:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
         AA_REF: '${AA_REF:-713a20215f33e02904ea5bd699b7de7f76562e1b}'
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        KERNEL_REF: '${KERNEL_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
+        KERNEL_REF: '${KERNEL_REF:-4af102536f02f137b696a4734bd8c936eddf3672}'
         # Optional k=18 execute overlay (halved prover key, ~2x faster proofs;
         # unaudited-compiler caveat — see the Dockerfile). KEY-BREAKING: wipe
         # the aa-out artifact and redeploy after flipping this.
@@ -130,7 +130,7 @@ services:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
         AA_REF: '${AA_REF:-713a20215f33e02904ea5bd699b7de7f76562e1b}'
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        KERNEL_REF: '${KERNEL_REF:-b1420c4af6ed8b2510140418e5138d282365f9c6}'
+        KERNEL_REF: '${KERNEL_REF:-4af102536f02f137b696a4734bd8c936eddf3672}'
         AA_PRUNE_MANAGER_PROVERS: '0'
         AA_EXECUTE_K18: '${AA_EXECUTE_K18:-0}'
       additional_contexts:
@@ -158,6 +158,19 @@ services:
       AA_OFFER_ALLOW_FALLIBLE: '${AA_OFFER_ALLOW_FALLIBLE:-1}'
       # Host-reachable sink page URL for the Offers+Solver tab's iframe.
       AA_SINK_PUBLIC_URL: '${AA_SINK_PUBLIC_URL:-http://127.0.0.1:${SOLVER_SINK_HOST_PORT:-10800}}'
+      # …and the COW solver's read-only MONITOR SITE, same tab, second frame.
+      # A HOST url, like the sink's above: the browser is what loads it, so a
+      # compose hostname would resolve to nothing.
+      AA_SOLVER_FRONTEND_PUBLIC_URL: '${AA_SOLVER_FRONTEND_PUBLIC_URL:-http://127.0.0.1:${SOLVER_FRONTEND_PORT:-10802}}'
+      # The three the CONSOLE PROCESS reaches over the compose network, for the
+      # infrastructure tab's probes. `solver:9100` is the solver's status
+      # listener: the console asks only its OPEN GET /health (no internal data,
+      # no bearer needed, and it is deliberately given none) — /status/* stays
+      # between the solver and the monitor site. All three answer `absent` when
+      # their profile is not up, which is the normal case for an aa-only stack.
+      AA_SOLVER_FRONTEND_URL: '${AA_SOLVER_FRONTEND_URL:-http://solver-frontend:8080}'
+      AA_SOLVER_STATUS_URL: '${AA_SOLVER_STATUS_URL:-http://solver:9100}'
+      AA_OFFER_POSTER_URL: '${AA_OFFER_POSTER_URL:-http://offer-poster:9977}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
     volumes:

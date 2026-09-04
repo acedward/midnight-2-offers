@@ -249,6 +249,11 @@ step() {  # step <n> <label> <command...>
 #               belongs to the networked gate, not here)
 #   compose     the RENDERED compose configuration really asks for those bytes, with the
 #               proof-cache topology that was tested
+#   pin defaults every default of one SOURCE pin (KERNEL_REF, SOLVER_REF, …) agrees across
+#               compose/, images/, scripts/ and .env.example. `verify-source-pins.sh` in
+#               step 4b compares the RUNNING image against ONE of those copies, so a split
+#               pin (which is exactly what this repo shipped before 00010) reads there as a
+#               stale image instead of as the configuration defect it is.
 #
 # Each runs `--self-test` where it has one, so a check that stopped biting is reported as a
 # failure rather than passing vacuously.
@@ -259,10 +264,13 @@ static_gates() {
   python3 "$REPO_ROOT/images/proof-server-mirror/verify-mirror.py" \
     --level offline >/dev/null && ok "proof-server mirror record verified (offline)" || rc=1
   "$REPO_ROOT/scripts/verify-compose-pins.sh" --self-test                || rc=1
+  "$REPO_ROOT/scripts/verify-pin-defaults.sh"                            || rc=1
+  "$REPO_ROOT/scripts/verify-pin-defaults.sh" --self-test >/dev/null \
+    && ok "pin-defaults check self-test passed" || rc=1
   return $rc
 }
 
-step 1 "offline artifact gates: decisions, fetch pins, mirror record, compose pins" \
+step 1 "offline artifact gates: decisions, fetch pins, mirror record, compose pins, source-pin defaults" \
   static_gates || true
 
 if step 2 "up --build ${PROFILE_ARGS[*]:-(core only)}" \
