@@ -202,6 +202,53 @@ services:
 
   # ── shielded-night-verify ──────────────────────────────────────────────────
   # NEVER STARTED BY `up.sh`. The compose `profiles:` key is how — `up.sh` never passes
+  # ── shielded-night-register ─────────────────────────────────────────────────
+  # Teaches the offer-files kernel THIS stack's sNight colour (infra issue 00012).
+  #
+  # The kernel's schema seeds a `SNIGHT` row whose colour is PREVIEW's, and sNight's colour is
+  # not a constant: the contract mints `tokenType(pad(32,"shielded-night:wrapper"), self())`, so
+  # it follows the contract ADDRESS, which this profile deploys fresh per stack. Left alone, the
+  # registry names a colour this stack can never hold while the colour it does hold has no name.
+  #
+  # NO `depends_on: kernel`, deliberately. A profile here IS a fragment filename, so the kernel
+  # service does not exist when compose/offerfiles.yml is out of the file set, and naming it
+  # would break every `--with shielded-night` stack (the constraint that ruled out option B in
+  # questions Q20). The entrypoint discriminates by DNS instead: an unresolvable `kernel` means
+  # the profile is absent, and it logs one line and exits 0.
+  shielded-night-register:
+    image: '${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-2-offers/shielded-night-deploy:local}'
+    build:
+      context: '../images/shielded-night'
+      target: 'deploy'
+      args: *shielded_night_build_args
+    entrypoint: ['/usr/local/bin/entrypoint-register-token.sh']
+    restart: 'no'
+    volumes:
+      # Read-only: this one-shot consumes the deploy record, it never publishes one.
+      - 'shielded-night-deploy:/srv/shielded-night:ro'
+    environment:
+      <<: *shielded_night_env
+      # Container ports, never host ports — both are compose-network reads/writes.
+      ZSWAP_API: '${SHIELDED_NIGHT_ZSWAP_API:-http://kernel:9999}'
+      # The kernel's own four. The registry has no update route (questions Q29), so the one
+      # case the API cannot express — a SNIGHT row that exists with the wrong colour — is one
+      # `UPDATE ... WHERE name='SNIGHT'`, which is what the kernel's 000-init.sql tells
+      # operators to run. Everything else goes through POST, and the result is always re-read
+      # through GET /v1/known-tokens.
+      DB_HOST: 'postgres'
+      DB_PORT: '5432'
+      DB_NAME: '${OFFERFILES_PG_DB:-offerfiles}'
+      DB_USER: '${OFFERFILES_PG_USER:-offerfiles}'
+      DB_PW: '${OFFERFILES_PG_PASSWORD:-offerfiles}'
+      # NIGHT's asset: sNight is locked 1:1, so one sNight base unit is one Star and the two
+      # rows must price identically, or an equal-base-unit NIGHT <-> sNight offer stops being
+      # at par under the batcher's sponsorship gate.
+      SNIGHT_ASSET_ID: '${SNIGHT_ASSET_ID:-midnight-3}'
+    depends_on:
+      # ONLY the deploy one-shot: it is what publishes the address this reads, and it is in
+      # this same fragment.
+      shielded-night-deploy: { condition: service_completed_successfully }
+
   # `--profile`, so a service carrying one is declared and rendered but never brought up. That
   # is the same idiom compose/core.yml's toolkit `fund` service uses, and
   # scripts/verify-compose-pins.sh renders with BOTH profile names so this service's pins are
