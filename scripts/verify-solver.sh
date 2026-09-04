@@ -10,7 +10,9 @@
 #                         observation-safety counters are still zero. This is the
 #                         only place "nothing was ever sent to the solver" can be
 #                         asserted, because the sink is the thing that would have
-#                         had to send it.
+#                         had to send it. Read through `docker exec`, not a host
+#                         port: the sink publishes nothing since its feed page
+#                         was retired in favour of the monitor site.
 #   the STATUS listener   the solver's own view of itself (:9100, inside the
 #                         compose network). Asserted through the bearer gate in
 #                         BOTH directions — 200 with, 401 without — because a
@@ -27,8 +29,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 
 load_env
-SPORT="${SOLVER_SINK_HOST_PORT:-10800}"
-BASE="http://${HOST_ADDR}:${SPORT}"
 MPORT="${SOLVER_FRONTEND_PORT:-10802}"
 MBASE="http://${HOST_ADDR}:${MPORT}"
 FAILURES=0
@@ -41,15 +41,47 @@ service_cid() { # <service>
     --filter "label=com.docker.compose.service=$1" 2>/dev/null | head -1
 }
 
-health="$(curl -fsS --max-time 10 "$BASE/health" 2>/dev/null || true)"
-if [[ "$health" == *'"status":"ok"'* && "$health" == *'"solverConnected":true'* ]]; then
-  ok "solver sink healthy and solver connected on :${SPORT}"
-else
-  err "solver sink health does not report a connected solver on :${SPORT}"
+# Everything the sink serves is INTERNAL now, so every read below goes through
+# the container. Losing the host port lost nothing: the sink's own image has
+# bun, so `docker exec` reaches the same process the solver is pushing to.
+SINK_CID="$(service_cid solver-sink)"
+sink_get() { # <path>  -> body on stdout, non-zero if it did not answer
+  [[ -n "$SINK_CID" ]] || return 1
+  docker exec "$SINK_CID" bun -e "
+    const r = await fetch('http://127.0.0.1:8080$1');
+    if (!r.ok) process.exit(1);
+    process.stdout.write(await r.text());
+  " 2>/dev/null
+}
+
+if [[ -z "$SINK_CID" ]]; then
+  err "no solver-sink container for project '${COMPOSE_PROJECT_NAME}'"
   FAILURES=$(( FAILURES + 1 ))
 fi
 
-snapshot="$(curl -fsS --max-time 10 "$BASE/api/snapshot" 2>/dev/null || true)"
+health="$(sink_get /health || true)"
+if [[ "$health" == *'"status":"ok"'* && "$health" == *'"solverConnected":true'* ]]; then
+  ok "solver sink healthy and solver connected (internal :8080)"
+else
+  err "solver sink health does not report a connected solver (internal :8080)"
+  FAILURES=$(( FAILURES + 1 ))
+fi
+
+# The negative that makes "internal" mean something: nothing of the sink may be
+# published to the host any more. `docker port` lists what the daemon actually
+# published, so an empty answer for BOTH listeners is the assertion.
+if [[ -n "$SINK_CID" ]]; then
+  published="$(docker port "$SINK_CID" 2>/dev/null || true)"
+  if [[ -n "$published" ]]; then
+    err "the solver sink publishes host port(s) — it is an internal service: ${published//$'\n'/, }"
+    info "  remove the ports: entries in compose/solver.yml; the monitor site is the page"
+    FAILURES=$(( FAILURES + 1 ))
+  else
+    ok "solver sink publishes nothing to the host"
+  fi
+fi
+
+snapshot="$(sink_get /api/snapshot || true)"
 if [[ -n "$snapshot" ]]; then
   if summary="$(printf '%s' "$snapshot" | python3 -c '
 import json, sys
@@ -87,7 +119,6 @@ fi
 # `GET /tokens` on the sink's RELAY port is the one relay route the monitor site
 # reads, and the only unauthenticated one the reference relay has. Asserted here
 # because the monitor's Relay panel is otherwise silently empty.
-SINK_CID="$(service_cid solver-sink)"
 if [[ -n "$SINK_CID" ]]; then
   if tokens="$(docker exec "$SINK_CID" bun -e '
       const r = await fetch("http://127.0.0.1:8081/tokens");
@@ -101,9 +132,6 @@ if [[ -n "$SINK_CID" ]]; then
     err "sink GET /tokens did not answer a { tokens: [] } body — the monitor's Relay panel will show an error"
     FAILURES=$(( FAILURES + 1 ))
   fi
-else
-  err "no solver-sink container for project '${COMPOSE_PROJECT_NAME}'"
-  FAILURES=$(( FAILURES + 1 ))
 fi
 
 # ── the status listener, from inside the network ─────────────────────────────

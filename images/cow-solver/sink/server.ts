@@ -21,18 +21,26 @@
 // non-zero count means something dispatched work and is a real alarm.
 //
 // ─── PORTS ──────────────────────────────────────────────────────────────────
-// Two listeners, deliberately, so the authenticated ingress and the public
-// read-only surface are separable at the firewall:
-//   SINK_RELAY_PORT  (default 8081) — solver-facing. Bearer-authenticated WS
-//                     upgrade, plus `GET /jobs/:jobId` because a live solver
-//                     requires SOLVER_RELAY_HTTP_URL for durable recovery, and
-//                     `GET /tokens` (unauthenticated, as on the real relay)
-//                     because it is the one relay route the upstream monitor
-//                     site reads.
-//   SINK_PUBLIC_PORT (default 8080) — browsers. The page, `GET /api/snapshot`,
-//                     `GET /api/stream` (SSE) and `GET /ws` (WebSocket).
-
-import { join } from "node:path";
+// Two listeners, deliberately, so the authenticated ingress and the read-only
+// observation surface stay separable. NEITHER IS PUBLISHED TO THE HOST any
+// more: the sink used to serve its own feed page on 10800, and that page was
+// retired in favour of the upstream `solver-frontend` monitor, which is now
+// this stack's ONE page about the solver. What the sink still is, is the
+// relay's receive half plus the only place the observation-safety counters can
+// be read.
+//   SINK_RELAY_PORT    (default 8081) — solver-facing. Bearer-authenticated WS
+//                       upgrade, plus `GET /jobs/:jobId` because a live solver
+//                       requires SOLVER_RELAY_HTTP_URL for durable recovery,
+//                       and `GET /tokens` (unauthenticated, as on the real
+//                       relay) because it is the one relay route the monitor
+//                       site reads.
+//   SINK_SNAPSHOT_PORT (default 8080) — observation. `GET /api/snapshot` (the
+//                       wire state and the safety counters, read by
+//                       scripts/verify-solver.sh and by the AA console's infra
+//                       probe over the compose network) and `GET /health`.
+//                       Nothing here renders anything: there is no page, no
+//                       SSE stream and no browser WebSocket, because there is
+//                       no browser on this port.
 
 import {
   frameKind,
@@ -43,13 +51,12 @@ import {
   type SolverCapabilitiesMessage,
 } from "./wire.ts";
 
-const PUBLIC_PORT = Number(process.env["SINK_PUBLIC_PORT"] ?? 8080);
+const SNAPSHOT_PORT = Number(process.env["SINK_SNAPSHOT_PORT"] ?? 8080);
 const RELAY_PORT = Number(process.env["SINK_RELAY_PORT"] ?? 8081);
 const AUTH_TOKEN = process.env["SOLVER_RELAY_AUTH_TOKEN"] ?? "";
 const ZSWAP_API = (process.env["ZSWAP_API"] ?? "http://kernel:9999").replace(/\/$/, "");
 const BOOK_POLL_MS = Number(process.env["SINK_BOOK_POLL_MS"] ?? 4000);
 const HISTORY_LIMIT = Number(process.env["SINK_HISTORY_LIMIT"] ?? 200);
-const PUBLIC_DIR = join(import.meta.dir, "public");
 
 // The relay refuses a bearer shorter than 32 characters and so does this sink.
 // Failing at BOOT rather than at the first upgrade is deliberate: a sink that
@@ -61,7 +68,7 @@ if (AUTH_TOKEN.length < 32) {
   );
   process.exit(1);
 }
-for (const [name, value] of [["SINK_PUBLIC_PORT", PUBLIC_PORT], ["SINK_RELAY_PORT", RELAY_PORT]] as const) {
+for (const [name, value] of [["SINK_SNAPSHOT_PORT", SNAPSHOT_PORT], ["SINK_RELAY_PORT", RELAY_PORT]] as const) {
   if (!Number.isInteger(value) || value <= 0 || value > 65535) {
     console.error(`[sink] ${name} must be a valid port, got ${value}`);
     process.exit(1);
@@ -162,7 +169,6 @@ async function pollBook(): Promise<void> {
   } catch {
     // The sync-health read is a nicety; its absence must not blank the book.
   }
-  broadcast();
 }
 
 // ─── admission view ──────────────────────────────────────────────────────────
@@ -261,31 +267,6 @@ function snapshot(): unknown {
   };
 }
 
-// ─── browser fan-out ─────────────────────────────────────────────────────────
-
-const browserSockets = new Set<{ send: (data: string) => unknown }>();
-const sseControllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
-const encoder = new TextEncoder();
-
-function broadcast(): void {
-  const payload = JSON.stringify(snapshot());
-  for (const socket of browserSockets) {
-    try {
-      socket.send(payload);
-    } catch {
-      // A browser that cannot be written to is dropped by its own close handler.
-    }
-  }
-  const frame = encoder.encode(`data: ${payload}\n\n`);
-  for (const controller of sseControllers) {
-    try {
-      controller.enqueue(frame);
-    } catch {
-      sseControllers.delete(controller);
-    }
-  }
-}
-
 // ─── the solver-facing listener ──────────────────────────────────────────────
 
 function authorized(request: Request): boolean {
@@ -327,7 +308,6 @@ function handleSolverFrame(raw: unknown): void {
     state.framesRejected += 1;
     record(kind, false, "ALARM: a job frame arrived although no job was ever dispatched");
     console.error(`[sink] ALARM: received ${kind} in observation mode — no job was dispatched`);
-    broadcast();
     return;
   }
 
@@ -341,7 +321,6 @@ function handleSolverFrame(raw: unknown): void {
       true,
       `${capabilities.tokenIds.length} token(s), maxParallelSwaps=${capabilities.maxParallelSwaps ?? "default(8)"}`,
     );
-    broadcast();
     return;
   }
 
@@ -357,7 +336,6 @@ function handleSolverFrame(raw: unknown): void {
     } else {
       record("price-levels", true, `${levels.levels.length} pair(s), ${rungs} rung(s)`);
     }
-    broadcast();
     return;
   }
 
@@ -366,7 +344,6 @@ function handleSolverFrame(raw: unknown): void {
   // silent discard is exactly the failure this page exists to make visible.
   state.framesRejected += 1;
   record(kind, false, "frame refused by the relay-faithful predicates");
-  broadcast();
 }
 
 Bun.serve({
@@ -422,7 +399,6 @@ Bun.serve({
       state.lastConnectedAt = Date.now();
       record("connection", true, "solver connected");
       console.log("[sink] solver connected");
-      broadcast();
     },
     message(_ws, message) {
       handleSolverFrame(typeof message === "string" ? message : new TextDecoder().decode(message));
@@ -432,75 +408,32 @@ Bun.serve({
       state.lastDisconnectedAt = Date.now();
       record("connection", true, "solver disconnected");
       console.log("[sink] solver disconnected");
-      broadcast();
     },
   },
 });
 
-// ─── the public listener ─────────────────────────────────────────────────────
+// ─── the observation listener ────────────────────────────────────────────────
+//
+// Unpublished, and deliberately tiny. Its only readers are inside the compose
+// network: scripts/verify-solver.sh (through `docker exec`) and the AA
+// console's infra probe. The feed page that used to live here was removed when
+// the monitor site became the official page — see docs/COMPONENTS.md.
 
 Bun.serve({
-  port: PUBLIC_PORT,
+  port: SNAPSHOT_PORT,
   hostname: "0.0.0.0",
-  async fetch(request, server) {
+  fetch(request) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/ws") {
-      if (server.upgrade(request)) return undefined;
-      return new Response("expected a websocket upgrade", { status: 426 });
-    }
-    if (url.pathname === "/api/snapshot") {
+    if (request.method === "GET" && url.pathname === "/api/snapshot") {
       return Response.json(snapshot(), {
         headers: { "cache-control": "no-store" },
       });
     }
-    if (url.pathname === "/api/stream") {
-      let self: ReadableStreamDefaultController<Uint8Array> | null = null;
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          self = controller;
-          sseControllers.add(controller);
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(snapshot())}\n\n`));
-        },
-        cancel() {
-          if (self) sseControllers.delete(self);
-        },
-      });
-      return new Response(stream, {
-        headers: {
-          "content-type": "text/event-stream",
-          "cache-control": "no-store",
-          connection: "keep-alive",
-        },
-      });
-    }
-    if (url.pathname === "/health") {
+    if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ status: "ok", solverConnected: state.solverConnected });
     }
-
-    const name = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/+/, "");
-    // Serve only from PUBLIC_DIR, and only names without traversal.
-    if (/^[a-zA-Z0-9._-]+$/.test(name)) {
-      const file = Bun.file(join(PUBLIC_DIR, name));
-      if (await file.exists()) return new Response(file);
-    }
     return new Response("not found", { status: 404 });
-  },
-  websocket: {
-    open(ws) {
-      browserSockets.add(ws);
-      try {
-        ws.send(JSON.stringify(snapshot()));
-      } catch {
-        // The close handler cleans up a socket that cannot take the first frame.
-      }
-    },
-    message() {
-      // The browser surface is read-only. Nothing a page sends is honoured.
-    },
-    close(ws) {
-      browserSockets.delete(ws);
-    },
   },
 });
 
@@ -509,6 +442,6 @@ void pollBook();
 
 console.log(
   `[sink] observation mode — relay ingress :${RELAY_PORT} (bearer-authenticated), ` +
-    `public :${PUBLIC_PORT}, kernel ${ZSWAP_API}`,
+    `snapshot :${SNAPSHOT_PORT} (unpublished), kernel ${ZSWAP_API}`,
 );
 console.log(`[sink] wire contract ${RELAY_WS_CONTRACT_REVISION}; NO swap job will ever be dispatched`);

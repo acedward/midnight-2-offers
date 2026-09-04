@@ -161,6 +161,14 @@ control is worse than one that is gone.
   everything else here. Put a reverse proxy in front of it before it reaches any wider network,
   and note that its SSE feed needs response buffering off and a read timeout longer than the
   five-minute stream lifetime.
+- **The solver sink is internal, and that is a deliberate loss of a debugging surface.** Its feed
+  page (`:10800`) and its relay-inspection port (`:10801`) were removed on 2026-09-04 so the
+  monitor site is the ONE page about the solver. The sink still holds the only proof that nothing
+  was ever sent to the solver (`framesSentToSolver == 0`), and `./verify.sh --solver` still asserts
+  it — through `docker exec`, not a host port. To look at it by hand:
+  `docker exec $(docker ps -q -f label=com.docker.compose.service=solver-sink) bun -e 'console.log(await (await fetch("http://127.0.0.1:8080/api/snapshot")).text())'`.
+  Block offsets +10 and +11 of `pick-ports.sh` are now unused rather than renumbered, on purpose:
+  renumbering would have moved every port above them on every existing stack.
 - **The `poster` profile only works on `undeployed`,** and needs `--with offerfiles`: it mints
   through the offer-files contract's permissionless dev faucet circuit, which exists for this
   devnet. Its seed is public like every other seed here, and it must never be scaled past one

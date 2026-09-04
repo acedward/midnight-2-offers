@@ -469,25 +469,17 @@
   </section>
 
   <section class="wide">
-    <h2>Solver ladder feed <span class="pill dim">solver-sink</span></h2>
-    <!-- The sink's OWN page (it receives the solver's relay-WS frames and
-         renders them) — embedded rather than re-implemented here. src is set
-         lazily from /api/info's sinkPublicUrl on first tab activation. -->
-    <iframe id="solver-frame" title="COW solver sink" style="width:100%;height:70vh;border:1px solid var(--edge);border-radius:8px;background:#0d1117;display:block"></iframe>
-    <p class="note">If it does not load, the solver profile is down — or
-      <a id="solver-frame-link" href="#" target="_blank" rel="noopener">open the sink page in its own tab</a>.</p>
-  </section>
-
-  <section class="wide">
     <h2>Solver monitor <span class="pill dim">solver-frontend</span></h2>
-    <!-- TWO PAGES ABOUT ONE SOLVER, on purpose. The feed above is what the RELAY
-         received — the outside view, and the only place "nothing was ever sent
-         to the solver" can be shown. This is the solver's OWN view of itself,
-         read from its status listener on :9100 (unpublished, bearer-gated; this
-         page is its only intended reader): the six-stage health strip, the
-         ladders it published, the kernel book it derived them from, and why it
-         is not quoting when it is not. src is set lazily from /api/info's
-         solverFrontendUrl on first tab activation. -->
+    <!-- THE page about the solver. The sink's own ladder feed used to be framed
+         above this one; two pages about one solver was one too many, so the
+         sink went internal and this is what is left. It is the solver's OWN
+         view of itself, read from its status listener on :9100 (unpublished,
+         bearer-gated; this page is its only intended reader): the six-stage
+         health strip, the ladders it published, the kernel book it derived them
+         from, and why it is not quoting when it is not. The observation-safety
+         counters the sink alone can prove are asserted by
+         scripts/verify-solver.sh, not rendered here. src is set lazily from
+         /api/info's solverFrontendUrl on first tab activation. -->
     <iframe id="solver-monitor-frame" title="COW solver monitor" style="width:100%;height:70vh;border:1px solid var(--edge);border-radius:8px;background:#0d1117;display:block"></iframe>
     <p class="note">Reads the solver's status listener, the kernel API and the sink's
       <code>GET /tokens</code>; it holds no wallet and mutates nothing. If it says

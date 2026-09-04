@@ -218,11 +218,15 @@ exists to describe. It holds no wallet, no seed and no journal, opens no relay s
 route that mutates anything. It has **no authentication of its own**, which is why its host port
 binds `BIND_ADDR` (127.0.0.1) like everything else here.
 
-**Two pages about one solver, on purpose.** The `solver-sink` feed page (`:10800`) shows what the
-RELAY received — the outside view, and the only place the observation-safety property
-(`framesSentToSolver == 0`) can be demonstrated, because the sink is the thing that would have
-had to send. The monitor shows the solver's own account of itself. The console's COW solver tab
-embeds both.
+**One page about the solver, and the sink is not it.** The sink used to serve its own ladder-feed
+page on `:10800` next to the monitor, and the console framed both. Two pages about one solver was
+one too many, so as of 2026-09-04 the sink publishes NOTHING to the host: no feed page, and no
+relay-inspection port either. What it still is, is the relay's RECEIVE half — the thing the solver
+must connect to in order to publish ladders at all — and the only place the observation-safety
+property (`framesSentToSolver == 0`) can be demonstrated, because it is the thing that would have
+had to send. That proof did not move, it just stopped needing a browser: `scripts/verify-solver.sh`
+reads `GET /api/snapshot` on the sink's internal `:8080` through `docker exec`, and the AA
+console's infra probe reads it over the compose network. The monitor site is the page.
 
 The sink also gained `GET /tokens` on its relay port — unauthenticated, as on the reference
 relay, and the only relay route the monitor knows. It answers from the last `solver-capabilities`

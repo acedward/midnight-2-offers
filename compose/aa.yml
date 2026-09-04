@@ -156,11 +156,11 @@ services:
       # foreign taker settled one on-chain anyway (ledger-exact). Unset to fail
       # closed at the FR-302 gate (see runner/aa-offer.ts).
       AA_OFFER_ALLOW_FALLIBLE: '${AA_OFFER_ALLOW_FALLIBLE:-1}'
-      # Host-reachable sink page URL for the Offers+Solver tab's iframe.
-      AA_SINK_PUBLIC_URL: '${AA_SINK_PUBLIC_URL:-http://127.0.0.1:${SOLVER_SINK_HOST_PORT:-10800}}'
-      # …and the COW solver's read-only MONITOR SITE, same tab, second frame.
-      # A HOST url, like the sink's above: the browser is what loads it, so a
-      # compose hostname would resolve to nothing.
+      # The COW solver's read-only MONITOR SITE — the ONE page about the solver,
+      # framed by the Offers+Solver tab. A HOST url: the browser is what loads
+      # it, so a compose hostname would resolve to nothing. (The sink's own feed
+      # page used to be framed next to it; it was removed, and the sink is now
+      # internal-only.)
       AA_SOLVER_FRONTEND_PUBLIC_URL: '${AA_SOLVER_FRONTEND_PUBLIC_URL:-http://127.0.0.1:${SOLVER_FRONTEND_PORT:-10802}}'
       # The three the CONSOLE PROCESS reaches over the compose network, for the
       # infrastructure tab's probes. `solver:9100` is the solver's status

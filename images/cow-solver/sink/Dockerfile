@@ -16,11 +16,12 @@ WORKDIR /app
 # Source only — nothing is installed, so there is no lockfile to honour and no
 # network step in this build.
 COPY wire.ts server.ts ./
-COPY public ./public
 
-# :8080 public (page + snapshot + streams), :8081 solver ingress (bearer WS +
-# GET /jobs/:jobId). Two listeners so the authenticated ingress and the public
-# read-only surface can be firewalled apart.
+# :8080 observation (GET /api/snapshot + /health), :8081 solver ingress (bearer
+# WS + GET /jobs/:jobId + GET /tokens). Two listeners so the authenticated
+# ingress and the read-only observation surface stay separable. NEITHER is
+# published to the host: the sink's own feed page was retired in favour of the
+# upstream solver-frontend monitor, so there is no browser on either port.
 EXPOSE 8080 8081
 
 # Bun runs the TypeScript directly; no build step.

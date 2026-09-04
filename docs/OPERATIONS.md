@@ -150,7 +150,7 @@ new service means a new offset rather than a new fixed number. The current layou
 | +5, +6 | `KERNEL_HOST_PORT`, `BATCHER_HOST_PORT` | 9999 / 3334 |
 | +7 | `CELESTIA_HOST_PORT` | 26658 |
 | +8, +9 | `FRONTEND_HOST_PORT`, `AA_CONSOLE_HOST_PORT` | 10600 / 10700 |
-| +10, +11 | `SOLVER_SINK_HOST_PORT`, `SOLVER_RELAY_HOST_PORT` | 10800 / 10801 |
+| +10, +11 | *(unused)* — were the solver sink's feed page and relay-inspection port until 2026-09-04. Left free rather than renumbered, so every other offset in the block is unchanged | — |
 | +12 | `SHIELDED_NIGHT_HOST_PORT` | 10900 |
 | +13 | `SOLVER_FRONTEND_PORT` — the COW solver's monitor site | 10802 |
 | +14 | `POSTER_HEALTH_PORT` — the offer poster's health/metrics/journal | 10803 |
@@ -159,10 +159,13 @@ The `prices` profile adds **no offset**: `price-feed` publishes nothing at all. 
 CoinGecko in, `asset_prices` out — and what it wrote is read back through the kernel's already
 published `GET /v1/prices`.
 
-Two ports are deliberately NOT in that table because they are never published: the shared
-`postgres:5432`, and the COW solver's status listener `solver:9100`, which serves the solver's
-entire internal state behind a Bearer and is read only by the monitor site over the compose
-network. `scripts/verify-solver.sh` asserts `docker port <solver> 9100` is empty.
+Three things are deliberately NOT in that table because they are never published: the shared
+`postgres:5432`; the COW solver's status listener `solver:9100`, which serves the solver's entire
+internal state behind a Bearer and is read only by the monitor site over the compose network; and
+**the whole `solver-sink`** — both its solver-facing relay ingress (`:8081`) and its observation
+surface (`:8080`). `scripts/verify-solver.sh` asserts `docker port <solver> 9100` is empty and
+that `docker port <solver-sink>` is empty entirely, and it reads the sink's snapshot through
+`docker exec` rather than a host port.
 
 ### The swap SPA on a non-default port block
 
