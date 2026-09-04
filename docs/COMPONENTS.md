@@ -97,17 +97,22 @@ and token-first Withdraw / Transfer / Publish Offer. The
 browser holds no Midnight wallet and no prover: it signs `eth_signTypedData_v4` requests that
 the console's relay builds with the AA repo's own EIP-712 codec, and the relay recovers the
 signer's secp256k1 point from the signature (the `pk` argument `execute` needs — no EVM wallet
-exposes it), proves `execute` through the profile's internal proof server (~1 min with the
-k=18 MinoCrab overlay, ~2 min at stock k=19; the page shows the live job log) and submits,
+exposes it), proves `execute` through the profile's internal proof server (~1 min on the default
+MinoCrab k=18 artifact, ~2 min on compactc's k=19; the page shows the live job log, and the log
+line names which artifact it is proving — read off the image, not off a build flag) and submits,
 paying fees from its own relay wallet
 (`aa-console` in `wallets/wallets.json`, funded automatically by `up.sh` — unshielded NIGHT +
-DUST only, deliberately shielded-free). The console's image variant keeps the 1.1 GB
-`execute.prover` the deploy image prunes (`midnight-2-offers/aa-contracts:console`).
+DUST only, deliberately shielded-free). The console's image variant keeps the Manager's
+`execute.prover`, which the deploy image prunes (`midnight-2-offers/aa-contracts:console`) —
+544 MiB on the default, 1.14 GB with `AA_ZKIR_SOURCE=compactc`. It is kept because the RELAY
+proves, not the proof server: the key is read out of the image by the zk-config provider and
+uploaded per call.
 `AA_CONSOLE_DEV_SIGNER=1` enables a built-in test signer for wallet-less CI runs; leave it off
 otherwise. The one-time withdraw limitation is GONE: the node's `Custom error: 214` (a
 recipient-encoding defect in the Manager) was fixed upstream in
 [AA PR #10](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10) — pin `AA_REF`
-at or past its merge (`713a2021…`; key-breaking, so redeploy the contracts) and withdraw lands
+at or past its merge (this stack pins `41de69de…`, well past it; key-breaking, so redeploy the
+contracts) and withdraw lands
 like every other operation. Unshielded withdraws (selector 3) go to a 32-byte user address only (`recipientKind 0`);
 the contract refuses contract-recipient payout shapes by design. Shielded withdraws
 (selector 2) go to **any pasted `mn_shield-addr…`** — the address decodes to the recipient's
@@ -128,9 +133,11 @@ OFF upstream by default: `ALLOW_CONTRACT_MAKER_OFFERS` (kernel-side — contract
 cannot pass `wellFormed` against the kernel's blank reference state, so the exact
 missing-contract failure retries without contract-proof verification; native zswap proofs and
 signatures are always verified, and the node verifies the contract proof at settlement) and
-`AA_OFFER_ALLOW_FALLIBLE` (console-side — the v5 Manager's k=19 transcript exceeds the ledger's
-guaranteed-section budget, so every AA offer's legs sit in the fallible section; measured live:
-a foreign taker settles them anyway, ledger-exact). Each blob is also saved under the `aa-out`
+`AA_OFFER_ALLOW_FALLIBLE` (console-side — measured when `execute` was compactc's k=19, whose
+transcript exceeds the ledger's guaranteed-section budget, so every AA offer's legs sat in the
+fallible section; measured live: a foreign taker settles them anyway, ledger-exact. The default
+MinoCrab k=18 artifact roughly halves the circuit and may no longer force it; the flag stays ON
+so the demo behaves identically either way, and the fallible path is the one with live evidence). Each blob is also saved under the `aa-out`
 volume at `/aa/out/offers/<offerId>.swapoffer`.
 
 **The offer book persists across restarts.** It used to be in-memory: the kernel kept its book in

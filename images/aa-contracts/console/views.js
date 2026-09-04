@@ -262,14 +262,20 @@ const REPOS = [
   {
     repo: "acedward/AA-midnight-evm-experiment-v3", url: "https://github.com/acedward/AA-midnight-evm-experiment-v3",
     role: "AA Manager + test Minter contracts, EIP-712 codec (baked as /aa/aalib)",
-    ref: "main @ 713a2021 (sha-pinned)",
-    notes: [["PR #10", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10", "merged to main; pinned because key-breaking merges need an explicit redeploy"]],
+    ref: "main @ 41de69de (sha-pinned)",
+    notes: [
+      ["PR #12", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12", "manager.compact split into a preset plus nine modules — BREAKING: the ledger slot order changed, so this pin needed a redeploy"],
+      ["", "", "compiled in-image with the kernel's compactc 0.33.0-rc.2; measured byte-identical ZKIR to the AA repo's own compactc 0.34.0 pin for all nine circuits"],
+    ],
   },
   {
     repo: "acedward/AA-midnight-evm-experiment-minocrab", url: "https://github.com/acedward/AA-midnight-evm-experiment-minocrab",
-    role: "the k=18 execute variation (MinoCrab-compiled alternative zkir — the AA_EXECUTE_K18 overlay: 544 MiB prover key, ~2x faster proofs)",
-    ref: "00020 handoff artifacts (AA_K18_DIR)",
-    notes: [["", "", "equivalence-tested against compactc (56/56 + 4,888 tamper probes); unaudited compiler — dev chains only"]],
+    role: "DEFAULT source of the Manager's `execute` artifact — the contract transcribed into MinoCrab, a third-party Rust compiler: k=18 / 211,047 rows instead of compactc's k=19 / 382,780, half the proving key, roughly half the proving time",
+    ref: "release v0.2.0 @ 7cdfa5b0 (identified by sha256(SHA256SUMS) 4a8c0183…, never by the tag)",
+    notes: [
+      ["", "", "the image downloads execute.{zkir,bzkir,verifier} (+ .prover where it proves) from the release and verifies them against the pinned SHA256SUMS; set AA_ZKIR_SOURCE=compactc to opt out, minocrab-all for all nine circuits"],
+      ["", "", "equivalence-tested against compactc (59 differential tests, 26 scenarios, 5,128 tamper probes, 0 acceptance disagreements) — TESTED, NOT PROVEN; unaudited compiler, dev chains only"],
+    ],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
@@ -421,6 +427,32 @@ function renderRepos() {
     tr.append(tdRepo, tdRole, tdRef, tdNotes);
     tbody.append(tr);
   }
+  // The table above is what the repository CLAIMS. This one line is what the running
+  // image actually has: the zkir-source receipt, read from /api/info, which the relay
+  // built by hashing the key files on its own disk. If a stale image is serving this
+  // page, the two disagree here and nowhere else.
+  fetch("/api/info").then((r) => r.json()).then((info) => {
+    const z = info?.zkirSource;
+    if (!z) return;
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.style.whiteSpace = "normal";
+    td.style.paddingTop = "10px";
+    if (z.source === "compactc") {
+      td.textContent = "LIVE IN THIS IMAGE — Manager circuits: compactc (AA_ZKIR_SOURCE=compactc; the MinoCrab release is not used).";
+    } else {
+      const ks = Object.entries(z.circuits ?? {})
+        .map(([n, c]) => `${n} k=${c.k}/${(c.rows ?? 0).toLocaleString("en-US")} rows${c.verifierMatches ? "" : " ⚠ VERIFIER DOES NOT MATCH THE RELEASE"}`)
+        .join(" · ");
+      td.textContent =
+        `LIVE IN THIS IMAGE — Manager circuits from MinoCrab release ${z.release} (${z.portCommit.slice(0, 12)}…), ` +
+        `taken by sha256(SHA256SUMS) ${z.sumsSha256.slice(0, 12)}…, keys for contract ${z.contractCommit.slice(0, 12)}…: ${ks}. ` +
+        "UNAUDITED third-party compiler — equivalence tested, not proven. Dev chains only.";
+    }
+    tr.append(td);
+    tbody.append(tr);
+  }).catch(() => {});
 }
 
 // initial route (after all view state above is initialized)

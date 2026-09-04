@@ -7,8 +7,9 @@
 // The browser deliberately holds NO Midnight wallet and NO prover: it signs
 // `eth_signTypedData_v4` requests this server builds with the AA repo's own
 // codec (/aa/aalib — the digest scheme is never reimplemented), and everything
-// Midnight-side happens here, where the k=19 proof (~2 min, 1.14 GB key upload
-// per call) and the wallet machinery belong. `execute(payload, sig, pk)` needs
+// Midnight-side happens here, where the `execute` proof (MinoCrab k=18 by default,
+// a 544 MiB key upload per call; compactc k=19 and 1.14 GB with
+// AA_ZKIR_SOURCE=compactc) and the wallet machinery belong. `execute(payload, sig, pk)` needs
 // the signer's PUBLIC KEY, which no EVM wallet exposes — aalib's `recoverSigner`
 // recovers the affine point from the signature, which is the whole reason a
 // relay (not the page) talks to the contract.
@@ -20,7 +21,10 @@
 // NIGHT + DUST only; up.sh does this when the profile comes up).
 //
 // Needs the unpruned image variant (AA_PRUNE_MANAGER_PROVERS=0): every operation
-// but fund/deposit proves the Manager's k=19 `execute` circuit.
+// but fund/deposit proves the Manager's `execute` circuit HERE, reading the proving
+// key out of this image — which is exactly why the image must carry it. Which
+// artifact that is, and its k, is read off the image at start-up (zkir-source.ts)
+// and printed on every job rather than written into a comment that can go stale.
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -47,12 +51,17 @@ import { metamaskSign } from "/aa/aalib/metamask.js";
 import type { Hex20, Hex32 } from "/aa/aalib/bytes.js";
 import { buildOpenSwapOffer } from "/aa/runner/aa-offer.ts";
 import { rawTokenType } from "@midnight-ntwrk/compact-runtime";
+import { zkirSourceReceipt, zkirSourceLine } from "/aa/runner/zkir-source.ts";
 
 const TAG = "[aa-console]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
 (globalThis as any).WebSocket = WebSocket;
 
 const AA_ROOT = "/aa";
+// Read ONCE at start-up: the answer is a property of the image and cannot change
+// while this process runs, and a deposit's log line must not depend on a file read
+// succeeding mid-proof.
+const ZKIR_SOURCE = zkirSourceReceipt(AA_ROOT);
 const PORT = Number(process.env["AA_CONSOLE_PORT"] ?? 8090);
 const WALLET_PROOF = process.env["AA_WALLET_PROOF_SERVER_URL"] ?? "http://proof-server:6300";
 const RELAY_SEED = process.env["AA_CONSOLE_SEED"]
@@ -799,10 +808,12 @@ function enqueue(kind: string, run: (j: Job) => Promise<void>): Job {
 
 const jlog = (j: Job, line: string) => { j.log.push(`${new Date().toISOString().slice(11, 19)} ${line}`); log(`job ${j.id.slice(0, 8)} ${line}`); };
 
-// The aa-proof-server gets OOM-killed under host memory pressure (a k=19
-// execute uploads a 1.14 GB proving key per call; 19 container restarts
-// measured in one day) and the SDK surfaces the dropped socket as
-// "'prove' returned an error: The socket connection was closed". Nothing has
+// The aa-proof-server gets OOM-killed under host memory pressure (measured when
+// `execute` was compactc's k=19: a 1.14 GB proving key uploaded per call, 19
+// container restarts in one day. The MinoCrab k=18 default halves that key, which
+// is the main reason it is the default; the retry stays because the failure class
+// is memory pressure, not a particular key size) and the SDK surfaces the dropped
+// socket as "'prove' returned an error: The socket connection was closed". Nothing has
 // been submitted at that point, so ONE retry after the server's restart window
 // is safe and has succeeded every time it was tried by hand. Only this exact
 // transient class retries — real failures still surface immediately.
@@ -853,7 +864,9 @@ function executeJob(prep: Prepared, signature: string): Job {
     jlog(j, `signer verified (${recovered.address}) — opening a wallet session`);
     await withProveRetry(j, prep.kind, () => session(prep.kind, async (walletResult) => {
       const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      jlog(j, "proving execute (k=18 with the MinoCrab overlay, k=19 without — expect ~1–2 minutes)…");
+      // Which artifact is about to be proved, read off THIS image rather than
+      // guessed from a build flag — the whole point of the receipt.
+      jlog(j, `proving execute — ${zkirSourceLine(ZKIR_SOURCE)}`);
       const t0 = Date.now();
       if (prep.encMapping) {
         // Selector 2 (withdraw shielded): the payout coin is ENCRYPTED to the
@@ -1307,6 +1320,10 @@ Bun.serve({
       if (path === "/api/info") {
         return json({
           network: midnightNetworkConfig.id,
+          // Which compiler produced the Manager circuits this relay proves with, and
+          // which published release they came from. The page's Repos tab renders it,
+          // and it is the one place a reader can see that WITHOUT trusting a doc.
+          zkirSource: ZKIR_SOURCE,
           manager: MANAGER, minter: MINTER, domain: artifact.manager.domain,
           minterTag: artifact.minter.tag ?? null,
           relay,

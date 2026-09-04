@@ -10,8 +10,10 @@ registry; it exists so that a later change cannot silently:
   * drop a Linux platform from a multiarch image,
   * collapse the plain and experimental proof servers onto one identity,
   * select a macOS (or Windows) warehouse asset for a Linux container,
-  * or use a `legacy-unverified` warehouse row without independent official
-    byte-equality evidence.
+  * use a `legacy-unverified` warehouse row without independent official
+    byte-equality evidence,
+  * or identify a consumed published release by its TAG instead of by the SHA-256
+    of its checksums file.
 
 Run `--self-test` to prove the checker actually rejects each of those.
 """
@@ -33,18 +35,27 @@ GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SCHEMA_VERSION = "artifact-decision-matrix-v1"
 SELECTION_ORDER = ["official-oci", "warehouse-binary", "exact-oci-mirror", "source-build"]
 RETAINED_DECISIONS = {"official-upstream-direct", "source-build"}
+# `sources[]` is a THIRD kind of entry, next to the runtime images this stack schedules
+# (`components[]`) and the paths it builds itself (`retainedPaths[]`): a published
+# release whose files an image DOWNLOADS and takes by hash. The only decision such an
+# entry may record is "we took the published bytes", because the alternative — rebuild
+# them — is what the matrix exists to rule out where an exact artifact is published.
+SOURCE_DECISIONS = {"published-release-asset"}
+RELEASE_TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
 # Every key whose value is an identity rather than prose. Editing any of them changes
 # pinsDigest, so a digest cannot be "fixed" to make a build pass without a visible,
 # reviewable regeneration step (--update-pins).
 IDENTITY_KEYS = frozenset({
-    "alias", "assetCount", "assetId", "assetName", "assetSha256", "assetSize",
+    "alias", "assetBytes", "assetCount", "assetId", "assetName", "assetSha256", "assetSize",
     "cacheNamespace", "catalogCommit", "catalogProvenance", "checksumsAssetId",
     "checksumsSha256", "commit", "compatibleImageDigests", "compatibleProofServerVersion",
-    "configDigest", "decision", "equalityClass", "executableSha256", "fileCount",
+    "configDigest", "contractCommit", "decision", "downloadUrlTemplate", "equalityClass",
+    "executableSha256", "fileCount",
     "generation", "id", "indexDigest", "indexMediaType", "installMode", "layerDigests",
     "ledgerStaticSemver", "linuxArchitectures", "manifestDigest", "memberPath",
-    "memberSha256", "memberSize", "name", "outerSha256", "outerSize", "payloadCount",
+    "memberSha256", "memberSize", "minocrabRev", "name", "outerSha256", "outerSize",
+    "payloadCount",
     "readableTag", "releaseId", "releaseTag", "repository", "selection", "selectionOrder",
     "upstreamAssetId", "upstreamAssetName", "variant", "version",
 })
@@ -454,6 +465,107 @@ def validate(doc: dict) -> Failures:
         if not src.get("paths"):
             failures.add("proofData", "manifestSourceOfTruth.paths must name the exact manifests to import")
 
+    # --- sources[]: published release assets an image downloads and takes by hash ---
+    #
+    # The claim being checked is NOT "these hashes are right" — nothing offline can know
+    # that. It is that the entry is INTERNALLY CONSISTENT and identifies the release by
+    # something immutable: a checksums hash is present, the file list is complete and
+    # unique, the manifest's hash appears in that list under its own name, and the byte
+    # total is the sum of the parts. An entry that only names a tag would let a re-cut
+    # release change every byte with nothing in this repository noticing.
+    for src in doc.get("sources") or []:
+        sid = src.get("id") or "<unnamed>"
+        if sid in seen_ids:
+            failures.add(sid, "id also appears in components[]; an id names one thing")
+        if src.get("decision") not in SOURCE_DECISIONS:
+            failures.add(sid, f"decision {src.get('decision')!r} is not one of {sorted(SOURCE_DECISIONS)}")
+        if src.get("inArtifactNormalizationScope") is not False:
+            failures.add(sid, "sources[] entries are contract/key material for one image, not runtimes this "
+                              "stack schedules; they must be marked out of artifact-normalization scope")
+        if not src.get("reason"):
+            failures.add(sid, "a decision without a recorded reason is not reviewable")
+
+        repo = src.get("repository")
+        if not isinstance(repo, str) or "/" not in repo:
+            failures.add(sid, f"repository must be an owner/name pair, got {repo!r}")
+        if not RELEASE_TAG_RE.match(str(src.get("releaseTag", ""))):
+            failures.add(sid, f"releaseTag must look like vX.Y.Z, got {src.get('releaseTag')!r}")
+        for field in ("commit", "contractCommit", "minocrabRev"):
+            if field in src and not GIT_SHA_RE.match(str(src.get(field, ""))):
+                failures.add(sid, f"{field} must be a full 40-hex commit, got {src.get(field)!r}")
+        tpl = src.get("downloadUrlTemplate")
+        if not isinstance(tpl, str) or "{tag}" not in tpl or "{name}" not in tpl:
+            failures.add(sid, "downloadUrlTemplate must carry both {tag} and {name} placeholders")
+
+        checksums = src.get("checksums")
+        if not isinstance(checksums, dict):
+            failures.add(sid, "checksums must be an object naming the file that identifies this release")
+            checksums = {}
+        else:
+            if not checksums.get("assetName"):
+                failures.add(sid, "checksums.assetName is missing")
+            _sha256(failures, sid, "checksums.assetSha256", checksums.get("assetSha256"))
+            if not isinstance(checksums.get("assetSize"), int) or checksums.get("assetSize", 0) <= 0:
+                failures.add(sid, "checksums.assetSize must be a positive integer")
+
+        files = src.get("files")
+        if not isinstance(files, list) or not files:
+            failures.add(sid, "files must be a non-empty list; a release with no recorded file list is "
+                              "identified by nothing this repository can check")
+            files = []
+        names, total = set(), 0
+        for f in files:
+            if not isinstance(f, dict):
+                failures.add(sid, "every files[] entry must be an object")
+                continue
+            name = f.get("assetName")
+            if not isinstance(name, str) or not name:
+                failures.add(sid, "a files[] entry has no assetName")
+                continue
+            if name in names:
+                failures.add(sid, f"files[] lists {name!r} more than once")
+            names.add(name)
+            if name == checksums.get("assetName"):
+                failures.add(sid, f"{name!r} cannot be listed among the files it covers — a checksums file "
+                                  "does not carry its own hash, which is exactly why its hash is the pin")
+            _sha256(failures, sid, f"files[{name}].assetSha256", f.get("assetSha256"))
+            size = f.get("assetSize")
+            if not isinstance(size, int) or size <= 0:
+                failures.add(sid, f"files[{name}].assetSize must be a positive integer")
+            else:
+                total += size
+        for forbidden_sub in forbidden:
+            for name in sorted(names):
+                if forbidden_sub in name.lower():
+                    failures.add(sid, f"files[] carries {name!r}, which matches the forbidden substring "
+                                      f"{forbidden_sub!r}")
+
+        manifest = src.get("manifest")
+        if isinstance(manifest, dict):
+            mname = manifest.get("assetName")
+            listed = next((f for f in files if isinstance(f, dict) and f.get("assetName") == mname), None)
+            if listed is None:
+                failures.add(sid, f"manifest {mname!r} is not among files[]; the checksums file must cover it")
+            else:
+                if listed.get("assetSha256") != manifest.get("assetSha256"):
+                    failures.add(sid, f"manifest.assetSha256 disagrees with files[{mname}].assetSha256 — "
+                                      "two records of one identity, and they do not match")
+                if listed.get("assetSize") != manifest.get("assetSize"):
+                    failures.add(sid, f"manifest.assetSize disagrees with files[{mname}].assetSize")
+        else:
+            failures.add(sid, "manifest must be an object naming the release's own provenance file")
+
+        expected_count = len(files) + 1
+        if src.get("assetCount") != expected_count:
+            failures.add(sid, f"assetCount is {src.get('assetCount')!r}, but files[] plus the checksums file "
+                              f"is {expected_count}")
+        expected_bytes = total + (checksums.get("assetSize") or 0)
+        if src.get("assetBytes") != expected_bytes:
+            failures.add(sid, f"assetBytes is {src.get('assetBytes')!r}, but the recorded sizes sum to "
+                              f"{expected_bytes}")
+        if not src.get("consumedBy"):
+            failures.add(sid, "consumedBy must name the image (and stage) that downloads these files")
+
     for entry in doc.get("retainedPaths") or []:
         rid = entry.get("id") or "<unnamed>"
         if entry.get("inArtifactNormalizationScope") is not False:
@@ -464,6 +576,8 @@ def validate(doc: dict) -> Failures:
             failures.add(rid, "a retained path without a recorded reason is not reviewable")
         if rid in seen_ids:
             failures.add(rid, "id also appears in components[]; a component is either in scope or retained, not both")
+        if rid in {s.get("id") for s in doc.get("sources") or []}:
+            failures.add(rid, "id also appears in sources[]; an id names one thing")
 
     return failures
 
@@ -588,6 +702,40 @@ def _fx_proofdata_duplicate_source(doc: dict) -> dict:
     return doc
 
 
+def _source(doc: dict, sid: str) -> dict:
+    return next(s for s in doc["sources"] if s["id"] == sid)
+
+
+def _fx_release_identified_by_tag_only(doc: dict) -> dict:
+    """A tag is a movable label. Dropping the checksums hash would leave the tag as the
+    only identity, which is the failure this whole entry exists to prevent."""
+    del _source(doc, "minocrab-release")["checksums"]["assetSha256"]
+    return doc
+
+
+def _fx_release_manifest_hash_disagrees(doc: dict) -> dict:
+    """The manifest's hash is recorded twice — once on its own and once in the covered
+    file list. Two records of one identity that disagree is a re-pin someone did halfway."""
+    src = _source(doc, "minocrab-release")
+    src["manifest"]["assetSha256"] = "4" * 64
+    return doc
+
+
+def _fx_release_byte_total_moved(doc: dict) -> dict:
+    """A file swapped for a bigger one, with the per-file sizes left alone."""
+    _source(doc, "minocrab-release")["assetBytes"] += 4096
+    return doc
+
+
+def _fx_release_checksums_covers_itself(doc: dict) -> dict:
+    """SHA256SUMS listed among the files it covers — a circular claim."""
+    src = _source(doc, "minocrab-release")
+    src["files"].append(dict(src["checksums"]))
+    src["assetCount"] += 1
+    src["assetBytes"] += src["checksums"]["assetSize"]
+    return doc
+
+
 # (label, mutation, repin). repin=True recomputes pinsDigest after the mutation so the
 # fixture exercises its own rule rather than tripping the pins guard. repin=False is used
 # only to prove the pins guard itself catches a hand-edited identity field.
@@ -610,6 +758,10 @@ SELF_TESTS = [
     ("exact-mirror destination that is not byte-equal", _fx_mirror_not_exact),
     ("wrong Ledger-static cache namespace", _fx_proofdata_wrong_namespace),
     ("proof-data manifest source of truth erased", _fx_proofdata_duplicate_source),
+    ("consumed release identified by its tag alone", _fx_release_identified_by_tag_only),
+    ("release manifest hash disagrees with the covered file list", _fx_release_manifest_hash_disagrees),
+    ("release byte total no longer sums to its parts", _fx_release_byte_total_moved),
+    ("release checksums file listed among the files it covers", _fx_release_checksums_covers_itself),
 ]
 
 
@@ -669,7 +821,9 @@ def main() -> int:
 
     n_components = len(doc.get("components") or [])
     n_retained = len(doc.get("retainedPaths") or [])
-    print(f"  matrix is internally consistent: {n_components} in-scope component(s), {n_retained} retained path(s)")
+    n_sources = len(doc.get("sources") or [])
+    print(f"  matrix is internally consistent: {n_components} in-scope component(s), "
+          f"{n_sources} consumed release(s), {n_retained} retained path(s)")
 
     if args.self_test:
         print(f"  negative fixtures ({len(SELF_TESTS)}):")

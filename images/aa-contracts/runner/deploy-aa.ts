@@ -11,8 +11,12 @@
 //   AA_MINT_AMOUNT amount minted per family          (default 1_000_000_000)
 //   MIDNIGHT_WALLET_SEED and the MIDNIGHT_* endpoints — the usual midnight-env set.
 //
-// Output: /aa/out/aa-contracts.json — addresses, colours, mint evidence. The
-// entrypoint's idempotency check keys on this file.
+// Output: /aa/out/aa-contracts.json — addresses, colours, mint evidence, and the
+// ZKIR-SOURCE RECEIPT: which compiler produced the Manager circuits this deploy
+// registered, the release they came from, and the hash of the verifying key that
+// actually went on chain. That last part is what makes `verify.sh --aa` able to
+// assert what is live rather than what a build argument once said. The entrypoint's
+// idempotency check keys on this file.
 
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -31,6 +35,7 @@ import {
 } from "@effectstream/midnight-contracts/deploy";
 import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
 import { MidnightBech32m } from "@midnightntwrk/wallet-sdk-address-format";
+import { zkirSourceReceipt, zkirSourceLine } from "./zkir-source";
 
 const TAG = "[aa-deploy]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
@@ -224,12 +229,17 @@ async function mint(minterAddress: string) {
 }
 
 const t0 = Date.now();
+// Read BEFORE the deploy so the log says which artifact is going on chain while it is
+// still going on chain, not afterwards.
+const zkirSource = zkirSourceReceipt(AA_ROOT);
+log(`manager circuits: ${zkirSourceLine(zkirSource)}`);
 const addresses = await deployBoth();
 const mints = await mint(addresses.minter);
 mkdirSync("/aa/out", { recursive: true });
 const artifact = {
   network: midnightNetworkConfig.id,
   aaCommit: readFileSync("/aa/.aa-commit", "utf-8").trim(),
+  zkirSource,
   manager: { address: addresses.manager, domain: process.env["AA_DOMAIN"] ?? "demo-infra:aa:v1" },
   minter: { address: addresses.minter, tag: process.env["AA_MINTER_TAG"] ?? "TOKA" },
   mints,

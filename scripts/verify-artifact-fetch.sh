@@ -36,6 +36,7 @@ MATRIX="$REPO_ROOT/config/artifact-decisions.json"
 PINS="$REPO_ROOT/scripts/lib/artifact_pins.py"
 INDEXER_DIR="$REPO_ROOT/images/indexer"
 CELESTIA_DIR="$REPO_ROOT/images/celestia"
+AA_DIR="$REPO_ROOT/images/aa-contracts"
 EQUALITY="$CELESTIA_DIR/official-equality.tsv"
 
 STATIC_ONLY=0
@@ -135,6 +136,26 @@ for c in celestia-appd celestia-node; do
   done
 done
 
+# The AA image's MinoCrab release pins. Same rule as the warehouse images: the ARG
+# default is what a clean clone builds with, so it — not the matrix alone, and not a
+# comment — is what has to agree. `MINOCRAB_SUMS_SHA256` is the load-bearing one: it is
+# the SHA-256 of the release's SHA256SUMS, and therefore the identity of all 38 files.
+MINOCRAB_URL_TEMPLATE="$(pin 'sources[minocrab-release].downloadUrlTemplate')"
+expect "aa MINOCRAB_RELEASE"     "$(pin 'sources[minocrab-release].releaseTag')" \
+                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_RELEASE)"
+expect "aa MINOCRAB_REF"         "$(pin 'sources[minocrab-release].commit')" \
+                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_REF)"
+expect "aa MINOCRAB_SUMS_SHA256" "$(pin 'sources[minocrab-release].checksums.assetSha256')" \
+                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_SUMS_SHA256)"
+expect "aa MINOCRAB_REPO"        "${MINOCRAB_URL_TEMPLATE%%/releases/download/*}" \
+                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_REPO)"
+# The release's manifest states which CONTRACT its keys are for, and the build asserts it
+# equals AA_REF. If the matrix and the Dockerfile disagreed about AA_REF, that assertion
+# would be checking one repository's claim against the other's typo.
+expect "aa AA_REF vs the release's contract pin" \
+                                 "$(pin 'sources[minocrab-release].contractCommit')" \
+                                 "$(dockerarg "$AA_DIR/Dockerfile" AA_REF)"
+
 # ── static: the Celestia official-equality record ────────────────────────────
 log "static: images/celestia/official-equality.tsv vs the matrix"
 
@@ -224,6 +245,10 @@ require_docker
 
 TAG_PREFIX="${IMAGE_TAG_SUFFIX:-artifact-fetch-check}"
 
+# EXTRA_BUILD_FLAGS — anything that is not a --build-arg (a named build context, say).
+# Reset by `reject` after every call, so a fixture cannot leak flags into the next one.
+EXTRA_BUILD_FLAGS=()
+
 reject() { # label dir target [build-arg ...]
   local label="$1" dir="$2" target="$3"; shift 3
   local args=() a out rc
@@ -232,10 +257,12 @@ reject() { # label dir target [build-arg ...]
   # The build args are optional, so `args` can be empty; ${args[@]+"${args[@]}"} rather than
   # "${args[@]}" because macOS bash 3.2 calls the latter an unbound variable under `set -u`.
   out="$(docker build --platform "$PLATFORM" --target "$target" \
+          ${EXTRA_BUILD_FLAGS[@]+"${EXTRA_BUILD_FLAGS[@]}"} \
           ${args[@]+"${args[@]}"} -t "midnight-2-offers/artifact-fetch-negative:${TAG_PREFIX}" \
           "$dir" 2>&1)"
   rc=$?
   set -e
+  EXTRA_BUILD_FLAGS=()
   if (( rc == 0 )); then
     fail "NEGATIVE NOT REJECTED: ${label} — the build succeeded"
     printf '%s\n' "$out" | tail -5
@@ -292,6 +319,71 @@ reject "celestia / asset from the wrong upstream project" "$CELESTIA_DIR" fetch 
   "CELESTIA_APP_ASSET_${A}=$(pin "components[celestia-node].assets[${PLATFORM}].name")" \
   "CELESTIA_APP_VERSION=$(pin 'components[celestia-node].version')" \
   "CELESTIA_APP_SHA256_${A}=$(pin "components[celestia-node].assets[${PLATFORM}].outerSha256")"
+
+# ── negative: the AA image's MinoCrab release gate ───────────────────────────
+#
+# The AA image takes the Manager's `execute` artifact from a PUBLISHED RELEASE and
+# identifies it by one hash — the SHA-256 of the release's own SHA256SUMS. Three
+# assertions stand between that pin and the image, and each of them is exercised here
+# against a SYNTHETIC release built in a temp directory. Synthetic on purpose: these
+# fixtures must run on a clean clone with no 663 MiB of key material anywhere, and a
+# gate that can only be tested when you already hold the real assets is a gate nobody
+# tests. The `minocrab-release` stage depends on no other stage, so `--target` builds
+# it alone — no compactc, no keygen, no AA checkout.
+minocrab_fixture_dir=""
+make_minocrab_fixture() { # <corrupt-a-file: 0|1> <contract-commit>
+  local corrupt="$1" contract="$2" d
+  d="$(mktemp -d)"
+  minocrab_fixture_dir="$d"
+  # Content is irrelevant — nothing here is ever proved with. What is being tested is
+  # whether the build believes a file it has not verified.
+  printf 'not-a-real-zkir\n'     > "$d/execute.zkir"
+  printf 'not-a-real-bzkir\n'    > "$d/execute.bzkir"
+  printf 'not-a-real-verifier\n' > "$d/execute.verifier"
+  cat > "$d/manifest.json" <<JSON
+{
+  "tag": "$(pin 'sources[minocrab-release].releaseTag')",
+  "gitCommit": "$(pin 'sources[minocrab-release].commit')",
+  "contractPin": {
+    "commit": "${contract}"
+  }
+}
+JSON
+  ( cd "$d" && sha256sum execute.zkir execute.bzkir execute.verifier manifest.json > SHA256SUMS )
+  if [[ "$corrupt" == "1" ]]; then
+    # SHA256SUMS still says what the file used to be. This is the tamper the content
+    # gate exists for, and it is invisible to the identity gate.
+    printf 'tampered\n' > "$d/execute.verifier"
+  fi
+  MINOCRAB_FIXTURE_SUMS="$(sha256sum "$d/SHA256SUMS" | cut -d ' ' -f 1)"
+}
+
+# 12: the real pin against a release that is not the pinned one — the identity gate.
+make_minocrab_fixture 0 "$(pin 'sources[minocrab-release].contractCommit')"
+EXTRA_BUILD_FLAGS=(--build-context "minocrab=${minocrab_fixture_dir}")
+reject "aa / MinoCrab release whose SHA256SUMS is not the pinned one" "$AA_DIR" minocrab-release
+rm -rf "$minocrab_fixture_dir"
+
+# 13: identity gate satisfied by construction, one file tampered with — the content gate.
+make_minocrab_fixture 1 "$(pin 'sources[minocrab-release].contractCommit')"
+EXTRA_BUILD_FLAGS=(--build-context "minocrab=${minocrab_fixture_dir}")
+reject "aa / MinoCrab asset that SHA256SUMS does not vouch for" "$AA_DIR" minocrab-release \
+  "MINOCRAB_SUMS_SHA256=${MINOCRAB_FIXTURE_SUMS}"
+rm -rf "$minocrab_fixture_dir"
+
+# 14: both hash gates satisfied, but these keys are for a DIFFERENT contract. This is the
+# one a re-pin of AA_REF alone would walk into: bytes that verify perfectly and prove the
+# wrong statement.
+make_minocrab_fixture 0 "0123456789abcdef0123456789abcdef01234567"
+EXTRA_BUILD_FLAGS=(--build-context "minocrab=${minocrab_fixture_dir}")
+reject "aa / MinoCrab keys whose manifest names another contract" "$AA_DIR" minocrab-release \
+  "MINOCRAB_SUMS_SHA256=${MINOCRAB_FIXTURE_SUMS}"
+rm -rf "$minocrab_fixture_dir"
+
+# 15: an unknown artifact source must not silently fall through to "compactc".
+EXTRA_BUILD_FLAGS=(--build-context "minocrab=${AA_DIR}/minocrab-local")
+reject "aa / unknown AA_ZKIR_SOURCE" "$AA_DIR" minocrab-release \
+  "AA_ZKIR_SOURCE=whatever"
 
 docker rmi "midnight-2-offers/artifact-fetch-negative:${TAG_PREFIX}" >/dev/null 2>&1 || true
 

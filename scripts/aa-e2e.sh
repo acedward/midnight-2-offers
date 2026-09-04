@@ -11,9 +11,21 @@
 # against the contracts aa-deploy already put on this chain.
 #
 # Builds the :e2e image variant on first run (AA_PRUNE_MANAGER_PROVERS=0): calling
-# `execute` proves the Manager's k=19 circuit, so the 1.1 GB prover key the normal
-# image prunes must be present. Expect the first build to take a few minutes and
-# ~1.2 GB of image; after that it is cached.
+# `execute` proves it in this process, so the prover key the normal image prunes must
+# be present. With the MinoCrab default that key is 544 MiB (k=18); with
+# AA_ZKIR_SOURCE=compactc it is 1.14 GB (k=19). Expect the first build to take a few
+# minutes; after that it is cached.
+#
+# THE TIMING COMPARISON (SC-002). The report at /aa/out/aa-e2e.json records the
+# zkir-source receipt and the wall time of every `execute` proof, so:
+#
+#   ./scripts/aa-e2e.sh                                  # the MinoCrab default
+#   AA_ZKIR_SOURCE=compactc ./scripts/aa-e2e.sh          # the opt-out, same host
+#
+# produce two directly comparable `executeSeconds` blocks. NOTE that the second one
+# rebuilds the Manager artifact and therefore needs a REDEPLOY to be meaningful for
+# anything but timing: a contract deployed with one verifier key cannot be called
+# with proofs made for another (`./down.sh -v` and bring the stack up again).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,7 +58,7 @@ E2E_SEED="${AA_E2E_SEED:-e2ee2e0000000000000000000000000000000000000000000000000
 log "funding the e2e relay wallet (unshielded NIGHT + DUST, no shielded)…"
 "$REPO_ROOT/scripts/fund-wallet.sh" "$E2E_SEED"
 
-log "running the E2E (register ×2 → mint → deposit → transfer → withdraw; k=19 proofs — takes a while)…"
+log "running the E2E (register ×2 → mint → deposit → transfer → withdraw; four execute proofs — the runner names the artifact and its k, and times each one)…"
 # All five steps are DEFAULT, fatal asserts since the upstream fixes landed
 # (AA PR #9: transfer pool underflow; AA PR #10: withdraw 214). The old
 # AA_E2E_PROBE_DEBITS gate is gone with the probes it gated.

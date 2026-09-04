@@ -197,12 +197,46 @@ control is worse than one that is gone.
   not missing, and it is silent unless you look: `./verify.sh --prices` is what turns it into a
   failure (`PRICES_MAX_AGE_S`, default 3600 s). On the default 24 h interval a long-lived stack
   needs that limit raised, or `PRICE_FEED_INTERVAL_MS` lowered.
-- **The AA image is still pinned to `AA_REF=713a2021…`,** six commits behind its `main`. The AA
-  repo moved to compactc 0.34.0 / compact-runtime 0.19.0, and this image compiles the AA
-  contracts AND the kernel's offer-files contract with ONE compactc and loads both with ONE
-  runtime — while the kernel line still declares 0.33.0-rc.2. Moving AA alone would compile the
-  offer-files contract with a different toolchain than the kernel deploys. The image now fails
-  the build loudly if the kernel leaves the 0.33 line, rather than doing it silently.
+- **The AA image compiles the AA contracts with the KERNEL's compactc, not the AA repo's own.**
+  `AA_REF` is now `41de69de…` (the split preset plus nine modules) and the AA repo pins compactc
+  0.34.0 / compact-runtime 0.19.0 on `main`, while this image compiles the AA contracts AND the
+  kernel's offer-files contract with ONE compactc — the kernel's `0.33.0-rc.2` — and loads both
+  with ONE runtime, because two `compact-runtime` copies in one process fail `instanceof`.
+  MEASURED 2026-09-04 at this pin: 0.33.0-rc.2 compiles the split preset and emits ZKIR
+  **byte-identical to 0.34.0 for all nine circuits**, stamping `runtime-version` 0.18.0-rc.1 —
+  so the difference is a version string, not a statement. That is a measurement of ONE contract
+  at ONE pin, not a general claim about the two compilers, and it has to be re-measured whenever
+  either pin moves. The image still fails the build loudly if the kernel leaves the 0.33 line.
+
+## The AA Manager's `execute` circuit comes from an unaudited third-party compiler
+
+This is the single most important caveat in this repository, and it is the DEFAULT, so it is
+stated here rather than left to a build flag nobody reads.
+
+- **`execute` is compiled by MinoCrab, not by `compactc`.** By default (`AA_ZKIR_SOURCE=minocrab`)
+  the AA image takes the Manager's `execute` ZKIR and keys from
+  [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab)
+  release `v0.2.0` — the same contract transcribed into MinoCrab, a third-party Rust eDSL
+  compiler for Midnight. It buys a real thing: k = 18 / 211,047 rows instead of k = 19 / 382,780,
+  which halves the proving key (544 MiB rather than 1.14 GB) and roughly halves proving time,
+  and it is why the console's proof server stops being OOM-killed on a memory-tight host.
+- **MinoCrab is UNAUDITED and the equivalence is TESTED, NOT PROVEN.** The port's own differential
+  suite compares it against the `compactc` artifact for the same contract commit — 59 tests, 26
+  scenarios, 5,128 tamper probes, 0 acceptance disagreements — plus 7/7 proved selectors and
+  14/14 preimage accepts at the previous pin. That is evidence. Evidence is not a proof, and a
+  wrong circuit in a custody contract is a wrong circuit. **Dev chains only.** Do not put this on
+  anything that holds value.
+- **What IS mechanically guaranteed** is only the identity of the bytes: the image asserts
+  `sha256(SHA256SUMS) == MINOCRAB_SUMS_SHA256` (the pin in this repository), verifies every file
+  it takes against that `SHA256SUMS`, and asserts the release manifest's contract pin equals
+  `AA_REF` — so it cannot silently deploy keys for a different contract. None of that says the
+  circuit is correct.
+- **The other eight circuits stay compactc's** by default, deliberately: `execute` is the one
+  with end-to-end proving evidence, and it is the only one where k moves. `AA_ZKIR_SOURCE=minocrab-all`
+  opts into all nine and is gated by hashes alone. `AA_ZKIR_SOURCE=compactc` opts out entirely,
+  and `./verify.sh --aa` reports which one is live rather than assuming.
+- **Changing it is KEY-BREAKING.** A contract is deployed with one verifier key; proofs made
+  against another are rejected. Switching `AA_ZKIR_SOURCE` needs `./down.sh -v` and a redeploy.
 
 ## The `shielded-night` profile
 

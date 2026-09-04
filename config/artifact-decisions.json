@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v1",
-  "pinsDigest": "ecad60acfa7e52df040c82a71a8f97d86aebef8ad837d7367efa150582209487",
+  "pinsDigest": "8ae49e39f09d038aaeea0d9c97ec284b910d9c598be8fc8f209cca1fa227c986",
   "frozenOn": "2026-08-31",
   "note": "Frozen artifact-selection contract for the external runtime dependencies of this demo. Every field here was re-derived from live sources on the freeze date. scripts/verify-artifact-decisions.sh enforces it. Do not edit a digest to make a build pass: re-verify the source first.",
   "selectionOrder": [
@@ -321,6 +321,227 @@
         "note": "Anonymously re-verified end to end on 2026-08-31 (plan 00003 T1.3/T1.5): raw index bytes, both platform manifests, both configs, both layer blobs and both extracted executables are byte-identical to the upstream source, and the destination is pullable with no credential. Full record: images/proof-server-mirror/mirror-manifest.json, re-provable with images/proof-server-mirror/verify-mirror.py.",
         "mirrorRecord": "images/proof-server-mirror/mirror-manifest.json"
       }
+    }
+  ],
+  "sources": [
+    {
+      "id": "minocrab-release",
+      "decision": "published-release-asset",
+      "inArtifactNormalizationScope": false,
+      "reason": "The AA Manager's `execute` circuit is deployed from the MinoCrab port's PUBLISHED RELEASE, not recompiled: an exact published binary is taken by SHA-256, never rebuilt, and there is no way to rebuild these at all without the pinned compactc archive, the Midnight SRS for each k, and a keygen run. This is the same rule the warehouse-binary components follow, applied to a release that is not in the warehouse. It is OUT of artifact-normalization scope because it is contract key material for one image, not an external runtime this stack schedules.",
+      "repository": "acedward/AA-midnight-evm-experiment-minocrab",
+      "releaseTag": "v0.2.0",
+      "commit": "7cdfa5b0c994a70502ab2b564b509c8abe2f7efb",
+      "contractCommit": "41de69ded41ff933fe0db8697b264dc46fc6e0cb",
+      "minocrabRev": "1522f9dd024d2d9941a6fdcda1ad8f88ab7533b9",
+      "downloadUrlTemplate": "https://github.com/acedward/AA-midnight-evm-experiment-minocrab/releases/download/{tag}/{name}",
+      "identityNote": "THE IDENTITY IS `checksums.assetSha256`, NOT `releaseTag`. A tag is a movable label; SHA256SUMS is 3,263 bytes that name the SHA-256 of every other file in the release, `manifest.json` included, and manifest.json in turn carries the tag, the port commit, the MinoCrab rev, the contract pin, the compactc/zkir-v3 hashes and the SRS per k. Pinning that one hash pins all 38 files. The AA image asserts it before it uses a single byte.",
+      "checksums": {
+        "assetName": "SHA256SUMS",
+        "assetSize": 3263,
+        "assetSha256": "4a8c0183cd887e3ca2d3446f196fab1102540e09d6e0e8ae9c1859532d8dd7ac"
+      },
+      "manifest": {
+        "assetName": "manifest.json",
+        "assetSize": 10395,
+        "assetSha256": "7d208f0d6f2cdebb0ea431508e46cce7ddb1f5aac5944bcd729db9dd6e2a7895"
+      },
+      "assetCount": 38,
+      "assetBytes": 695875589,
+      "consumedBy": "images/aa-contracts/Dockerfile stage `minocrab-release`",
+      "consumption": {
+        "AA_ZKIR_SOURCE=minocrab": "execute.{zkir,bzkir,verifier} always; execute.prover only when AA_PRUNE_MANAGER_PROVERS=0",
+        "AA_ZKIR_SOURCE=minocrab-all": "the same four kinds for all nine circuits",
+        "AA_ZKIR_SOURCE=compactc": "nothing — the release is not consulted",
+        "always": "SHA256SUMS and manifest.json"
+      },
+      "files": [
+        {
+          "assetName": "accountRecord.bzkir",
+          "assetSize": 2430,
+          "assetSha256": "5a9c8b7ff2dd4e5b5d2f833e63120b6f6b6fd9a95ccc6bec86218ac59ca171c2"
+        },
+        {
+          "assetName": "accountRecord.prover",
+          "assetSize": 447566,
+          "assetSha256": "1bbc116fed749d73fd353fe0dbc63a7246f19eb6cfb473501d20e43801b7c4ba"
+        },
+        {
+          "assetName": "accountRecord.verifier",
+          "assetSize": 1353,
+          "assetSha256": "0594d749ff244823a30322b0c0ddd745ed86782ea6e2b5d9248872b92f1fabb8"
+        },
+        {
+          "assetName": "accountRecord.zkir",
+          "assetSize": 6065,
+          "assetSha256": "2530fca640e76a817c234b84ba4144fe5f2341fcda319e1af3a5c16ce3977ffa"
+        },
+        {
+          "assetName": "depositShielded.bzkir",
+          "assetSize": 5713,
+          "assetSha256": "ceda8bffcf270c12bacbdd514e0b47a0d7991acb820f34c6dddcaa493add650c"
+        },
+        {
+          "assetName": "depositShielded.prover",
+          "assetSize": 90187617,
+          "assetSha256": "f7a255255383a6f890f131163a1a5671e719ecc341c1bda47ed8af449af0eaea"
+        },
+        {
+          "assetName": "depositShielded.verifier",
+          "assetSize": 2121,
+          "assetSha256": "1cd0429b671a1b036572b5f141c499d44ca578463d5761e6c72e447395b9ccb8"
+        },
+        {
+          "assetName": "depositShielded.zkir",
+          "assetSize": 14927,
+          "assetSha256": "eada91aa306819d4dfd0395b2efb03d882131f33d42f1b8ed34a984e76859cd8"
+        },
+        {
+          "assetName": "depositUnshielded.bzkir",
+          "assetSize": 1659,
+          "assetSha256": "45f79a599c22de5da1bd5a19ffa37cf4a00a5f571b96948051eb9a26d9341619"
+        },
+        {
+          "assetName": "depositUnshielded.prover",
+          "assetSize": 11278219,
+          "assetSha256": "cc4a2cf42e279f67268250aec376fe10e1664124213bd2e5ad0e7fd2e840f0d3"
+        },
+        {
+          "assetName": "depositUnshielded.verifier",
+          "assetSize": 2121,
+          "assetSha256": "e124ec54677b06ca1a89f434da28cf8e2105c71ca00edce947c1d99bd4336ff9"
+        },
+        {
+          "assetName": "depositUnshielded.zkir",
+          "assetSize": 4333,
+          "assetSha256": "29ba8b53bbe4bc233f41f3ab5371c13a11a5698f587554f89b298bedc764ea53"
+        },
+        {
+          "assetName": "execute.bzkir",
+          "assetSize": 51990,
+          "assetSha256": "209d7139d9945bcd6fac0ca545a4e8c6886165a315118c768901fb5507f28d19"
+        },
+        {
+          "assetName": "execute.prover",
+          "assetSize": 570484204,
+          "assetSha256": "eb4405382ba8dd2fc86434410f284db3493e804148ce7b0e3d54952d1a5db5a9"
+        },
+        {
+          "assetName": "execute.verifier",
+          "assetSize": 3321,
+          "assetSha256": "13096f6f22344b264d85b86af2da811f797cce55e76d085e0185eb81bc359b60"
+        },
+        {
+          "assetName": "execute.zkir",
+          "assetSize": 123635,
+          "assetSha256": "50f09e0b36bb8cf34e6db52fbbff46a4d94746dd4fc10895e8c770c4f26298c0"
+        },
+        {
+          "assetName": "isRegistered.bzkir",
+          "assetSize": 263,
+          "assetSha256": "4da9bbd859ca5d42bccfb02951466d010ef24df0f1e22a149e76bac5057e114d"
+        },
+        {
+          "assetName": "isRegistered.prover",
+          "assetSize": 224215,
+          "assetSha256": "a85ece0d21a7b62c4bae2a1a1512788de21acfb14b571d79eed0b711cd73b66f"
+        },
+        {
+          "assetName": "isRegistered.verifier",
+          "assetSize": 1353,
+          "assetSha256": "7eec7a11c0ba74b04679ac2f7ab7fac5d2ec63e33e2fb4b3eb820e7f452a05dd"
+        },
+        {
+          "assetName": "isRegistered.zkir",
+          "assetSize": 786,
+          "assetSha256": "25eaf82d9391232e00ce0c15e95cbaf004f7acb59d82827c7429be08328bcb0f"
+        },
+        {
+          "assetName": "manifest.json",
+          "assetSize": 10395,
+          "assetSha256": "7d208f0d6f2cdebb0ea431508e46cce7ddb1f5aac5944bcd729db9dd6e2a7895"
+        },
+        {
+          "assetName": "poolHasColour.bzkir",
+          "assetSize": 269,
+          "assetSha256": "4616eb019c61c17693aa5ac0cc1a1c30c5216ed1d48ecf51d049ccc1995ed054"
+        },
+        {
+          "assetName": "poolHasColour.prover",
+          "assetSize": 224221,
+          "assetSha256": "7dc2d4b8e59dfc2c6f15b8db74200035d87f912b8e1fbd3dfc1a1742c63a0c77"
+        },
+        {
+          "assetName": "poolHasColour.verifier",
+          "assetSize": 1353,
+          "assetSha256": "a649d8122bfe65f6c6dcc848aea68beb542403b85350fb351aaf1c3348c1042c"
+        },
+        {
+          "assetName": "poolHasColour.zkir",
+          "assetSize": 792,
+          "assetSha256": "55c30b8add242f7093c2e40e2124d02a9f4f3a9d19259736ab142a3ebd7d0709"
+        },
+        {
+          "assetName": "poolValue.bzkir",
+          "assetSize": 555,
+          "assetSha256": "ad012dd0726153e99d045710fafc0deb6ba1525fd99e78b4081926325b605b45"
+        },
+        {
+          "assetName": "poolValue.prover",
+          "assetSize": 224507,
+          "assetSha256": "5f4a4f4cd368d1bb91fd820cebf59502cf69455161497e94e34abc47546de027"
+        },
+        {
+          "assetName": "poolValue.verifier",
+          "assetSize": 1353,
+          "assetSha256": "69b00ade35adfc0a2f9e634797f50ad5bd74c16f01a1980838b9fdc35c065b1a"
+        },
+        {
+          "assetName": "poolValue.zkir",
+          "assetSize": 1632,
+          "assetSha256": "9aeab69ad730f80f747e0fedd5a5301be0e8b7367db6f99af47275366a40dad3"
+        },
+        {
+          "assetName": "shieldedAccountBalance.bzkir",
+          "assetSize": 612,
+          "assetSha256": "c51aa2ff6fd3511c2b566220de4e6602722cbdc26d01f2d9f52449049b358b9b"
+        },
+        {
+          "assetName": "shieldedAccountBalance.prover",
+          "assetSize": 11277172,
+          "assetSha256": "87200767a2d22c8ed0800571bd9e368ca8c0904b6fe17fee49edb51eb9a7af80"
+        },
+        {
+          "assetName": "shieldedAccountBalance.verifier",
+          "assetSize": 2121,
+          "assetSha256": "9079e1e4d2c1c6216e6b796793cea060508e2bb81362d8b846afbbc90a7ecb3e"
+        },
+        {
+          "assetName": "shieldedAccountBalance.zkir",
+          "assetSize": 1768,
+          "assetSha256": "132a4afceb81c656d34493c9806a42bb321fe0373341b1bf5bbd4e85c110abdb"
+        },
+        {
+          "assetName": "unshieldedAccountBalance.bzkir",
+          "assetSize": 616,
+          "assetSha256": "652188daffd451bf00b0b9b30400163ee49b5ecd47f175899dcc7da52035acc9"
+        },
+        {
+          "assetName": "unshieldedAccountBalance.prover",
+          "assetSize": 11277176,
+          "assetSha256": "ad24ef7e8ec120121165d9b1e8b779e95df70c9fc6a12c80e35718a219eb3ad8"
+        },
+        {
+          "assetName": "unshieldedAccountBalance.verifier",
+          "assetSize": 2121,
+          "assetSha256": "f2831ba26b343aedaccf0dc55e45e1efd81a34789aa48409a492651afb8a6649"
+        },
+        {
+          "assetName": "unshieldedAccountBalance.zkir",
+          "assetSize": 1772,
+          "assetSha256": "e609149de5161522555677b777ba82717d71c5bb0e96afab8acf4c68f214e982"
+        }
+      ]
     }
   ],
   "proofData": {

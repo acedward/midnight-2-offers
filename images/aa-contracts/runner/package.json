@@ -13,10 +13,15 @@
     "and @midnight-ntwrk/compact-runtime 0.18.0-rc.1 next to compactc 0.33.0-rc.2, which is",
     "the version the pinned kernel tree declares in infra/compact-version.txt and which the",
     "image reads from there rather than hard-coding.",
+    "compact-runtime 0.18.0-rc.1 STILL FITS at AA_REF 41de69d (the split preset): measured",
+    "2026-09-04, compactc 0.33.0-rc.2 compiles the preset plus its nine modules and stamps",
+    "runtime-version 0.18.0-rc.1, and emits ZKIR byte-identical to compactc 0.34.0 for all",
+    "nine circuits. The MinoCrab release supplies execute's ZKIR and keys instead of that",
+    "build (see the image Dockerfile) but adds NO dependency here: it is data, not code.",
     "@effectstream/midnight-contracts and @effectstream/utils stay at 0.200.1 here while the",
     "kernel resolves 0.200.2: they are used for this process's own network config and",
     "contract helpers, never for anything the kernel deserializes.",
-    "The override collapses ledger-v9 to ONE wasm copy \u2014 two copies in one process fail",
+    "The override collapses ledger-v9 to ONE wasm copy — two copies in one process fail",
     "instanceof checks (the documented trap)."
   ],
   "dependencies": {
