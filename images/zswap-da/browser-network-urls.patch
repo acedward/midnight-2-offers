@@ -1,6 +1,8 @@
+diff --git a/src/services/api.ts b/src/services/api.ts
+index 06e9794..7546e8a 100644
 --- a/src/services/api.ts
 +++ b/src/services/api.ts
-@@ -283,6 +283,22 @@ export const api = {
+@@ -405,6 +405,22 @@ export const api = {
      const res = await fetch(`${V1}/midnight/config`);
      const data = await res.json();
      if (!res.ok) throw new Error(data.message ?? JSON.stringify(data));

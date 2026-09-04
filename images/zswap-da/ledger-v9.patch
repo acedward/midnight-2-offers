@@ -1,62 +1,5 @@
---- a/package.json
-+++ b/package.json
-@@ -15,21 +15,21 @@
-   },
-   "dependencies": {
-     "@effectstream/midnight-contracts": "0.200.1",
--    "@effectstream/mip-zswap-offer": "0.2.0",
-+    "@effectstream/mip-zswap-offer": "0.4.0-v9.0",
-     "@effectstream/wallets": "0.200.1",
--    "@midnight-ntwrk/compact-js": "2.5.1",
--    "@midnight-ntwrk/compact-runtime": "0.16.0",
-+    "@midnight-ntwrk/compact-js": "2.5.5-rc.7",
-+    "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1",
-     "@midnight-ntwrk/dapp-connector-api": "4.0.1",
--    "@midnight-ntwrk/ledger-v8": "8.1.0",
--    "@midnight-ntwrk/midnight-js-contracts": "4.1.1",
--    "@midnight-ntwrk/midnight-js-fetch-zk-config-provider": "4.1.1",
--    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "4.1.1",
--    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.1.1",
--    "@midnight-ntwrk/midnight-js-level-private-state-provider": "4.1.1",
--    "@midnight-ntwrk/midnight-js-network-id": "4.1.1",
--    "@midnight-ntwrk/midnight-js-types": "4.1.1",
--    "@midnight-ntwrk/midnight-js-utils": "4.1.1",
--    "@midnightntwrk/wallet-sdk-address-format": "3.1.2",
-+    "@midnight-ntwrk/midnight-js-contracts": "5.0.0-beta.6",
-+    "@midnight-ntwrk/midnight-js-fetch-zk-config-provider": "5.0.0-beta.6",
-+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "5.0.0-beta.6",
-+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "5.0.0-beta.6",
-+    "@midnight-ntwrk/midnight-js-level-private-state-provider": "5.0.0-beta.6",
-+    "@midnight-ntwrk/midnight-js-network-id": "5.0.0-beta.6",
-+    "@midnight-ntwrk/midnight-js-types": "5.0.0-beta.6",
-+    "@midnight-ntwrk/midnight-js-utils": "5.0.0-beta.6",
-+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
-+    "@midnightntwrk/wallet-sdk-address-format": "4.0.0-beta.2",
-     "@noble/curves": "^1.9.7",
-     "@noble/hashes": "^1.8.0",
-     "@scure/base": "^2.0.0",
-@@ -51,16 +51,15 @@
-     "vite-plugin-wasm": "^3.4.1"
-   },
-   "//overrides": [
--    "ledger-v8 is a wasm-bindgen module: its exported classes carry per-instance",
-+    "ledger-v9 is a wasm-bindgen module: its exported classes carry per-instance",
-     "type identity, so two copies in one bundle make every cross-copy value fail",
-     "an instanceof check. The symptom is 'expected instance of _DustParameters'",
-     "at wallet connect — wallet-sdk-dust-wallet had resolved its own nested",
--    "8.0.3 while the app used the hoisted 8.1.0.",
--    "Every nested spec is ^8.0.2/^8.0.3, all satisfied by 8.1.0, so these were",
--    "stale lockfile resolutions rather than real conflicts. Pinning collapses",
--    "them to one copy — which also halves ~10 MB of wasm out of the bundle."
-+    "1.0.0-rc.3 while the app used the same version through another path.",
-+    "Pinning collapses all consumers to one wasm identity so cross-package",
-+    "instanceof checks remain sound."
-   ],
-   "overrides": {
--    "@midnight-ntwrk/ledger-v8": "8.1.0"
-+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
-   }
- }
+diff --git a/bun.lock b/bun.lock
+index 5849003..e2285ee 100644
 --- a/bun.lock
 +++ b/bun.lock
 @@ -6,21 +6,21 @@
@@ -326,9 +269,72 @@
      "@midnightntwrk/wallet-sdk-node-client/@polkadot/api/@polkadot/api-augment": ["@polkadot/api-augment@16.5.6", "", { "dependencies": { "@polkadot/api-base": "16.5.6", "@polkadot/rpc-augment": "16.5.6", "@polkadot/types": "16.5.6", "@polkadot/types-augment": "16.5.6", "@polkadot/types-codec": "16.5.6", "@polkadot/util": "^14.0.3", "tslib": "^2.8.1" } }, "sha512-bunJF1c3nIuDtU6iwa+reTt9U47Y8iOC8Gw7PfANlZmLJmO/XVXnWc3JJLM+g9ESDn2raHJELeWBFVOXQrbtUw=="],
  
      "@midnightntwrk/wallet-sdk-node-client/@polkadot/api/@polkadot/api-base": ["@polkadot/api-base@16.5.6", "", { "dependencies": { "@polkadot/rpc-core": "16.5.6", "@polkadot/types": "16.5.6", "@polkadot/util": "^14.0.3", "rxjs": "^7.8.1", "tslib": "^2.8.1" } }, "sha512-eBLIv86ZZY4t5OrobVoGC+QXbErOGlBpI2rJI5OMvTNPoVvtEoI++u+wwRScjkOZaUhXyQikd+0Uv71qr3xnsA=="],
+diff --git a/package.json b/package.json
+index d5fa83b..bba0a65 100644
+--- a/package.json
++++ b/package.json
+@@ -15,21 +15,21 @@
+   },
+   "dependencies": {
+     "@effectstream/midnight-contracts": "0.200.1",
+-    "@effectstream/mip-zswap-offer": "0.2.0",
++    "@effectstream/mip-zswap-offer": "0.4.0-v9.0",
+     "@effectstream/wallets": "0.200.1",
+-    "@midnight-ntwrk/compact-js": "2.5.1",
+-    "@midnight-ntwrk/compact-runtime": "0.16.0",
++    "@midnight-ntwrk/compact-js": "2.5.5-rc.7",
++    "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1",
+     "@midnight-ntwrk/dapp-connector-api": "4.0.1",
+-    "@midnight-ntwrk/ledger-v8": "8.1.0",
+-    "@midnight-ntwrk/midnight-js-contracts": "4.1.1",
+-    "@midnight-ntwrk/midnight-js-fetch-zk-config-provider": "4.1.1",
+-    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "4.1.1",
+-    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.1.1",
+-    "@midnight-ntwrk/midnight-js-level-private-state-provider": "4.1.1",
+-    "@midnight-ntwrk/midnight-js-network-id": "4.1.1",
+-    "@midnight-ntwrk/midnight-js-types": "4.1.1",
+-    "@midnight-ntwrk/midnight-js-utils": "4.1.1",
+-    "@midnightntwrk/wallet-sdk-address-format": "3.1.2",
++    "@midnight-ntwrk/midnight-js-contracts": "5.0.0-beta.6",
++    "@midnight-ntwrk/midnight-js-fetch-zk-config-provider": "5.0.0-beta.6",
++    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "5.0.0-beta.6",
++    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "5.0.0-beta.6",
++    "@midnight-ntwrk/midnight-js-level-private-state-provider": "5.0.0-beta.6",
++    "@midnight-ntwrk/midnight-js-network-id": "5.0.0-beta.6",
++    "@midnight-ntwrk/midnight-js-types": "5.0.0-beta.6",
++    "@midnight-ntwrk/midnight-js-utils": "5.0.0-beta.6",
++    "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
++    "@midnightntwrk/wallet-sdk-address-format": "4.0.0-beta.2",
+     "@noble/curves": "^1.9.7",
+     "@noble/hashes": "^1.8.0",
+     "@scure/base": "^2.0.0",
+@@ -51,16 +51,15 @@
+     "vite-plugin-wasm": "^3.4.1"
+   },
+   "//overrides": [
+-    "ledger-v8 is a wasm-bindgen module: its exported classes carry per-instance",
++    "ledger-v9 is a wasm-bindgen module: its exported classes carry per-instance",
+     "type identity, so two copies in one bundle make every cross-copy value fail",
+     "an instanceof check. The symptom is 'expected instance of _DustParameters'",
+     "at wallet connect — wallet-sdk-dust-wallet had resolved its own nested",
+-    "8.0.3 while the app used the hoisted 8.1.0.",
+-    "Every nested spec is ^8.0.2/^8.0.3, all satisfied by 8.1.0, so these were",
+-    "stale lockfile resolutions rather than real conflicts. Pinning collapses",
+-    "them to one copy — which also halves ~10 MB of wasm out of the bundle."
++    "1.0.0-rc.3 while the app used the same version through another path.",
++    "Pinning collapses all consumers to one wasm identity so cross-package",
++    "instanceof checks remain sound."
+   ],
+   "overrides": {
+-    "@midnight-ntwrk/ledger-v8": "8.1.0"
++    "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
+   }
+ }
+diff --git a/scripts/build-contract.ts b/scripts/build-contract.ts
+index 7f8ded5..0083ba1 100644
 --- a/scripts/build-contract.ts
 +++ b/scripts/build-contract.ts
-@@ -33,10 +33,10 @@
+@@ -33,10 +33,10 @@ const MANIFEST = path.join(CONTRACT_DIR, "manifest.json");
   *
   * Must stay in step with @midnight-ntwrk/compact-runtime in package.json — the
   * generated module calls checkRuntimeVersion() against it at import time. Both
@@ -341,6 +347,8 @@
  
  interface Manifest {
    source: string;
+diff --git a/src/contract/manifest.json b/src/contract/manifest.json
+index 4c4691b..dac4324 100644
 --- a/src/contract/manifest.json
 +++ b/src/contract/manifest.json
 @@ -1,12 +1,13 @@
@@ -362,6 +370,8 @@
      "keys/incrementNoun.prover": "cc812f6b7cd2e10734fc7093ba5d59ba0a3c79f74a01ceffae1aeae024b2d36d",
      "keys/incrementNoun.verifier": "76d622c599cbf1cc68fd9f698a41f71d3be45ec2fc18c28c01269c6105306e62",
      "keys/mint_shielded.prover": "5e9d656c1c39a68992ee170a39296b82a9ffbc6dae731c59b7433dd7e68a070a",
+diff --git a/src/decodeOffer.ts b/src/decodeOffer.ts
+index bee342d..dacd3a4 100644
 --- a/src/decodeOffer.ts
 +++ b/src/decodeOffer.ts
 @@ -1,6 +1,6 @@
@@ -372,9 +382,11 @@
  import type { TokenEntry } from './types';
  
  export type DecodedOffer = {
+diff --git a/src/services/browserContract.ts b/src/services/browserContract.ts
+index 265d1f8..8089e20 100644
 --- a/src/services/browserContract.ts
 +++ b/src/services/browserContract.ts
-@@ -17,9 +17,9 @@
+@@ -17,9 +17,9 @@ import {
    type CoinPublicKey,
    type EncPublicKey,
    type FinalizedTransaction,
@@ -386,7 +398,7 @@
  import {
    type MidnightProvider,
    type MidnightProviders,
-@@ -150,7 +150,7 @@
+@@ -154,7 +154,7 @@ async function buildProviders(
  ): Promise<OfferFilesProviders> {
    // Each wallet returns these in its own encoding — Lace in bech32m (parsed to
    // hex), the JS wallet already in hex. ContractWallet owns that difference;
@@ -395,7 +407,7 @@
    const { coinPublicKeyHex, encPublicKeyHex } = await wallet.getShieldedKeys(config.networkId);
  
    // Diagnostic dump — the coin public key here is the recipient baked into the
-@@ -192,7 +192,7 @@
+@@ -196,7 +196,7 @@ async function buildProviders(
    };
    const zkConfigProvider = new FetchZkConfigProvider<OfferFilesCircuits>(
      API_BASE,
@@ -404,7 +416,7 @@
    );
  
    return {
-@@ -389,7 +389,7 @@
+@@ -345,7 +345,7 @@ async function balanceShieldedViaMirrorMerge(
    );
    console.log('[browserContract] complete (mirror+merge): taker tx hex bytes', takerTxHex.length / 2);
  
@@ -413,7 +425,7 @@
      'signature',
      'proof',
      'binding',
-@@ -482,7 +482,7 @@
+@@ -438,7 +438,7 @@ async function balanceMixedViaSealedBalance(
    );
    let txHash = '';
    try {
@@ -422,15 +434,8 @@
        'signature',
        'proof',
        'binding',
-@@ -530,7 +530,7 @@
-   console.log('[browserContract] complete: decoding offer bytes');
-   dlog('proveAndSubmitOffer: → OfferFiles.decode + deserialize maker tx (sync)');
-   const rawBytes = OfferFiles.decode(offerBech32m);
--  const makerTx = LedgerV8Transaction.deserialize(
-+  const makerTx = LedgerV9Transaction.deserialize(
-     'signature',
-     'proof',
-     'binding',
+diff --git a/src/services/contractWallet.ts b/src/services/contractWallet.ts
+index 3fbbf66..a757c16 100644
 --- a/src/services/contractWallet.ts
 +++ b/src/services/contractWallet.ts
 @@ -15,9 +15,9 @@
@@ -445,7 +450,7 @@
  import type { UnboundTransaction } from '@midnight-ntwrk/midnight-js-types';
  import {
    parseCoinPublicKeyToHex,
-@@ -25,7 +25,7 @@
+@@ -25,7 +25,7 @@ import {
  } from '@midnight-ntwrk/midnight-js-utils';
  import { dlog, timed } from '../debug';
  
@@ -454,7 +459,7 @@
  export interface ShieldedKeysHex {
    coinPublicKeyHex: string;
    encPublicKeyHex: string;
-@@ -98,7 +98,7 @@
+@@ -98,7 +98,7 @@ export function injectedContractWallet(connectedApi: ConnectedAPI): ContractWall
            toHex(tx.serialize()),
            { payFees: false },
          );
@@ -463,28 +468,61 @@
            'signature',
            'proof',
            'binding',
---- a/src/services/localTradeOffers.ts
-+++ b/src/services/localTradeOffers.ts
-@@ -27,8 +27,8 @@
- // sign step is skipped when no unshielded leg is involved.
- 
- import {
--  Transaction as LedgerV8Transaction,
--} from '@midnight-ntwrk/ledger-v8';
-+  Transaction as LedgerV9Transaction,
-+} from '@midnightntwrk/ledger-v9';
- import { type NetworkId, setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
- import { MidnightBech32m, UnshieldedAddress } from '@midnightntwrk/wallet-sdk-address-format';
+diff --git a/src/services/offerBatch.test.ts b/src/services/offerBatch.test.ts
+index a1152d4..91d4193 100644
+--- a/src/services/offerBatch.test.ts
++++ b/src/services/offerBatch.test.ts
+@@ -7,7 +7,7 @@
+ // `mergeMakerOffers` are exercised against actual ledger behaviour, including
+ // the segment-collision rule that bounds what a ladder can contain.
+ import { describe, expect, test } from 'bun:test';
+-import * as ledger from '@midnight-ntwrk/ledger-v8';
++import * as ledger from '@midnightntwrk/ledger-v9';
  import { OfferFiles } from '@effectstream/mip-zswap-offer/mip5';
-@@ -174,7 +174,7 @@
-   setNetworkId(config.networkId as NetworkId);
+ import type { NetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+ import {
+diff --git a/src/services/offerBatch.ts b/src/services/offerBatch.ts
+index dbfbb5b..1f6f82d 100644
+--- a/src/services/offerBatch.ts
++++ b/src/services/offerBatch.ts
+@@ -35,7 +35,7 @@
+ // same dispatch a single offer did, and that is something a unit test can check
+ // without a wallet in the room.
  
-   const rawBytes = OfferFiles.decode(offerBech32m);
--  const makerTx = LedgerV8Transaction.deserialize('signature', 'proof', 'binding', rawBytes);
-+  const makerTx = LedgerV9Transaction.deserialize('signature', 'proof', 'binding', rawBytes);
-   dlog('localOffer.settle: maker tx decoded', { bytes: rawBytes.length });
- 
-   // What the taker pays = the maker's wants. Drives the sign decision below.
+-import { Transaction as LedgerV8Transaction } from '@midnight-ntwrk/ledger-v8';
++import { Transaction as LedgerV9Transaction } from '@midnightntwrk/ledger-v9';
+ import { setNetworkId, type NetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+ import { OfferFiles } from '@effectstream/mip-zswap-offer/mip5';
+ import { parseTakerLegs } from './offerParse';
+@@ -46,7 +46,7 @@ import { parseTakerLegs } from './offerParse';
+  */
+ export interface DecodedMakerOffer {
+   blob: string;
+-  /** ledger-v8 `Transaction<'signature','proof','binding'>`. */
++  /** ledger-v9 `Transaction<'signature','proof','binding'>`. */
+   tx: any;
+   /**
+    * The blob's own decoded bytes, kept so a single-offer take can hand a wallet
+@@ -75,7 +75,7 @@ export function decodeMakerOffers(blobs: string[], networkId: NetworkId): Decode
+       const raw = OfferFiles.decode(blob);
+       return {
+         blob,
+-        tx: LedgerV8Transaction.deserialize('signature', 'proof', 'binding', raw),
++        tx: LedgerV9Transaction.deserialize('signature', 'proof', 'binding', raw),
+         raw,
+       };
+     } catch (cause) {
+@@ -143,7 +143,7 @@ export function mergeMakerOffers(decoded: DecodedMakerOffer[]): any {
+  * (Lace) needs.
+  */
+ export interface MergedMakerBatch {
+-  /** ledger-v8 transaction — the merged maker half. */
++  /** ledger-v9 transaction — the merged maker half. */
+   tx: any;
+   /**
+    * `tx` as bytes. For a single offer these are the blob's OWN decoded bytes,
+diff --git a/src/services/offerParse.ts b/src/services/offerParse.ts
+index cf49560..1562bbd 100644
 --- a/src/services/offerParse.ts
 +++ b/src/services/offerParse.ts
 @@ -4,7 +4,7 @@
@@ -496,7 +534,7 @@
  import { setNetworkId, type NetworkId } from '@midnight-ntwrk/midnight-js-network-id';
  import { OfferFiles } from '@effectstream/mip-zswap-offer/mip5';
  
-@@ -16,7 +16,7 @@
+@@ -16,7 +16,7 @@ export function parseTakerLegs(blob: string, networkId: NetworkId): ParsedOffer
    try {
      setNetworkId(networkId);
      const bytes = OfferFiles.decode(blob);
@@ -505,6 +543,8 @@
    } catch {
      return null;
    }
+diff --git a/src/services/offerSender.ts b/src/services/offerSender.ts
+index dbe2282..db08a23 100644
 --- a/src/services/offerSender.ts
 +++ b/src/services/offerSender.ts
 @@ -13,7 +13,7 @@
@@ -516,7 +556,7 @@
  import { setNetworkId, type NetworkId } from '@midnight-ntwrk/midnight-js-network-id';
  import {
    MidnightBech32m,
-@@ -40,7 +40,7 @@
+@@ -40,7 +40,7 @@ export function parseOfferSender(offerBech32m: string, networkId: NetworkId): Of
    let tx: any;
    try {
      const bytes = OfferFiles.decode(offerBech32m);
@@ -525,4 +565,3 @@
    } catch {
      return undefined;
    }
-

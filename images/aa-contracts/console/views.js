@@ -456,8 +456,8 @@ const REPOS = [
   {
     repo: "effectstream templates/zswap-da", url: "https://github.com/effectstream/effectstream",
     role: "the swap frontend (profile frontend)",
-    ref: "effectstream/effectstream @ 332503c8 + local ledger-v9 patch",
-    notes: [["", "", "upstream templates/zswap-da is fetched at the immutable commit; images/zswap-da/ledger-v9.patch carries the 10 required v9 adaptations, with no copied SPA tree"]],
+    ref: "effectstream/effectstream @ ea04ff7c + local ledger-v9 patch",
+    notes: [["", "", "upstream templates/zswap-da is fetched at the immutable commit (subtree ea22913c verified too); images/zswap-da/ledger-v9.patch carries the 11 required v9 adaptations, with no copied SPA tree"]],
   },
   {
     repo: "acedward/web-memo", url: "https://github.com/acedward/web-memo",
