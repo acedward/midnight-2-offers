@@ -14,7 +14,10 @@ services:
   # in this repository. A cold build needs GitHub + npm network access.
   #
   # Wallet story (T5.3, spec Q5 note): the in-page JS wallet works against any
-  # host ports; the LACE path needs the stack on the default 9944/8088/6300.
+  # host ports — the published node/indexer/proof-server ports are injected at
+  # container start and the SPA maps the kernel's compose-internal URIs through
+  # them. An injected browser wallet (Lace) still dials the chain itself, so
+  # that path needs the stack on the default 9944/8088/6300.
   frontend:
     image: '${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}'
     build:
@@ -31,6 +34,18 @@ services:
       # non-default port layout (e.g. pick-ports.sh: API_BASE=http://127.0.0.1:<KERNEL_HOST_PORT>).
       API_BASE: '${FRONTEND_API_BASE:-}'
       BATCHER_URL: '${FRONTEND_BATCHER_URL:-}'
+      # The stack's PUBLISHED host ports for the three Midnight services the
+      # page has to reach directly: the indexer and proof server, which the
+      # kernel reports on GET /v1/midnight/config with their CONTAINER ports,
+      # and the node, which the kernel does not report at all. The entrypoint
+      # turns these into window.MIDNIGHT_HOST_PORTS and
+      # images/zswap-da/browser-network-urls.patch maps every reported URI
+      # through it. Defaults are the CONTAINER ports, so a default-layout stack
+      # renders an identity map and nothing changes; a pick-ports.sh stack gets
+      # its real ports and the in-page wallet syncs there too.
+      NODE_HOST_PORT: '${NODE_HOST_PORT:-9944}'
+      INDEXER_HOST_PORT: '${INDEXER_HOST_PORT:-8088}'
+      PROOF_HOST_PORT: '${PROOF_HOST_PORT:-6300}'
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO/dev/null http://127.0.0.1:10600/']
       interval: 5s

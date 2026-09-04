@@ -1,26 +1,60 @@
 diff --git a/src/services/api.ts b/src/services/api.ts
-index 06e9794..7546e8a 100644
+index 06e9794..82a581a 100644
 --- a/src/services/api.ts
 +++ b/src/services/api.ts
-@@ -405,6 +405,22 @@ export const api = {
+@@ -401,10 +401,56 @@ export const api = {
+     indexerWsUri: string;
+     proofServerUri: string;
+     networkId: string;
++    // Not sent by the kernel today (see the note below); synthesized here so
++    // src/state/wallet.ts picks it up through the fallback it already has.
++    nodeUri?: string;
+   }> => {
      const res = await fetch(`${V1}/midnight/config`);
      const data = await res.json();
      if (!res.ok) throw new Error(data.message ?? JSON.stringify(data));
-+    // The kernel reports the URIs it dials itself; inside Docker Compose those
++    // The kernel reports the URIs it dials ITSELF; inside Docker Compose those
 +    // carry service hostnames (indexer, proof-server) that only resolve on the
-+    // compose network. This code runs in the page, so a bare (dot-less,
-+    // non-localhost) hostname is re-pointed at the page's own host — scheme,
-+    // port and path are kept, and the stack publishes each service on that
-+    // same host port. Fixed here so every consumer of this config (wallet,
-+    // contract client, take-offer flow) gets browser-reachable URIs.
++    // compose network, on the CONTAINER port. This code runs in the page, so
++    // each one is rewritten twice:
++    //
++    //   host — a bare (dot-less, non-localhost) hostname becomes the page's own
++    //          host. Scheme and path are kept: the kernel stays the authority
++    //          on both (e.g. the indexer's /api/v4/graphql API version).
++    //   port — the container port becomes the port this stack actually
++    //          PUBLISHED, read from window.MIDNIGHT_HOST_PORTS, a
++    //          compose-hostname -> host-port map the image's entrypoint writes
++    //          into /config.js at container start. Only Docker knows that
++    //          mapping; the kernel cannot. An absent mapping keeps the port,
++    //          which is exactly right for the default layout where the
++    //          published port equals the container port.
++    //
++    // Fixed here so every consumer of this config (wallet, contract client,
++    // take-offer flow) gets browser-reachable URIs on ANY port block.
 +    const pageHost = typeof location !== 'undefined' ? location.hostname : '127.0.0.1';
++    const hostPorts = (typeof window !== 'undefined'
++      ? (window as unknown as { MIDNIGHT_HOST_PORTS?: Record<string, string | number> })
++          .MIDNIGHT_HOST_PORTS
++      : undefined) ?? {};
 +    for (const key of Object.keys(data)) {
 +      const value = (data as Record<string, unknown>)[key];
 +      if (!key.endsWith('Uri') || typeof value !== 'string') continue;
-+      const m = value.match(/^(\w+:\/\/)([^/:]+)(.*)$/);
-+      if (m && !m[2].includes('.') && m[2] !== 'localhost') {
-+        (data as Record<string, unknown>)[key] = `${m[1]}${pageHost}${m[3]}`;
-+      }
++      const m = value.match(/^(\w+:\/\/)([^/:]+)(?::(\d+))?(.*)$/);
++      if (!m || m[2].includes('.') || m[2] === 'localhost') continue;
++      const mapped = hostPorts[m[2]];
++      const port = mapped === undefined || mapped === null || `${mapped}` === '' ? m[3] : `${mapped}`;
++      (data as Record<string, unknown>)[key] = `${m[1]}${pageHost}${port ? `:${port}` : ''}${m[4]}`;
++    }
++    // The kernel does not report a node URI at all — packages/node/api.ts
++    // returns contractAddress, indexerUri, indexerWsUri, proofServerUri and
++    // networkId, and nothing else — so src/state/wallet.ts falls back to
++    // `http://<page host>:9944`: right host, wrong port on any stack that does
++    // not publish the node on 9944. This function is the one place that owns
++    // "where is the chain", so the fallback is completed here from the same
++    // map. If a later kernel does report nodeUri, the loop above has already
++    // rewritten it and this is skipped.
++    if (typeof (data as Record<string, unknown>).nodeUri !== 'string' && hostPorts['node']) {
++      (data as Record<string, unknown>).nodeUri = `http://${pageHost}:${hostPorts['node']}`;
 +    }
      return data;
    },
