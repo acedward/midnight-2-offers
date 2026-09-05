@@ -79,10 +79,14 @@ info "artifacts ${ARTIFACTS}/"
 echo
 log "shielded-night: the page"
 
-HTML="$(curl -fsS --max-time 10 "$BASE/" 2>/dev/null || true)"
-if [[ "$HTML" == *"<html"* || "$HTML" == *"<!doctype"* || "$HTML" == *"<!DOCTYPE"* ]]; then
+# RETRIED, bounded (infra issue 00016): this is the FIRST request this script makes at the
+# page, so it is the one that can arrive while the container is still coming up — and a single
+# `curl … | grep` cannot tell "slow" from "broken". Everything after it reads the same server,
+# so proving readiness once here is enough; the assertion itself is unchanged.
+if HTML="$(curl_retry_match "$BASE/" '<html|<!doctype|<!DOCTYPE' "shielded-night page")"; then
   ok "serves an HTML document on :${SNPORT}"
 else
+  HTML=""
   fail "did not serve HTML on :${SNPORT}"
 fi
 

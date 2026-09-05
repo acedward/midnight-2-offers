@@ -76,12 +76,21 @@ count filters on.
 `packages/database/migrations/000-init.sql` breaks that: the kernel applies the init file only
 against an EMPTY database, and it has no migration path for a database that already exists
 (new `migrationTable` entries never reach a synced DB). The ledger-v9 pin
-(`4af102536f02f137b696a4734bd8c936eddf3672`) is such a move — it adds the token price
+(`80bace37bc2412542452e1c597761b2ebce5c677`) is such a move — it adds the token price
 service's `asset_prices` / `price_feed_status` tables and `known_tokens.decimals`, with seeded
 reference prices. A `postgres-data` volume older than that pin produces a stack where every
 container is healthy and every quote is wrong. `scripts/verify-kernel.sh` asserts
 `GET /v1/prices` returns the seeded asset table for exactly this reason, and its failure names
 the fix.
+
+**And the `80bace3` pin needs it for a second, independent reason: the offer-files CONTRACT
+changed.** Kernel PR #67 gave `mint_shielded` and `mint_unshielded` an explicit recipient, so
+their circuits, verifier keys and the deployed contract's address are all new. The
+`offerfiles-deploy` volume holds an address, and a stack that still had one from an older pin
+would JOIN that contract with keys this build does not have — every mint and every take would
+fail against it. `aa-out` goes for the same reason (the AA contracts are recompiled by a
+different compactc). Neither is caught by the database assertion above, which is exactly why
+`./down.sh -v` and not a selective cleanup is the instruction.
 
 `./down.sh -v` **is** the full reset — there is no second cleanup step to remember, and no state
 outside what it removes:
@@ -216,8 +225,11 @@ survived. Exit 0 means both halves of that: the stack worked, and the machine is
 Its step 1 is a set of OFFLINE gates that need no daemon, no network and no registry — the
 artifact-decision matrix, the fetch pins, the proof-server mirror record, the rendered compose
 pins, and `verify-pin-defaults.sh`, which fails when any two defaults of one SOURCE pin
-(`KERNEL_REF`, `SOLVER_REF`, `FRONTEND_REF`, `AA_REF`, `UMBRA_REF`, `SHIELDED_NIGHT_REF`)
-disagree anywhere in `compose/`, `images/`, `scripts/` or `.env.example`. That check exists
+(`KERNEL_REF`, `SOLVER_REF`, `FRONTEND_REF`, `AA_REF`, `UMBRA_REF`, `SHIELDED_NIGHT_REF`,
+`MINOCRAB_REF`) disagree anywhere in `compose/`, `images/`, `scripts/` or `.env.example`. It
+covers two pins that are not commits at all and would otherwise go unchecked: the AA image's
+`MINOCRAB_SUMS_SHA256` (a 64-hex release identity) and `MINOCRAB_RELEASE` (a `vX.Y.Z` tag) —
+a pin with two values is not a pin whatever shape it has. That check exists
 because the repository once shipped a split kernel pin, and every OTHER check compares a running
 image against ONE of the copies — so the failure read as a stale image rather than as the
 configuration defect it was. Each gate that has a `--self-test` runs it, so a check that stopped

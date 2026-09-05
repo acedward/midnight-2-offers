@@ -1,5 +1,5 @@
 diff --git a/bun.lock b/bun.lock
-index 5849003..e2285ee 100644
+index 5849003..b34d248 100644
 --- a/bun.lock
 +++ b/bun.lock
 @@ -6,21 +6,21 @@
@@ -12,7 +12,7 @@ index 5849003..e2285ee 100644
 -        "@midnight-ntwrk/compact-js": "2.5.1",
 -        "@midnight-ntwrk/compact-runtime": "0.16.0",
 +        "@midnight-ntwrk/compact-js": "2.5.5-rc.7",
-+        "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1",
++        "@midnight-ntwrk/compact-runtime": "0.19.0",
          "@midnight-ntwrk/dapp-connector-api": "4.0.1",
 -        "@midnight-ntwrk/ledger-v8": "8.1.0",
 -        "@midnight-ntwrk/midnight-js-contracts": "4.1.1",
@@ -37,16 +37,17 @@ index 5849003..e2285ee 100644
          "@noble/curves": "^1.9.7",
          "@noble/hashes": "^1.8.0",
          "@scure/base": "^2.0.0",
-@@ -44,7 +44,7 @@
+@@ -44,7 +44,8 @@
      },
    },
    "overrides": {
 -    "@midnight-ntwrk/ledger-v8": "8.1.0",
++    "@midnight-ntwrk/compact-runtime": "0.19.0",
 +    "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
    },
    "packages": {
      "@adraffy/ens-normalize": ["@adraffy/ens-normalize@1.11.1", "", {}, "sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ=="],
-@@ -101,7 +101,7 @@
+@@ -101,7 +102,7 @@
  
      "@dimforge/rapier3d-compat": ["@dimforge/rapier3d-compat@0.12.0", "", {}, "sha512-uekIGetywIgopfD97oDL5PfeezkFpNhwlzlaEYNOA0N6ghdsOvh/HYjSMek5Q2O1PYvRSDFcqFVJl4r4ZBwOow=="],
  
@@ -55,7 +56,7 @@ index 5849003..e2285ee 100644
  
      "@effectstream/concise": ["@effectstream/concise@0.200.1", "", { "dependencies": { "@effectstream/crypto": "0.200.1", "@effectstream/utils": "0.200.1", "@sinclair/typebox": "0.34.41", "js-sha3": "^0.9.3", "viem": "2.37.3" } }, "sha512-bcs6EH4uPe9ebiOnBPIkqfy6XEZd+8oiYICgUIWo2DDBsEvl2pVSWlzCmFCdYhjOmMsf5WnIPTHMdlOkJCtltw=="],
  
-@@ -111,7 +111,7 @@
+@@ -111,7 +112,7 @@
  
      "@effectstream/midnight-contracts": ["@effectstream/midnight-contracts@0.200.1", "", { "dependencies": { "@effectstream/utils": "0.200.1", "@midnight-ntwrk/compact-js": "2.5.5-rc.7", "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1", "@midnight-ntwrk/midnight-js-contracts": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-http-client-proof-provider": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-level-private-state-provider": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-network-id": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-node-zk-config-provider": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-protocol": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-types": "5.0.0-beta.6", "@midnight-ntwrk/midnight-js-utils": "5.0.0-beta.6", "@midnight-ntwrk/platform-js": "3.0.0", "@midnightntwrk/ledger-v9": "1.0.0-rc.3", "@midnightntwrk/onchain-runtime-v4": "4.0.0-rc.3", "@midnightntwrk/wallet-sdk": "2.0.0-beta.2", "@midnightntwrk/wallet-sdk-abstractions": "3.0.0-beta.0", "@midnightntwrk/wallet-sdk-address-format": "4.0.0-beta.2", "@midnightntwrk/wallet-sdk-capabilities": "4.0.0-beta.2", "@midnightntwrk/wallet-sdk-dust-wallet": "5.0.0-beta.2", "@midnightntwrk/wallet-sdk-facade": "5.0.0-beta.2", "@midnightntwrk/wallet-sdk-hd": "3.1.0-beta.1", "@midnightntwrk/wallet-sdk-indexer-client": "1.3.0-beta.1", "@midnightntwrk/wallet-sdk-node-client": "2.0.0-beta.2", "@midnightntwrk/wallet-sdk-prover-client": "2.0.0-beta.2", "@midnightntwrk/wallet-sdk-runtime": "1.0.6-beta.0", "@midnightntwrk/wallet-sdk-shielded": "4.0.0-beta.2", "@midnightntwrk/wallet-sdk-unshielded-wallet": "4.0.0-beta.2", "@midnightntwrk/wallet-sdk-utilities": "1.2.0", "@scure/bip39": "^2.0.1", "bn.js": "5.2.3", "dotenv": "^16.4.7", "rxjs": "7.8.2" } }, "sha512-gQK/vcA4FiTQXCCOzzLN2PLXa1zEsYjaTv3NQymB0LEEd3qirs8cT1KyWTNvHwA4UtXITytimA/QXxxAOAa7vA=="],
  
@@ -64,7 +65,7 @@ index 5849003..e2285ee 100644
  
      "@effectstream/utils": ["@effectstream/utils@0.200.1", "", { "dependencies": { "@coderspirit/nominal": "^4.1.1", "@foxglove/crc": "^1.0.1", "@sinclair/typebox": "0.34.41", "@subsquid/ss58-codec": "^1.2.3", "abitype": "1.1.0", "bech32": "^2.0.0", "bs58": "^6.0.0", "bs58check": "^4.0.0", "buffer": "^6.0.3", "dotenv": "^16.4.7", "effection": "^3.5.0", "hi-base32": "^0.5.1", "js-base64": "^3.7.7", "js-sha512": "^0.9.0", "viem": "2.37.3" } }, "sha512-gOROATD6crKECHJlXbs0XuYCLaAUc38XrW8p9A4ncchps0bjwplCLF/KUcJ4pbblRNh5NKg1VUNMX0CWNAZAtA=="],
  
-@@ -211,40 +211,34 @@
+@@ -211,40 +212,34 @@
  
      "@metamask/utils": ["@metamask/utils@11.11.0", "", { "dependencies": { "@ethereumjs/tx": "^4.2.0", "@metamask/superstruct": "^3.1.0", "@noble/hashes": "^1.3.1", "@scure/base": "^1.1.3", "@types/debug": "^4.1.7", "@types/lodash": "^4.17.20", "debug": "^4.3.4", "lodash": "^4.17.21", "pony-cause": "^2.1.10", "semver": "^7.5.4", "uuid": "^9.0.1" } }, "sha512-0nF2CWjWQr/m0Y2t2lJnBTU1/CZPPTvKvcESLplyWe/tyeb8zFOi/FeneDmaFnML6LYRIGZU6f+xR0jKAIUZfw=="],
  
@@ -72,7 +73,7 @@ index 5849003..e2285ee 100644
 +    "@midnight-ntwrk/compact-js": ["@midnight-ntwrk/compact-js@2.5.5-rc.7", "", { "dependencies": { "@effect/platform": "^0.96.1", "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1", "@midnight-ntwrk/platform-js": "^3.0.0", "@midnightntwrk/ledger-v9": "^1.0.0-rc.3", "@noble/hashes": "^2.2.0", "effect": "^3.21.4", "tslib": "^2.8.1" } }, "sha512-INcbIxsgK2NGm5J7pCHRsq1kxKQEXKQjFRgU84TsbP6GadqnWFg1hh0eJ/H2SS6AxAQGQjI0iasLodVTviKAIw=="],
  
 -    "@midnight-ntwrk/compact-runtime": ["@midnight-ntwrk/compact-runtime@0.16.0", "", { "dependencies": { "@midnight-ntwrk/onchain-runtime-v3": "^3.0.0", "@types/object-inspect": "^1.8.1", "object-inspect": "^1.12.3" } }, "sha512-UR8+MI5zol+gkne17ZZru8xmZNf11xMgQJkiLT9KWsF+QD8Wuz1WONaqQLL0RAZ2aN2XlRsBFd0ViKDVh8prFw=="],
-+    "@midnight-ntwrk/compact-runtime": ["@midnight-ntwrk/compact-runtime@0.18.0-rc.1", "", { "dependencies": { "@midnightntwrk/onchain-runtime-v4": "^4.0.0-rc.3", "@noble/curves": "^2.2.0", "@noble/hashes": "^2.0.1", "@types/object-inspect": "^1.8.1", "object-inspect": "^1.12.3" } }, "sha512-PXPjyiD8lrdM216eSpRGi1JSRes1fAwMImj1FWRML0BA3s6doOXFbX01A8suY/47xU/NCEKB9RKKU+vhW8Ec4A=="],
++    "@midnight-ntwrk/compact-runtime": ["@midnight-ntwrk/compact-runtime@0.19.0", "", { "dependencies": { "@midnightntwrk/onchain-runtime-v4": "^4.0.0-rc.3", "@noble/curves": "^2.2.0", "@noble/hashes": "^2.0.1", "@types/object-inspect": "^1.8.1", "object-inspect": "^1.12.3" } }, "sha512-0q1ZOlyPdCCEasAxlHxagO6Sb+Db5GM6qYPQ+c+cp71NRxQgiY0Wd0/LIoshQTs+OBISb4XTjiNQ1lxcKR79qQ=="],
  
      "@midnight-ntwrk/dapp-connector-api": ["@midnight-ntwrk/dapp-connector-api@4.0.1", "", {}, "sha512-IstRo8xfmlJlGgUcAJeRzPUmGCp0/xZR3/bfTOk33MHrzbGmB79r/zYziGavcclo1pkkoBHAodX4vz3xgFxczw=="],
  
@@ -115,7 +116,7 @@ index 5849003..e2285ee 100644
      "@midnight-ntwrk/zkir-v2": ["@midnight-ntwrk/zkir-v2@2.1.0", "", {}, "sha512-UDMujjzCt0SA89uqOFWUL4LZTkxVAS8JjvOaYMAgxlSrWfN7m5th1R1qGlpDJuSH39rbWt6WwtuK3k08Mta6LA=="],
  
      "@midnightntwrk/ledger-v9": ["@midnightntwrk/ledger-v9@1.0.0-rc.3", "", {}, "sha512-i/Cl/d2XQ19gIm5SCruMHr+XiruxIn9Ec3i15DrZ/44Yggzu1u5+dG7QUx7Rw1htkgALXivEt7Kw4NzxPr4pBw=="],
-@@ -255,7 +249,7 @@
+@@ -255,7 +250,7 @@
  
      "@midnightntwrk/wallet-sdk-abstractions": ["@midnightntwrk/wallet-sdk-abstractions@3.0.0-beta.0", "", { "dependencies": { "effect": "^3.19.19" } }, "sha512-9gzVaSd9dk1rymqd6CrqSSNGPoMtIbr24wVSwCfuB3L1y9wcNgzCw9l/RH744XJE+4RyDZODEIWo7WU5LCYvNw=="],
  
@@ -124,7 +125,7 @@ index 5849003..e2285ee 100644
  
      "@midnightntwrk/wallet-sdk-capabilities": ["@midnightntwrk/wallet-sdk-capabilities@4.0.0-beta.2", "", { "dependencies": { "@midnight-ntwrk/zkir-v2": "^2.1.0", "@midnightntwrk/ledger-v9": "1.0.0-rc.3", "@midnightntwrk/wallet-sdk-abstractions": "3.0.0-beta.0", "@midnightntwrk/wallet-sdk-indexer-client": "1.3.0-beta.1", "@midnightntwrk/wallet-sdk-node-client": "2.0.0-beta.2", "@midnightntwrk/wallet-sdk-prover-client": "2.0.0-beta.2", "@midnightntwrk/wallet-sdk-utilities": "1.2.0", "effect": "^3.19.19", "rxjs": "^7.8.2" } }, "sha512-QoeautcgfOgUMzbU5JAqhVP7n8K8fNdpQgoOwDwIdjJGpP+mH0f2/QtGia373OVTt1olf3cQN+7bLL9B0ihvlg=="],
  
-@@ -805,7 +799,7 @@
+@@ -805,7 +800,7 @@
  
      "gopd": ["gopd@1.2.0", "", {}, "sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg=="],
  
@@ -133,7 +134,7 @@ index 5849003..e2285ee 100644
  
      "graphql-http": ["graphql-http@1.23.0", "", { "peerDependencies": { "graphql": ">=0.11 <=17" } }, "sha512-nQbRzoaqyNBVFG6X6r0mXC6S4X9eZOmmGz6t3l9H3MVKc2em3KeQAx+KhZKKFzj56ePDEncMOXeLu/hjO/4LQg=="],
  
-@@ -1273,67 +1267,23 @@
+@@ -1273,67 +1268,23 @@
  
      "@babel/helper-compilation-targets/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
  
@@ -205,7 +206,7 @@ index 5849003..e2285ee 100644
  
      "@midnightntwrk/wallet-sdk-node-client/@polkadot/api": ["@polkadot/api@16.5.6", "", { "dependencies": { "@polkadot/api-augment": "16.5.6", "@polkadot/api-base": "16.5.6", "@polkadot/api-derive": "16.5.6", "@polkadot/keyring": "^14.0.3", "@polkadot/rpc-augment": "16.5.6", "@polkadot/rpc-core": "16.5.6", "@polkadot/rpc-provider": "16.5.6", "@polkadot/types": "16.5.6", "@polkadot/types-augment": "16.5.6", "@polkadot/types-codec": "16.5.6", "@polkadot/types-create": "16.5.6", "@polkadot/types-known": "16.5.6", "@polkadot/util": "^14.0.3", "@polkadot/util-crypto": "^14.0.3", "eventemitter3": "^5.0.1", "rxjs": "^7.8.1", "tslib": "^2.8.1" } }, "sha512-5h/X3pY8WpqGk4XTaiIUjKD6Pnk8k4bJ6EIwPKLP8/kfFWKSOenpN6ggZxANr+Qj+RgXrp4TxJVcuhXSiBh9Sg=="],
  
-@@ -1341,12 +1291,6 @@
+@@ -1341,12 +1292,6 @@
  
      "@midnightntwrk/wallet-sdk-node-client/bn.js": ["bn.js@5.2.5", "", {}, "sha512-Vq886eXykuP5E6HcKSSStP3bJgrE6In5WKxVUvJ8XGpWWYs2xZHWqUwzCtGgEtBcxyd57KBFDPFoUfNzdaHCNg=="],
  
@@ -218,7 +219,7 @@ index 5849003..e2285ee 100644
      "@perawallet/connect/buffer": ["buffer@6.0.3", "", { "dependencies": { "base64-js": "^1.3.1", "ieee754": "^1.2.1" } }, "sha512-FTiCpNxtwiZZHEZbcbTIcZjERVICn9yq/pDFkTl95/AxzD1naBctN7YO68riM/gLSDY7sdrMby8hofADYuuqOA=="],
  
      "@perawallet/walletconnect/@noble/hashes": ["@noble/hashes@2.3.0", "", {}, "sha512-oN+QwyX7VSHotibwubG3kpzbwKrfnyR6OOO+3Nk/53ADL7FmgHHz4TgrbaYKvvOw09u6QTx0oiH1cNCIOuN0CQ=="],
-@@ -1533,50 +1477,6 @@
+@@ -1533,50 +1478,6 @@
  
      "web3-utils/eventemitter3": ["eventemitter3@5.0.4", "", {}, "sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw=="],
  
@@ -270,7 +271,7 @@ index 5849003..e2285ee 100644
  
      "@midnightntwrk/wallet-sdk-node-client/@polkadot/api/@polkadot/api-base": ["@polkadot/api-base@16.5.6", "", { "dependencies": { "@polkadot/rpc-core": "16.5.6", "@polkadot/types": "16.5.6", "@polkadot/util": "^14.0.3", "rxjs": "^7.8.1", "tslib": "^2.8.1" } }, "sha512-eBLIv86ZZY4t5OrobVoGC+QXbErOGlBpI2rJI5OMvTNPoVvtEoI++u+wwRScjkOZaUhXyQikd+0Uv71qr3xnsA=="],
 diff --git a/package.json b/package.json
-index d5fa83b..bba0a65 100644
+index d5fa83b..e269a82 100644
 --- a/package.json
 +++ b/package.json
 @@ -15,21 +15,21 @@
@@ -283,7 +284,7 @@ index d5fa83b..bba0a65 100644
 -    "@midnight-ntwrk/compact-js": "2.5.1",
 -    "@midnight-ntwrk/compact-runtime": "0.16.0",
 +    "@midnight-ntwrk/compact-js": "2.5.5-rc.7",
-+    "@midnight-ntwrk/compact-runtime": "0.18.0-rc.1",
++    "@midnight-ntwrk/compact-runtime": "0.19.0",
      "@midnight-ntwrk/dapp-connector-api": "4.0.1",
 -    "@midnight-ntwrk/ledger-v8": "8.1.0",
 -    "@midnight-ntwrk/midnight-js-contracts": "4.1.1",
@@ -308,7 +309,7 @@ index d5fa83b..bba0a65 100644
      "@noble/curves": "^1.9.7",
      "@noble/hashes": "^1.8.0",
      "@scure/base": "^2.0.0",
-@@ -51,16 +51,15 @@
+@@ -51,16 +51,27 @@
      "vite-plugin-wasm": "^3.4.1"
    },
    "//overrides": [
@@ -323,53 +324,131 @@ index d5fa83b..bba0a65 100644
 -    "them to one copy — which also halves ~10 MB of wasm out of the bundle."
 +    "1.0.0-rc.3 while the app used the same version through another path.",
 +    "Pinning collapses all consumers to one wasm identity so cross-package",
-+    "instanceof checks remain sound."
++    "instanceof checks remain sound.",
++    "",
++    "compact-runtime is pinned for the same class of reason, and it became",
++    "necessary with compactc 0.34.0. The generated contract module opens with",
++    "checkRuntimeVersion('0.19.0'), so the app must resolve 0.19.0 — but",
++    "@midnight-ntwrk/compact-js, @midnight-ntwrk/midnight-js-protocol and",
++    "@effectstream/midnight-contracts each declare an EXACT 0.18.0-rc.1 and would",
++    "each get their own nested copy, putting two runtimes in one bundle around a",
++    "single onchain-runtime-v4 wasm. The pinned kernel makes exactly this override",
++    "at its own root (PR #67) and gates it with scripts/check-compact-runtime.ts;",
++    "this mirrors it, because the SPA proves calls against the contract that kernel",
++    "compiled and deployed."
    ],
    "overrides": {
 -    "@midnight-ntwrk/ledger-v8": "8.1.0"
-+    "@midnightntwrk/ledger-v9": "1.0.0-rc.3"
++    "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
++    "@midnight-ntwrk/compact-runtime": "0.19.0"
    }
  }
 diff --git a/scripts/build-contract.ts b/scripts/build-contract.ts
-index 7f8ded5..0083ba1 100644
+index 7f8ded5..c1e1bd6 100644
 --- a/scripts/build-contract.ts
 +++ b/scripts/build-contract.ts
-@@ -33,10 +33,10 @@ const MANIFEST = path.join(CONTRACT_DIR, "manifest.json");
+@@ -33,10 +33,12 @@ const MANIFEST = path.join(CONTRACT_DIR, "manifest.json");
   *
   * Must stay in step with @midnight-ntwrk/compact-runtime in package.json — the
   * generated module calls checkRuntimeVersion() against it at import time. Both
 - * track the node 1.0.0 stack (compiler 0.31.0 / runtime 0.16.0), matching the
-+ * track the node 2.0.0 stack (compiler 0.33.0-rc.2 / runtime 0.18.0-rc.1), matching the
-  * other Midnight templates in this repo.
+- * other Midnight templates in this repo.
++ * track the node 2.0.0 stack (compiler 0.34.0 / runtime 0.19.0), which is what
++ * the pinned zswap-offerfiles-kernel declares in infra/compact-version.txt —
++ * the SPA proves calls against the contract THAT kernel deployed, so its
++ * compiler and runtime are not a free choice.
   */
 -const COMPILER_VERSION = "0.31.0";
-+const COMPILER_VERSION = "0.33.0-rc.2";
++const COMPILER_VERSION = "0.34.0";
  
  interface Manifest {
    source: string;
 diff --git a/src/contract/manifest.json b/src/contract/manifest.json
-index 4c4691b..dac4324 100644
+index 4c4691b..5d6ba19 100644
 --- a/src/contract/manifest.json
 +++ b/src/contract/manifest.json
-@@ -1,12 +1,13 @@
+@@ -1,23 +1,24 @@
  {
-   "source": "6fde5f8e2cfc5d5559f1468f3997f72810aec3093c6a87a54036b9175dadd3f0",
+-  "source": "6fde5f8e2cfc5d5559f1468f3997f72810aec3093c6a87a54036b9175dadd3f0",
 -  "compilerVersion": "0.31.0",
-+  "compilerVersion": "0.33.0-rc.2",
++  "source": "3cf4cb51a5bc6ad9ac02adf828254caeee68c5b861d31d7319106289ee0d2546",
++  "compilerVersion": "0.34.0",
    "provenance": "packages/contracts-midnight/contract-offer-files in github.com/effectstream/zswap-offerfiles-kernel",
    "files": {
 -    "compiler/contract-info.json": "f611862c6400e3ca4786e8063ff0acff26ada6b2cfdf47d3812800fb340cf3a8",
 -    "contract/index.d.ts": "778ed016a0a44e31dd82025ae0e54ff299fc07c7e10bbed61ce2fe2dac8281b1",
 -    "contract/index.js": "6b2a5e14def223dc4e8802765a74ecaf2a7d826db325eaecc25763a96cd01611",
 -    "contract/index.js.map": "8106376b0a50d86c1d3f2b3a963beee49e9d49676c006df65c84348faedb6661",
-+    "compiler/contract-info.json": "a229270090ca9c8b8800fe8f205aa4b97cfb4acf0a49fa70c0fd54f40b58ad38",
-+    "compiler/contract-manifest.json": "cea8409e566ad38fa17db2d8ceee76456a79eb63a04f6737688e20e9c7f7ff0d",
-+    "contract/index.d.ts": "61c75e4d14fd414cf4e6605427ca7b658d4540c1b928281bbba267f071be3d4d",
-+    "contract/index.js": "bae42c8636e8ef17ed8f71cc163f87f766817da3bf35c1abb125c6052006fff5",
-+    "contract/index.js.map": "3db7730ad2f5da91a3b33d6baa97481c1d0fc81eb00bc96c1f0a62a0fed809f9",
++    "compiler/contract-info.json": "de1d81e0aefe109f405f8871bbd81b024a9c6fd22a6b216614b52a556f518fcb",
++    "compiler/contract-manifest.json": "ee112eccbaa4fd3abd6407c7d07809b61325cec2ecfc3cc110a8dcccae2c55e3",
++    "contract/index.d.ts": "442844a05789b00fc51f7d160a25f415868119b295c7d3580bacd683c8a2fd65",
++    "contract/index.js": "76c16d5f06d51aff7b6c254a71e660a9cfbee80bd267bfa22b6b7b1fd30a9cfc",
++    "contract/index.js.map": "080f08e914c18fdda37a8c114cbdf4e5ea1a71fea83ac0c9e12b3aca4846f339",
      "keys/incrementNoun.prover": "cc812f6b7cd2e10734fc7093ba5d59ba0a3c79f74a01ceffae1aeae024b2d36d",
      "keys/incrementNoun.verifier": "76d622c599cbf1cc68fd9f698a41f71d3be45ec2fc18c28c01269c6105306e62",
-     "keys/mint_shielded.prover": "5e9d656c1c39a68992ee170a39296b82a9ffbc6dae731c59b7433dd7e68a070a",
+-    "keys/mint_shielded.prover": "5e9d656c1c39a68992ee170a39296b82a9ffbc6dae731c59b7433dd7e68a070a",
+-    "keys/mint_shielded.verifier": "88669abef686f746a8f1e37224e326898388008ab4cfa54aa0a9e57042596537",
+-    "keys/mint_unshielded.prover": "7d6301b0a6147238a434984983af6476bc0f1362ec68274d440901333735686b",
+-    "keys/mint_unshielded.verifier": "a1f7a4aea726d5b59a143b0ffb92d1bb65198b9046fdfae00a547ddd910d3be8",
++    "keys/mint_shielded.prover": "27f5fee2454c64ed76f8ca77fe4b773fc68e3509542880f8f4caae5bf62bc5a2",
++    "keys/mint_shielded.verifier": "568987e35fc11d205d8c8c08858a85833e535f13b6b0c77b3a95f5c1f9eb4839",
++    "keys/mint_unshielded.prover": "f556576d54a7bc17b48be78c6daa8e7a6a60eb1df9bcab69f97c7e5fb076e2f1",
++    "keys/mint_unshielded.verifier": "04f25d78fc43f59e2ccf0cf95df8176b9c6b53be96d588808457e433037582e8",
+     "zkir/incrementNoun.bzkir": "33465f34039cfaf9a81229bd202182254f653e42faa9e5ad1915af2ed9fa0e68",
+     "zkir/incrementNoun.zkir": "82e211bc6fffb6b0e79b66827dbd931cd5cbcdb5dfcb6e736f6e19493d42a094",
+-    "zkir/mint_shielded.bzkir": "2778d50b9221d19eb06834ba6fffa17f3a43a02a0c4c6396de7ae878ad25a0c7",
+-    "zkir/mint_shielded.zkir": "bd23b9cc6bff97d3d50afdbfcb526913cc4f1299881baabf46c60fa14945f1c8",
+-    "zkir/mint_unshielded.bzkir": "0edbeaecb343c9e5395a843c9efa1873918e476625f74c0b021ce5ef95250ef5",
+-    "zkir/mint_unshielded.zkir": "6e29198e037d61a3378e9df8962a744fd0c93e4029b71f8f0e848fd30129c39a"
++    "zkir/mint_shielded.bzkir": "574f94bc0574e726a54dc9ae1dff5372d0f73d872fac05d396f3a6b996f569d1",
++    "zkir/mint_shielded.zkir": "4cd43a1b2922d83cfa2b36db9c8f8f8182e32a79e1172f53b241ba88a0126cd5",
++    "zkir/mint_unshielded.bzkir": "26ade2bd308a3b728432d01f1877e6f383667794c224bc3ff6419a9d4298d12e",
++    "zkir/mint_unshielded.zkir": "86f06033dac4faeb99987f38013b666416b68f03f15df25ab5b48f0fa4a656ae"
+   }
+ }
+diff --git a/src/contract/offer-files.compact b/src/contract/offer-files.compact
+index 5af9ad0..309b993 100644
+--- a/src/contract/offer-files.compact
++++ b/src/contract/offer-files.compact
+@@ -11,27 +11,33 @@ import CompactStandardLibrary;
+ 
+ export ledger counter: Uint<128>;
+ 
++/// Mint to an explicit recipient. A contract recipient must claim the coin by
++/// running its receive circuit in the SAME transaction; otherwise ledger-v9
++/// rejects the transaction as malformed.
+ export circuit mint_shielded(
+   domain_sep: Bytes<32>,
+   amount: Uint<64>,
+   nonce: Uint<128>,
++  recipient: Either<ZswapCoinPublicKey, ContractAddress>
+ ): ShieldedCoinInfo {
++  assert(amount > 0, "mint amount must be positive");
+   return mintShieldedToken(
+     disclose(domain_sep),
+     disclose(amount),
+     evolveNonce(disclose(nonce), disclose(domain_sep)),
+-    left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey())
++    disclose(recipient)
+   );
+ }
+ 
+ export circuit mint_unshielded(
+   domainSep: Bytes<32>,
+   amount: Uint<64>,
+-  recipient: UserAddress
++  recipient: Either<ContractAddress, UserAddress>
+ ): Bytes<32> {
+-  return mintUnshieldedToken(disclose(domainSep), disclose(amount), right<ContractAddress, UserAddress>(disclose(recipient)));
++  assert(amount > 0, "mint amount must be positive");
++  return mintUnshieldedToken(disclose(domainSep), disclose(amount), disclose(recipient));
+ }
+ 
+ export circuit incrementNoun(): [] {
+   counter = counter + 1 as Uint<128>;
+-}
+\ No newline at end of file
++}
 diff --git a/src/decodeOffer.ts b/src/decodeOffer.ts
 index bee342d..dacd3a4 100644
 --- a/src/decodeOffer.ts
@@ -382,8 +461,85 @@ index bee342d..dacd3a4 100644
  import type { TokenEntry } from './types';
  
  export type DecodedOffer = {
+diff --git a/src/hooks/useContract.ts b/src/hooks/useContract.ts
+index b6e112e..9079a92 100644
+--- a/src/hooks/useContract.ts
++++ b/src/hooks/useContract.ts
+@@ -9,6 +9,7 @@ import {
+ import { MidnightBech32m, UnshieldedAddress } from '@midnightntwrk/wallet-sdk-address-format';
+ import { api } from '../services/api';
+ import { enqueueMintName, removeMintName } from '../services/mintQueue';
++import { shieldedUserRecipient, unshieldedUserRecipient } from '../services/mintRecipient';
+ import { DEFAULT_DECIMALS } from '../state/amount';
+ 
+ export interface BrowserMintResult {
+@@ -16,6 +17,10 @@ export interface BrowserMintResult {
+   txHash: string;
+ }
+ 
++// ledger-v9's `encode*` helpers take hex strings, not byte arrays.
++const toHexString = (data: Uint8Array): string =>
++  Array.from(data, (b) => b.toString(16).padStart(2, '0')).join('');
++
+ /**
+  * Drives the Midnight contract (the Faucet's mint circuits) for WHICHEVER
+  * wallet is connected. It used to take a Lace `ConnectedAPI` directly, which is
+@@ -97,12 +102,27 @@ export function useContract(wallet: ContractWallet | null) {
+       name: string,
+       decimals: number = DEFAULT_DECIMALS,
+     ): Promise<BrowserMintResult> => {
+-      const c = await ensureContract();
++      const conn = await ensureConnected();
++      const c = conn.contract;
+       const queued = enqueueMintName(name, decimals);
+       // `amount` is BASE UNITS — the circuit's `Uint<64>` has no decimals
+       // notion, so the caller has already scaled the whole-coin allotment.
++      //
++      // THE RECIPIENT IS NOW EXPLICIT (kernel PR #67). `mint_shielded` used to
++      // mint to `ownPublicKey()`; it now takes
++      // `Either<ZswapCoinPublicKey, ContractAddress>` and this faucet always
++      // takes the LEFT arm with the connected wallet's own coin public key —
++      // the same value the providers were built from, so the wallet is
++      // guaranteed to scan for the coin it just created. A contract recipient
++      // has to claim the coin in the same transaction, which a faucet cannot
++      // do, so it is deliberately not an option here.
+       console.log('[useContract] callTx.mint_shielded', { amount, nonce, decimals });
+-      const txData: any = await (c as any).callTx.mint_shielded(domainSepBytes, amount, nonce);
++      const txData: any = await (c as any).callTx.mint_shielded(
++        domainSepBytes,
++        amount,
++        nonce,
++        shieldedUserRecipient(conn.coinPublicKeyHex),
++      );
+       const colorBytes = txData.private?.result?.color as Uint8Array | undefined;
+       if (!colorBytes) throw new Error('mint_shielded: missing color in result');
+       const color = Array.from(colorBytes, (b) => b.toString(16).padStart(2, '0')).join('');
+@@ -110,7 +130,7 @@ export function useContract(wallet: ContractWallet | null) {
+       await tryRegister(color, name, 'shielded', queued.id, decimals);
+       return { color, txHash };
+     },
+-    [ensureContract, tryRegister],
++    [ensureConnected, tryRegister],
+   );
+ 
+   // Decode Lace's bech32m unshielded address (e.g. "mn_addr_<network>1...") into
+@@ -136,10 +156,13 @@ export function useContract(wallet: ContractWallet | null) {
+       const recipientBytes = await resolveRecipientBytes();
+       // `amount` is BASE UNITS; see mint_shielded above.
+       console.log('[useContract] callTx.mint_unshielded', { amount, decimals });
++      // Also explicit since kernel PR #67: `Either<ContractAddress, UserAddress>`,
++      // RIGHT arm — the connected wallet's own unshielded ledger address. The
++      // old `Bytes<32>` argument is the same 32 bytes; only the wrapper is new.
+       const txData: any = await (c as any).callTx.mint_unshielded(
+         domainSepBytes,
+         amount,
+-        { bytes: recipientBytes },
++        unshieldedUserRecipient(toHexString(recipientBytes)),
+       );
+       const colorBytes = txData.private?.result as Uint8Array | undefined;
+       if (!colorBytes) throw new Error('mint_unshielded: missing color in result');
 diff --git a/src/services/browserContract.ts b/src/services/browserContract.ts
-index 265d1f8..8089e20 100644
+index 265d1f8..9c9cf81 100644
 --- a/src/services/browserContract.ts
 +++ b/src/services/browserContract.ts
 @@ -17,9 +17,9 @@ import {
@@ -398,8 +554,32 @@ index 265d1f8..8089e20 100644
  import {
    type MidnightProvider,
    type MidnightProviders,
-@@ -154,7 +154,7 @@ async function buildProviders(
- ): Promise<OfferFilesProviders> {
+@@ -69,6 +69,19 @@ export interface ConnectedOfferFilesContract {
+   readonly providers: OfferFilesProviders;
+   readonly compiledContract: any;
+   readonly config: MidnightBrowserConfig;
++  /**
++   * This wallet's Zswap coin public key, hex, as ledger-v9 wants it.
++   *
++   * It is already the recipient baked into a shielded mint's coin commitment
++   * (see the diagnostic dump in buildProviders); since the kernel's mint
++   * circuits take an EXPLICIT recipient it also has to be passed as the
++   * `Either` argument, so it is surfaced here instead of being asked of the
++   * wallet a second time. Making it the SAME value the providers were built
++   * from is the point: two lookups could disagree, and a shielded mint to a
++   * key the wallet does not scan for is unrecoverable and looks like nothing
++   * happened.
++   */
++  readonly coinPublicKeyHex: string;
+ }
+ 
+ const toHex = (data: Uint8Array): string =>
+@@ -151,10 +164,10 @@ function createWalletAndMidnightProvider(
+ async function buildProviders(
+   wallet: ContractWallet,
+   config: MidnightBrowserConfig,
+-): Promise<OfferFilesProviders> {
++): Promise<{ providers: OfferFilesProviders; coinPublicKeyHex: string }> {
    // Each wallet returns these in its own encoding — Lace in bech32m (parsed to
    // hex), the JS wallet already in hex. ContractWallet owns that difference;
 -  // what arrives here is always the hex ledger-v8 expects.
@@ -407,7 +587,7 @@ index 265d1f8..8089e20 100644
    const { coinPublicKeyHex, encPublicKeyHex } = await wallet.getShieldedKeys(config.networkId);
  
    // Diagnostic dump — the coin public key here is the recipient baked into the
-@@ -196,7 +196,7 @@ async function buildProviders(
+@@ -196,10 +209,10 @@ async function buildProviders(
    };
    const zkConfigProvider = new FetchZkConfigProvider<OfferFilesCircuits>(
      API_BASE,
@@ -415,8 +595,39 @@ index 265d1f8..8089e20 100644
 +    { fetchFunc: safeFetch.bind(window) },
    );
  
-   return {
-@@ -345,7 +345,7 @@ async function balanceShieldedViaMirrorMerge(
+-  return {
++  const providers = {
+     privateStateProvider: levelPrivateStateProvider({
+       privateStoragePasswordProvider: async () => 'ZSWAP_DA_STORAGE_PASSWORD_16+',
+       // Account-scope storage to the connected wallet so switching wallets
+@@ -214,6 +227,8 @@ async function buildProviders(
+     walletProvider: walletAndMidnightProvider,
+     midnightProvider: walletAndMidnightProvider,
+   } as OfferFilesProviders;
++
++  return { providers, coinPublicKeyHex };
+ }
+ 
+ export async function connectBrowserContract(
+@@ -226,7 +241,7 @@ export async function connectBrowserContract(
+   setNetworkId(config.networkId as any);
+ 
+   console.log(`[browserContract] connect: building providers (${wallet.label})…`);
+-  const providers = await buildProviders(wallet, config);
++  const { providers, coinPublicKeyHex } = await buildProviders(wallet, config);
+ 
+   console.log('[browserContract] connect: compiling OfferFilesContract client…');
+   const compiledContract = CompiledContract.make(
+@@ -250,7 +265,7 @@ export async function connectBrowserContract(
+   })) as FoundOfferFilesContract;
+ 
+   console.log('[browserContract] connect: ready');
+-  return { contract, providers, compiledContract, config };
++  return { contract, providers, compiledContract, config, coinPublicKeyHex };
+ }
+ 
+ /**
+@@ -345,7 +360,7 @@ async function balanceShieldedViaMirrorMerge(
    );
    console.log('[browserContract] complete (mirror+merge): taker tx hex bytes', takerTxHex.length / 2);
  
@@ -425,7 +636,7 @@ index 265d1f8..8089e20 100644
      'signature',
      'proof',
      'binding',
-@@ -438,7 +438,7 @@ async function balanceMixedViaSealedBalance(
+@@ -438,7 +453,7 @@ async function balanceMixedViaSealedBalance(
    );
    let txHash = '';
    try {
@@ -468,6 +679,105 @@ index 3fbbf66..a757c16 100644
            'signature',
            'proof',
            'binding',
+diff --git a/src/services/mintRecipient.ts b/src/services/mintRecipient.ts
+new file mode 100644
+index 0000000..76b7c6b
+--- /dev/null
++++ b/src/services/mintRecipient.ts
+@@ -0,0 +1,93 @@
++// Typed mint recipients for the offer-files contract.
++//
++// Since zswap-offerfiles-kernel PR #67 both mint circuits take an EXPLICIT
++// recipient instead of implying the caller:
++//
++//   mint_shielded(domain_sep, amount, nonce, recipient: Either<ZswapCoinPublicKey, ContractAddress>)
++//   mint_unshielded(domainSep, amount,        recipient: Either<ContractAddress, UserAddress>)
++//
++// Compact's `Either<L, R>` crosses the boundary as a plain struct with BOTH
++// arms present — the inactive one must still be 32 zero bytes, not omitted —
++// so building it by hand at each call site is how a silent mint-to-nobody gets
++// written. This is a copy of the kernel's own helper,
++// `packages/contracts-midnight/contract-offer-files/src/mint-recipient.ts`
++// (exported there as `@zswap-da/contract-offer-files/mint-recipient`), kept
++// byte-equal in behaviour. It is copied rather than imported because this SPA
++// builds from the effectstream template's own dependency tree and never
++// installs the kernel workspace; the same reasoning, and the same rule, as the
++// `domainSepFromName` copy in the AA console's runner.
++//
++// The `encode*` functions take HEX STRINGS (ledger-v9 types `CoinPublicKey`,
++// `UserAddress` and `ContractAddress` are all `string`) and return exactly 32
++// bytes; a wrong-length input throws here rather than producing a coin nobody
++// can spend.
++import {
++  encodeCoinPublicKey,
++  encodeContractAddress,
++  encodeUserAddress,
++  type CoinPublicKey,
++  type ContractAddress,
++  type UserAddress,
++} from '@midnightntwrk/ledger-v9';
++
++export interface CompactBytes32 {
++  readonly bytes: Uint8Array;
++}
++
++export interface CompactEither<Left, Right> {
++  readonly is_left: boolean;
++  readonly left: Left;
++  readonly right: Right;
++}
++
++export type ShieldedMintRecipient = CompactEither<CompactBytes32, CompactBytes32>;
++export type UnshieldedMintRecipient = CompactEither<CompactBytes32, CompactBytes32>;
++
++const inactiveArm = (): CompactBytes32 => ({ bytes: new Uint8Array(32) });
++
++function activeArm(bytes: Uint8Array, label: string): CompactBytes32 {
++  if (bytes.length !== 32) {
++    throw new Error(`${label} must encode to exactly 32 bytes, got ${bytes.length}`);
++  }
++  return { bytes };
++}
++
++/** Shielded `left`: mint to a user's Zswap coin public key. */
++export function shieldedUserRecipient(coinPublicKey: CoinPublicKey): ShieldedMintRecipient {
++  return {
++    is_left: true,
++    left: activeArm(encodeCoinPublicKey(coinPublicKey), 'coin public key'),
++    right: inactiveArm(),
++  };
++}
++
++/** Shielded `right`: mint to a contract that receives in the same transaction. */
++export function shieldedContractRecipient(
++  contractAddress: ContractAddress,
++): ShieldedMintRecipient {
++  return {
++    is_left: false,
++    left: inactiveArm(),
++    right: activeArm(encodeContractAddress(contractAddress), 'contract address'),
++  };
++}
++
++/** Unshielded `left`: mint to a contract address. */
++export function unshieldedContractRecipient(
++  contractAddress: ContractAddress,
++): UnshieldedMintRecipient {
++  return {
++    is_left: true,
++    left: activeArm(encodeContractAddress(contractAddress), 'contract address'),
++    right: inactiveArm(),
++  };
++}
++
++/** Unshielded `right`: mint to a user's unshielded ledger address. */
++export function unshieldedUserRecipient(userAddress: UserAddress): UnshieldedMintRecipient {
++  return {
++    is_left: false,
++    left: inactiveArm(),
++    right: activeArm(encodeUserAddress(userAddress), 'user address'),
++  };
++}
 diff --git a/src/services/offerBatch.test.ts b/src/services/offerBatch.test.ts
 index a1152d4..86511d7 100644
 --- a/src/services/offerBatch.test.ts

@@ -44,40 +44,32 @@
 # entrypoint-common.sh built around the kernel deployment's own paths and waits.
 set -euo pipefail
 
-# ── "" IS NOT UNSET, and here that distinction is load-bearing ───────────────
+# ── BLANK ENV IS THE SERVICE'S OWN PROBLEM AGAIN (kernel PR #68) ─────────────
 #
-# Compose renders `FOO: ${FOO:-}` for an absent variable as the EMPTY STRING,
-# and `ENV.getString(key, default)` in @effectstream/utils returns
-# `value ?? defaultValue` — so an empty string is returned AS the value and the
-# default never applies. Measured in @effectstream/utils/src/config.ts:
+# This script used to unset every optional knob compose rendered blank, because
+# `ENV.getString(key, default)` returns `value ?? default` and an empty string
+# therefore WON over the default (00010 Q24). For COINGECKO_BASE_URL that turned
+# every request into the relative "/simple/price?…" and every cycle failed with a
+# network error naming no cause — and compose renders `FOO: ${FOO:-}` as "" for
+# any variable the operator did not set, so it was the DEFAULT state, not an
+# edge case.
 #
-#   getString  value ?? defaultValue        → ""  wins over the default
-#   getNumber  value == null || value === ""→ the default (blank is safe)
-#   getBoolean same as getNumber            → the default (blank is safe)
+# The pinned kernel fixes it at the source: `packages/price-feed/src/env.ts`
+# (new at KERNEL_REF 80bace3) adds `optionalString`/`optionalNumber`, which treat
+# blank — and whitespace-only — as unset, and `loadPriceFeedConfig()` reads every
+# optional knob through them. Upstream removed the same workaround from its own
+# `entrypoint-common.sh` in the same commit, stating that the config loader owns
+# those semantics so a direct `bun run` behaves like a Compose launch.
 #
-# For COINGECKO_BASE_URL that is not cosmetic: `loadPriceFeedConfig()` would
-# hand `baseUrl: ""` to `fetchAssetPrices`, whose own fallback is `??` as well,
-# so the request URL becomes the RELATIVE "/simple/price?…" and every cycle
-# fails with a network error that names no cause. Unsetting the blank restores
-# the code's own https://api.coingecko.com/api/v3.
+# So the workaround is GONE rather than kept "just in case": a wrapper that
+# silently rewrites the environment is a second, invisible configuration layer,
+# and keeping it would hide a regression in the fix instead of surfacing it.
+# `scripts/verify-prices.sh` is the gate — a stack whose .env leaves
+# COINGECKO_BASE_URL blank must still complete a cycle, and it does so through
+# the library's own default now.
 #
-# The numeric knobs are already blank-safe, but they are normalised here too,
-# for the same reason compose/poster.yml's entrypoint does it: `docker compose
-# exec price-feed env` should show what the process actually used, and a
-# metered third-party API is the wrong place to depend on one library's
-# blank-handling staying as it is today.
-#
-# COINGECKO_API_KEY is deliberately NOT in the list: `config.ts` trims it and
-# maps "" to null itself, and that "no key" path is a documented, supported
-# state whose behaviour must not be changed by this wrapper.
-for _pf_env in \
-  COINGECKO_BASE_URL \
-  PRICE_FEED_INTERVAL_MS PRICE_FEED_REQUEST_SPACING_MS \
-  PRICE_FEED_BATCH_SIZE PRICE_FEED_REQUEST_TIMEOUT_MS PRICE_FEED_ASSETS
-do
-  if [ -z "${!_pf_env:-}" ]; then unset "${_pf_env}"; fi
-done
-unset _pf_env
+# COINGECKO_API_KEY was never in that list and still is not: `config.ts` trims it
+# and maps "" to null itself, and that "no key" path is a supported state.
 
 echo "[price-feed] starting packages/price-feed/price-feed.dev.ts args: ${*:-<loop>}"
 cd /app

@@ -11,13 +11,30 @@ Upstream is still on the ledger-v8 dependency lane. `ledger-v9.patch` is the com
 adaptation and applies fail-closed with `git apply --check`. It contains only:
 
 - `package.json` and the reproducible `bun.lock` dependency migration;
-- the compactc `0.33.0-rc.2` build-script and 17-artifact manifest update;
-- seven TypeScript modules whose ledger transaction imports/names change from v8 to v9, including
-  the Midnight.js 5 `FetchZkConfigProvider` options signature.
+- the compactc `0.34.0` build-script and 17-artifact manifest update;
+- `src/contract/offer-files.compact`, taken verbatim from the pinned kernel (see below);
+- `src/services/mintRecipient.ts`, a copy of the kernel's `mint-recipient.ts` helper;
+- eight TypeScript modules whose ledger transaction imports/names change from v8 to v9, including
+  the Midnight.js 5 `FetchZkConfigProvider` options signature and the two faucet mint calls.
 
-The patch therefore touches 11 of the template's 100 files, and nothing else: it is generated as a
+The patch therefore touches 13 of the template's 100 files, and nothing else: it is generated as a
 `git diff` from the pristine subtree, so `index` lines are present and a future rebase can use
-`git apply --3way`. Prose divergences (`README.md`, `src/contract/README.md`) are deliberately not
+`git apply --3way`.
+
+**Why the contract source is now IN the patch (00015).** The SPA proves calls against the contract
+the pinned kernel deployed, so its 17 compiled artifacts must be the bytes that kernel's own image
+produced — same source, same compiler, same runtime. At the previous kernel pin the template's
+`src/contract/offer-files.compact` was already byte-identical to the kernel's
+(`sha256 6fde5f8e…`), so the patch could stay silent about it and the identity held by luck.
+Kernel PR #67 changed both mint circuits in place — an explicit
+`Either<ZswapCoinPublicKey, ContractAddress>` / `Either<ContractAddress, UserAddress>` recipient —
+and the template did not follow, so the patch now carries the kernel's file
+(`sha256 3cf4cb51a5bc6ad9ac02adf828254caeee68c5b861d31d7319106289ee0d2546`) and the manifest
+regenerated from it with compactc `0.34.0`. `keys/incrementNoun.*` are unchanged across the bump,
+which is the expected signature of "only the two mint circuits moved". The `compact` stage of the
+Dockerfile verifies the compiler archive against the SHA-256 the kernel records and refuses to build
+if `compactc --runtime-version` disagrees with the `@midnight-ntwrk/compact-runtime` this patch
+installs, so the three pins cannot drift apart quietly. Prose divergences (`README.md`, `src/contract/README.md`) are deliberately not
 carried — this repo documents the stack in its own README — and the template's `.test.ts` files are
 excluded from the app build by `tsconfig.app.json`, but `src/services/offerBatch.test.ts` is
 migrated with its module so `bun test` keeps working in the patched tree — verified, not assumed:
