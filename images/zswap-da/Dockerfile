@@ -10,9 +10,18 @@
 # THE CONTRACT IS COMPILED HERE from the template's tracked Compact source.
 # The historical local template carried untracked managed/ output, which made
 # a fresh clone fail before Docker could build anything. This stage mirrors the
-# kernel's pinned compactc 0.33.0-rc.2 compiler lane, then verifies the pinned
+# kernel's pinned compactc 0.34.0 compiler lane, then verifies the pinned
 # sha256 manifest before Vite builds. The generated artifacts are
 # build-only; the runtime still receives only dist/.
+#
+# THE CONTRACT SOURCE IS THE KERNEL'S, NOT THE TEMPLATE'S. `ledger-v9.patch`
+# now carries `src/contract/offer-files.compact` verbatim from
+# zswap-offerfiles-kernel at KERNEL_REF, because the SPA proves calls against
+# the contract THAT kernel deployed: the 17 artifacts here must be the same
+# bytes the kernel image compiled, so the source, the compiler and the runtime
+# must all be the kernel's. At the previous pin the two files happened to be
+# identical and the patch could stay silent about it; kernel PR #67 changed
+# the mint signatures and made the coincidence visible.
 #
 # RUNTIME CONFIG: src/config.ts resolves the API/batcher endpoints as
 # window.API_BASE ?? VITE_API_BASE ?? http://<hostname>:9999 (and :3334).
@@ -27,7 +36,17 @@
 # ── stage 0: exact upstream source + fail-closed ledger-v9 adaptation ───────
 ARG FRONTEND_REPO=https://github.com/effectstream/effectstream.git
 ARG FRONTEND_REF=ea04ff7c16dab5118d4bdfeec6e7455c89981827
-ARG COMPACT_VERSION=0.33.0-rc.2
+# The one image whose compactc pin is NOT read out of a fetched kernel tree —
+# this image never clones the kernel. It is written down here instead, together
+# with the SHA-256 of each release asset, copied from the pinned kernel's
+# `infra/compact-checksums.sha256` at KERNEL_REF 80bace3. Stage 1 verifies the
+# download against it and then asserts that the compiler's own
+# `--runtime-version` equals the `@midnight-ntwrk/compact-runtime` the PATCHED
+# template installs — so this ARG, the patch and the kernel cannot drift apart
+# without a build failure that says which one moved.
+ARG COMPACT_VERSION=0.34.0
+ARG COMPACT_SHA256_ARM64=d3e292c4f48e257dcd6b3d3e3e4743d7d8ea0729f48953eab91a366d44cd026d
+ARG COMPACT_SHA256_AMD64=775ccddf5a71399835329bbf7471ba5a8c54fcc825d372c75e19ba7042069584
 
 FROM debian:stable-slim AS source
 
@@ -88,25 +107,41 @@ RUN set -eux; \
 FROM debian:stable-slim AS compact
 
 ARG COMPACT_VERSION
+ARG COMPACT_SHA256_ARM64
+ARG COMPACT_SHA256_AMD64
 ARG TARGETARCH
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates unzip bash \
  && rm -rf /var/lib/apt/lists/*
 
+# The patched template's manifest — the source of the runtime expectation. It is
+# copied BEFORE the download so the assertion below has something to compare
+# against without a second stage.
+COPY --from=source /src/package.json /opt/template-package.json
+
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
-      arm64) triple="aarch64-unknown-linux-musl" ;; \
-      amd64) triple="x86_64-unknown-linux-musl" ;; \
+      arm64) triple="aarch64-unknown-linux-musl"; expected="${COMPACT_SHA256_ARM64}" ;; \
+      amd64) triple="x86_64-unknown-linux-musl";  expected="${COMPACT_SHA256_AMD64}" ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    url="https://github.com/LFDT-Minokawa/compact/releases/download/compactc-v${COMPACT_VERSION}/compactc_v${COMPACT_VERSION}_${triple}.zip"; \
-    curl --proto '=https' --tlsv1.2 -fLsS -o /tmp/compactc.zip "$url"; \
+    test -n "$expected" || { echo "no SHA-256 recorded for ${TARGETARCH}" >&2; exit 1; }; \
+    asset="compactc_v${COMPACT_VERSION}_${triple}.zip"; \
+    url="https://github.com/LFDT-Minokawa/compact/releases/download/compactc-v${COMPACT_VERSION}/${asset}"; \
+    curl --proto '=https' --tlsv1.2 -fLsS -o "/tmp/${asset}" "$url"; \
+    printf '%s  %s\n' "$expected" "/tmp/${asset}" | sha256sum -c -; \
     mkdir -p /opt/compactc; \
-    unzip -q /tmp/compactc.zip -d /opt/compactc; \
-    rm /tmp/compactc.zip; \
+    unzip -q "/tmp/${asset}" -d /opt/compactc; \
+    rm "/tmp/${asset}"; \
     chmod +x /opt/compactc/*; \
-    test -x /opt/compactc/zkir
+    test -x /opt/compactc/zkir; \
+    test "$(/opt/compactc/compactc --version)" = "${COMPACT_VERSION}"; \
+    got_runtime="$(/opt/compactc/compactc --runtime-version)"; \
+    want_runtime="$(sed -n 's/.*"@midnight-ntwrk\/compact-runtime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /opt/template-package.json | head -n 1)"; \
+    test -n "$want_runtime" || { echo "the patched template declares no @midnight-ntwrk/compact-runtime" >&2; exit 1; }; \
+    test "$got_runtime" = "$want_runtime" || { echo "FAIL: compactc ${COMPACT_VERSION} emits code for compact-runtime ${got_runtime}, but ledger-v9.patch installs ${want_runtime} — the generated module's checkRuntimeVersion() would refuse to load in the browser" >&2; exit 1; }; \
+    echo "compactc ${COMPACT_VERSION} / language $(/opt/compactc/compactc --language-version) / runtime ${got_runtime}"
 
 COPY --from=source /src/src/contract/offer-files.compact /contract/offer-files.compact
 RUN HOME=/tmp XDG_CACHE_HOME=/tmp/zk-cache \

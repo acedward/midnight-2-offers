@@ -197,16 +197,19 @@ control is worse than one that is gone.
   not missing, and it is silent unless you look: `./verify.sh --prices` is what turns it into a
   failure (`PRICES_MAX_AGE_S`, default 3600 s). On the default 24 h interval a long-lived stack
   needs that limit raised, or `PRICE_FEED_INTERVAL_MS` lowered.
-- **The AA image compiles the AA contracts with the KERNEL's compactc, not the AA repo's own.**
-  `AA_REF` is now `41de69de…` (the split preset plus nine modules) and the AA repo pins compactc
-  0.34.0 / compact-runtime 0.19.0 on `main`, while this image compiles the AA contracts AND the
-  kernel's offer-files contract with ONE compactc — the kernel's `0.33.0-rc.2` — and loads both
-  with ONE runtime, because two `compact-runtime` copies in one process fail `instanceof`.
-  MEASURED 2026-09-04 at this pin: 0.33.0-rc.2 compiles the split preset and emits ZKIR
-  **byte-identical to 0.34.0 for all nine circuits**, stamping `runtime-version` 0.18.0-rc.1 —
-  so the difference is a version string, not a statement. That is a measurement of ONE contract
-  at ONE pin, not a general claim about the two compilers, and it has to be re-measured whenever
-  either pin moves. The image still fails the build loudly if the kernel leaves the 0.33 line.
+- **The AA image compiles the AA contracts with the KERNEL's compactc — and that is now the same
+  compactc the AA repo pins.** This image compiles the AA contracts AND the kernel's offer-files
+  contract with ONE compactc and loads both with ONE `compact-runtime`, because two runtime copies
+  in one process fail `instanceof` and because generated code opens with `checkRuntimeVersion()`.
+  Until the kernel moved to Compact 0.34.0 the two halves disagreed — `AA_REF 41de69de…` is a
+  0.34.0 / 0.19.0 build while the kernel line declared 0.33.0-rc.2 — and this image compiled the
+  AA contracts with the kernel's older compactc, justified by a MEASURED byte-identical ZKIR for
+  all nine circuits. That was a coincidence to re-verify at every pin, not a property, and it is
+  gone: at `KERNEL_REF 80bace3…` both halves are 0.34.0 / 0.19.0 by construction. What remains is
+  the constraint itself — **the AA pin and the kernel pin cannot be moved independently**. The
+  build fails closed if `compactc --runtime-version` disagrees with what either side installs, and
+  `verify-source-pins.sh` fails on a live stack if the kernel image and the AA images do not carry
+  the same `compactc` version.
 
 ## The AA Manager's `execute` circuit comes from an unaudited third-party compiler
 
