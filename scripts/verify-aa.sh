@@ -117,7 +117,11 @@ if [[ -n "$console_cid" ]]; then
     err "aa-console relay wallet UNFUNDED — operations will fail (./scripts/fund-wallet.sh with the aa-console seed)"
     FAILURES=$(( FAILURES + 1 ))
   fi
-  if curl -fsS --max-time 10 "$CONSOLE_URL/" 2>/dev/null | grep -q "AA Console"; then
+  # RETRIED, bounded (infra issue 00016): one 10s curl at a single-threaded Bun server that is
+  # mid-wallet-sync is a coin flip, and 00015 P5 lost it once while every other aa assertion in
+  # the same run passed. `curl_retry_match` keeps the assertion exactly as strict — the page
+  # must contain "AA Console" — and only stops calling a slow page a broken one.
+  if curl_retry_match "$CONSOLE_URL/" "AA Console" "aa-console page" >/dev/null; then
     ok "aa-console page serves"
   else
     err "aa-console page did not serve HTML"

@@ -756,7 +756,7 @@ inside the compose network against this stack's indexer.
 |---|---|---|
 | `shielded-night-fund` | one-shot (toolkit) | gives the profile's two dedicated wallets NIGHT + a registered DUST address, and **skips** either one that already has both |
 | `shielded-night-deploy` | one-shot (`restart: "no"`) | deploys the contract ONCE per stack and publishes `contract.json` atomically to a named volume |
-| `shielded-night-register` | one-shot (`restart: "no"`) | teaches the offer-files kernel THIS stack's sNight colour, when the `offerfiles` profile is in the stack. No kernel → one log line and exit 0 |
+| `shielded-night-register` | one-shot (`restart: "no"`) | teaches the offer-files kernel THIS stack's sNight colour, when the `offerfiles` profile is in the stack. Every kernel request is retried, bounded and jittered, because health is not schema readiness (infra issue 00016). No kernel → it waits for the name to appear (`SNIGHT_KERNEL_DNS_WAIT_S`, default 300 s — the kernel container starts ~80 s after this one-shot on `--with offerfiles --with shielded-night`), then one log line and exit 0 |
 | `shielded-night` | nginx | serves the SPA and the compiled artifacts; its entrypoint waits for that address and writes `/config.js` before starting nginx |
 | `shielded-night-verify` | never started by `up.sh` | the bun-side assertions `./verify.sh` runs with `compose run --rm` (a compose `profiles:` key keeps it out of `up -d`, exactly as `core.yml`'s `fund` service does) |
 
@@ -786,7 +786,11 @@ and `POST`; there is no `PUT`, `PATCH` or `DELETE`, and `POST` answers **409 `To
 The SQL is not an end run around the API: it is the remedy the kernel's own `000-init.sql`
 prints in the comment above that seed, under `!!! PATCH THIS ROW WHEN DEPLOYING TO ANOTHER
 NETWORK !!!`. Whatever path is taken, the result is re-read through `GET /v1/known-tokens` and
-the one-shot fails if the colour did not land — it never trusts its own write. The row carries
+the one-shot fails if the colour did not land — it never trusts its own write. Every one of those
+requests, and the `UPDATE`, is retried on a bounded jittered budget (8 attempts, 2 s → 15 s, ±3 s;
+`SNIGHT_REGISTER_*`): the kernel answers `/v1/health` while it is still applying `000-init.sql`, so
+a 5xx or a refused connection means "not ready yet" and is waited out, while a 4xx is a real answer
+and fails at once (infra issue 00016). The row carries
 `decimals: 6` and `asset_id: midnight-3`, NIGHT's own asset: sNight is locked 1:1, so one sNight
 base unit is one Star and an equal-base-unit NIGHT ⇄ sNight offer must price at par.
 
