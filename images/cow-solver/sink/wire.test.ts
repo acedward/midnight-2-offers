@@ -12,7 +12,7 @@
 // against the local manifest, so both moving together would still pass. The
 // manifest is therefore checked BY HAND against the kernel pin whenever the pin
 // moves. Last compared 2026-09-03 at
-// `4af102536f02f137b696a4734bd8c936eddf3672` (branch `ledger-v9`, PR #65):
+// `80bace37bc2412542452e1c597761b2ebce5c677` (branch `ledger-v9`, PR #65):
 // all seven hashes IDENTICAL to the copy here, so the wire contract did not move
 // across the whole PR #50 → PR #65 range.
 

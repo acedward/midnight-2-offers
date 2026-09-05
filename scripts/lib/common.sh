@@ -533,3 +533,52 @@ indexer_height() {
     | grep -oE '"height"[[:space:]]*:[[:space:]]*[0-9]+' \
     | grep -oE '[0-9]+' | head -1
 }
+
+# ── one-shot HTTP reads that can lose a startup race ─────────────────────────
+#
+# A single `curl … | grep -q` is a coin flip against a server that is UP but momentarily busy.
+# Measured (00015 P5, infra issue 00016): `curl -fsS --max-time 10 "$CONSOLE_URL/" | grep -q
+# "AA Console"` failed exactly once while every other assertion in the same verify run passed,
+# including `/api/info` seconds earlier and a manual `curl` 26 s later that returned 200 and
+# 30 352 bytes of the very page the check greps for. The aa-console is a single-threaded Bun
+# process, so a wallet sync can hold its HTTP loop past a 10 s budget — which is a slow page,
+# not a broken one, and a verify gate must be able to tell those apart.
+#
+# The jitter is the load-bearing half, for the same reason it is in the genesis-funding
+# retries (00010 Q20): several clients hit the same starting process at once, so a fixed
+# schedule just re-collides.
+#
+# curl_retry_match <url> <extended-regex> <label> [tries] [curl_max_time]
+#   Prints the FIRST matching body on stdout and returns 0. On give-up returns 1, having
+#   reported the last HTTP status, the last curl exit code and the head of the last body on
+#   stderr. Diagnostics all go to stderr so the body can be captured with `$( )`.
+curl_retry_match() {
+  local url="$1" pattern="$2" label="$3"
+  local tries="${4:-${HTTP_MATCH_TRIES:-4}}" max_time="${5:-${HTTP_MATCH_MAX_TIME:-10}}"
+  local base="${HTTP_MATCH_RETRY_S:-2}" cap="${HTTP_MATCH_RETRY_MAX_S:-8}"
+  local jitter="${HTTP_MATCH_JITTER_S:-3}"
+  local try resp body status code delay
+  for (( try = 1; try <= tries; try++ )); do
+    # No `-f`: the BODY of a non-2xx answer is what says whether the server is starting or
+    # broken, and `-f` throws it away. The status is appended on its own last line instead,
+    # so the give-up message can name both.
+    code=0
+    resp="$(curl -sS -w $'\n%{http_code}' --max-time "$max_time" "$url" 2>/dev/null)" || code=$?
+    status="${resp##*$'\n'}"
+    body="${resp%$'\n'*}"
+    if [[ "$status" == 2* ]] && printf '%s' "$body" | grep -qE "$pattern"; then
+      if (( try > 1 )); then dim "$label: matched on attempt ${try}/${tries}" >&2; fi
+      printf '%s' "$body"
+      return 0
+    fi
+    if (( try < tries )); then
+      delay=$(( base * (1 << (try - 1)) ))
+      (( delay > cap )) && delay=$cap
+      delay=$(( delay + RANDOM % (jitter + 1) ))
+      dim "$label: no match yet (attempt ${try}/${tries}, HTTP ${status}, curl exit ${code}) — retrying in ${delay}s" >&2
+      sleep "$delay"
+    fi
+  done
+  err "$label: no match after ${tries} attempts (last HTTP ${status}, curl exit ${code}, last body: $(printf '%s' "${body}" | tr '\n' ' ' | cut -c1-120))" >&2
+  return 1
+}

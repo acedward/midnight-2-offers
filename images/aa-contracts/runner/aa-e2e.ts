@@ -29,9 +29,16 @@
 //     select a standard-lane shielded coin into an experimental-checked tx.
 //
 // Needs the :e2e image variant (AA_PRUNE_MANAGER_PROVERS=0): calling `execute`
-// proves the k=19 circuit (~2 min per call on an M-series host).
+// proves it locally, so the Manager's proving key must be in the image.
+//
+// WHICH `execute` — and how long it took — is recorded, not assumed. The report
+// carries the zkir-source receipt (which compiler, which release, which k) and the
+// wall time of every `execute` proof, so a run with the MinoCrab default and a run
+// with `AA_ZKIR_SOURCE=compactc` are directly comparable and each number says which
+// artifact produced it.
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { zkirSourceReceipt, zkirSourceLine } from "/aa/runner/zkir-source.ts";
 import { resolve } from "node:path";
 import * as Rx from "rxjs";
 import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
@@ -201,6 +208,11 @@ async function main() {
   log(`alice EOA=${ALICE} account=${ALICE_ID.slice(0, 18)}…`);
   log(`bob   EOA=${BOB} account=${BOB_ID.slice(0, 18)}…`);
   const results: Record<string, unknown> = {};
+  // Every `execute` proof's wall time, keyed by step. SC-002 is a comparison, and a
+  // comparison needs both sides recorded the same way by the same code.
+  const executeTimings: Record<string, number> = {};
+  const zkirSource = zkirSourceReceipt(AA_ROOT);
+  log(`manager circuits: ${zkirSourceLine(zkirSource)}`);
 
   // ── 1. register alice + bob (one session per register) ─────────────────────
   const registerAction = (owner: Hex20, salt: Hex32, id: Hex32): RegisterEvmAccount => ({
@@ -222,9 +234,10 @@ async function main() {
       const prep = prepareEvmExecute(action as any, artifactDomain(), sig);
       if (prep.signer.toLowerCase() !== owner.toLowerCase())
         throw new Error(`${who}: recovered signer ${prep.signer} != ${owner}`);
-      log(`register ${who}: proving execute (k=19)…`);
+      log(`register ${who}: proving execute — ${zkirSourceLine(zkirSource)}…`);
       const t0 = Date.now();
       const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
+      executeTimings[`register-${who}`] = (Date.now() - t0) / 1000;
       log(`✅ ${who} registered — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
     });
   }
@@ -294,9 +307,10 @@ async function main() {
     } as any;
     const sig = metamaskSign(ALICE_KEY, action as any, artifactDomain());
     const prep = prepareEvmExecute(action as any, artifactDomain(), sig);
-    log(`transfer ${TRANSFER} alice→bob: proving execute (k=19)…`);
+    log(`transfer ${TRANSFER} alice→bob: proving execute — ${zkirSourceLine(zkirSource)}…`);
     const t0 = Date.now();
     const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
+    executeTimings["transfer"] = (Date.now() - t0) / 1000;
     log(`✅ transferred — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
     results["transfer"] = { amount: String(TRANSFER), tx: tx.public?.txId ?? null };
   });
@@ -334,9 +348,10 @@ async function main() {
     } as any;
     const sig = metamaskSign(ALICE_KEY, action, artifactDomain());
     const prep = prepareEvmExecute(action, artifactDomain(), sig);
-    log(`withdraw ${WITHDRAW} alice→relay (selector 3): proving execute (k=19)…`);
+    log(`withdraw ${WITHDRAW} alice→relay (selector 3): proving execute — ${zkirSourceLine(zkirSource)}…`);
     const t0 = Date.now();
     const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
+    executeTimings["withdraw"] = (Date.now() - t0) / 1000;
     log(`✅ withdrawn — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
     results["withdraw"] = { amount: String(WITHDRAW), tx: tx.public?.txId ?? null };
   });
@@ -352,6 +367,10 @@ async function main() {
     manager: MANAGER, minter: MINTER,
     actors: { alice: { eoa: ALICE, account: ALICE_ID }, bob: { eoa: BOB, account: BOB_ID } },
     steps: results,
+    zkirSource,
+    // Seconds, prove-and-submit, per `execute` call. Host-specific by nature — the
+    // number that matters is the RATIO between two runs on the same host.
+    executeSeconds: executeTimings,
     finishedAt: new Date().toISOString(),
   };
   writeFileSync("/aa/out/aa-e2e.json", JSON.stringify(report, null, 2) + "\n");

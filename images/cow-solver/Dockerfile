@@ -2,7 +2,7 @@
 #
 # Source: https://github.com/effectstream/zswap-offerfiles-kernel/pull/65,
 # branch `ledger-v9` (draft at the time of pinning — the SHA is the identity),
-# exact SHA 4af102536f02f137b696a4734bd8c936eddf3672. Clean-clone builds fetch
+# exact SHA 80bace37bc2412542452e1c597761b2ebce5c677. Clean-clone builds fetch
 # that upstream commit directly; Cow solver source is not copied into this repo.
 # The separate browser SPA is fetched through FRONTEND_REPO/FRONTEND_REF and
 # contains no solver implementation.
@@ -21,7 +21,7 @@
 # functional coverage.
 
 ARG SOLVER_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG SOLVER_REF=4af102536f02f137b696a4734bd8c936eddf3672
+ARG SOLVER_REF=80bace37bc2412542452e1c597761b2ebce5c677
 
 FROM debian:stable-slim AS source
 
