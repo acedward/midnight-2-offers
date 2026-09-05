@@ -76,12 +76,21 @@ count filters on.
 `packages/database/migrations/000-init.sql` breaks that: the kernel applies the init file only
 against an EMPTY database, and it has no migration path for a database that already exists
 (new `migrationTable` entries never reach a synced DB). The ledger-v9 pin
-(`4af102536f02f137b696a4734bd8c936eddf3672`) is such a move — it adds the token price
+(`80bace37bc2412542452e1c597761b2ebce5c677`) is such a move — it adds the token price
 service's `asset_prices` / `price_feed_status` tables and `known_tokens.decimals`, with seeded
 reference prices. A `postgres-data` volume older than that pin produces a stack where every
 container is healthy and every quote is wrong. `scripts/verify-kernel.sh` asserts
 `GET /v1/prices` returns the seeded asset table for exactly this reason, and its failure names
 the fix.
+
+**And the `80bace3` pin needs it for a second, independent reason: the offer-files CONTRACT
+changed.** Kernel PR #67 gave `mint_shielded` and `mint_unshielded` an explicit recipient, so
+their circuits, verifier keys and the deployed contract's address are all new. The
+`offerfiles-deploy` volume holds an address, and a stack that still had one from an older pin
+would JOIN that contract with keys this build does not have — every mint and every take would
+fail against it. `aa-out` goes for the same reason (the AA contracts are recompiled by a
+different compactc). Neither is caught by the database assertion above, which is exactly why
+`./down.sh -v` and not a selective cleanup is the instruction.
 
 `./down.sh -v` **is** the full reset — there is no second cleanup step to remember, and no state
 outside what it removes:

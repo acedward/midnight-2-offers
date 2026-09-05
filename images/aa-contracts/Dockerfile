@@ -7,20 +7,20 @@
 # (per-deployment-tag token source). Fetched from the remote like the other images,
 # so `git clone <this repo> && ./up.sh --with aa` works with nothing else checked out.
 #
-# TOOLCHAIN FIDELITY. The compactc pin is READ FROM THE PINNED KERNEL TREE
-# (`infra/compact-version.txt` — 0.33.0-rc.2 at this KERNEL_REF), because one
-# compactc and one compact-runtime compile BOTH contract sets in this image.
-# MEASURED 2026-09-04 at AA_REF 41de69d: compactc 0.33.0-rc.2 (language 0.25.0)
-# compiles the split preset plus its nine modules — the preset's floor is
-# `pragma language_version >= 0.25.0` — and emits ZKIR BYTE-IDENTICAL to
-# compactc 0.34.0 for all nine circuits (e.g. execute.zkir
-# 1ec9f50113c7d1e877f45e49c3903b7d34d63d471a4fee4fa3faa812a02b0255 from both),
-# with `runtime-version` 0.18.0-rc.1 — exactly the runner's compact-runtime pin.
-# So the AA half needs no separate 0.34.0 toolchain and no second package tree,
-# and the MinoCrab artifact below is swapped into the exact statement its
-# equivalence evidence was gathered against. The 0.33-line guard in stage 2 is
-# what makes that assumption fail loudly if the kernel moves to 0.34
-# (issues/00011-…). `--build-arg COMPACT_VERSION=<x>` still overrides.
+# TOOLCHAIN FIDELITY — ONE compactc, ONE compact-runtime, and issues/00011 is
+# CLOSED. The compactc pin is READ FROM THE PINNED KERNEL TREE
+# (`infra/compact-version.txt` — 0.34.0 at this KERNEL_REF), because one compactc
+# and one compact-runtime compile BOTH contract sets in this image. Until the
+# kernel moved (PR #67, this re-pin) the two sets disagreed: the AA repo was a
+# 0.34.0 / runtime 0.19.0 build (AA PR #11) while the kernel line still declared
+# 0.33.0-rc.2 / 0.18.0-rc.1, and this image papered over it by compiling the AA
+# contracts with the kernel's older compactc — legitimate only because the ZKIR
+# came out byte-identical (measured 2026-09-04, all nine circuits, e.g.
+# execute.zkir 1ec9f501…). That was a coincidence to be verified per release,
+# not a property. Both halves are now 0.34.0 by construction, and the guard in
+# stage 2 no longer tolerates a version whose emitted `--runtime-version`
+# disagrees with what the runner installs. `--build-arg COMPACT_VERSION=<x>`
+# still overrides for a deliberate experiment.
 #
 # It compiles with `--feature-zkir-v3`, and that flag is load-bearing: the Manager
 # is keccak/EIP-712-heavy and its compactc artifact is a v3-lane one. v3 zkir emits
@@ -64,7 +64,7 @@
 ARG AA_REPO=https://github.com/acedward/AA-midnight-evm-experiment-v3.git
 ARG AA_REF=41de69ded41ff933fe0db8697b264dc46fc6e0cb
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=4af102536f02f137b696a4734bd8c936eddf3672
+ARG KERNEL_REF=80bace37bc2412542452e1c597761b2ebce5c677
 # EMPTY ON PURPOSE — see the TOOLCHAIN FIDELITY note above.
 ARG COMPACT_VERSION=
 
@@ -136,29 +136,44 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates unzip bash \
  && rm -rf /var/lib/apt/lists/*
 
-# The compactc pin travels with the pinned kernel source — see the ARG note.
-COPY --from=source /kernel-src/infra/compact-version.txt /opt/compact-version.txt
+# The compactc pin, its SHA-256 and the runtime the offer-files half expects all
+# travel with the pinned kernel source — see the ARG note. The OTHER half of the
+# same invariant (the runner's INSTALLED compact-runtime) is checked in stage 3,
+# where `bun install` has actually resolved it; doing it here would mean copying
+# runner/package.json into this stage and making every runner dependency edit
+# invalidate ~20 minutes of keygen.
+COPY --from=source /kernel-src/infra/compact-version.txt    /opt/compact-version.txt
+COPY --from=source /kernel-src/infra/compact-checksums.sha256 /opt/compact-checksums.sha256
+COPY --from=source /kernel-src/packages/contracts-midnight/contract-offer-files/package.json /opt/contract-package.json
 
 RUN set -eux; \
     COMPACT_VERSION="${COMPACT_VERSION:-$(tr -d ' \t\n\r' < /opt/compact-version.txt)}"; \
     test -n "${COMPACT_VERSION}" || { echo "infra/compact-version.txt is empty at this KERNEL_REF" >&2; exit 1; }; \
-    case "${COMPACT_VERSION}" in \
-      0.33.*) : ;; \
-      *) echo "FAIL: the pinned kernel declares compactc ${COMPACT_VERSION}, but the AA contracts at this AA_REF are a 0.33-line build. One compactc and one compact-runtime compile BOTH contract sets in this image — moving the kernel off 0.33 needs the AA re-pin tracked in issues/00011-aa-v3-repin-compactc-0.34.md, not a silent cross-toolchain build." >&2; exit 1 ;; \
-    esac; \
     echo "compactc pin: ${COMPACT_VERSION} (from the pinned kernel tree)"; \
     case "${TARGETARCH:-arm64}" in \
       arm64) triple="aarch64-unknown-linux-musl" ;; \
       amd64) triple="x86_64-unknown-linux-musl" ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    url="https://github.com/LFDT-Minokawa/compact/releases/download/compactc-v${COMPACT_VERSION}/compactc_v${COMPACT_VERSION}_${triple}.zip"; \
-    curl --proto '=https' --tlsv1.2 -fLsS -o /tmp/compactc.zip "$url"; \
+    asset="compactc_v${COMPACT_VERSION}_${triple}.zip"; \
+    url="https://github.com/LFDT-Minokawa/compact/releases/download/compactc-v${COMPACT_VERSION}/${asset}"; \
+    curl --proto '=https' --tlsv1.2 -fLsS -o "/tmp/${asset}" "$url"; \
+    expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' /opt/compact-checksums.sha256)"; \
+    test -n "$expected" || { echo "the pinned kernel tree records no SHA-256 for ${asset}" >&2; exit 1; }; \
+    printf '%s  %s\n' "$expected" "/tmp/${asset}" | sha256sum -c -; \
     mkdir -p /opt/compactc; \
-    unzip -q /tmp/compactc.zip -d /opt/compactc; \
-    rm /tmp/compactc.zip; \
+    unzip -q "/tmp/${asset}" -d /opt/compactc; \
+    rm "/tmp/${asset}"; \
     chmod +x /opt/compactc/*; \
-    test -x /opt/compactc/zkir || { echo "asset lacks the zkir backend" >&2; exit 1; }
+    test -x /opt/compactc/zkir || { echo "asset lacks the zkir backend" >&2; exit 1; }; \
+    test "$(/opt/compactc/compactc --version)" = "${COMPACT_VERSION}"; \
+    got_runtime="$(/opt/compactc/compactc --runtime-version)"; \
+    want_runtime="$(sed -n 's/.*"@midnight-ntwrk\/compact-runtime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /opt/contract-package.json | head -n 1)"; \
+    test -n "$want_runtime" || { echo "the pinned kernel's contract package declares no @midnight-ntwrk/compact-runtime" >&2; exit 1; }; \
+    test "$got_runtime" = "$want_runtime" || { echo "FAIL: compactc ${COMPACT_VERSION} emits code for compact-runtime ${got_runtime}, but the pinned kernel's contract package depends on ${want_runtime}" >&2; exit 1; }; \
+    echo "compactc ${COMPACT_VERSION} / language $(/opt/compactc/compactc --language-version) / runtime ${got_runtime}"; \
+    printf '%s\n' "${COMPACT_VERSION}" > /opt/compactc-version; \
+    printf '%s\n' "${got_runtime}"     > /opt/compact-runtime-version
 
 COPY --from=source /src/contracts /contracts
 COPY --from=source /kernel-src/packages/contracts-midnight/contract-offer-files/src/offer-files.compact /contracts/offer-files.compact
@@ -342,6 +357,24 @@ COPY console/ /aa/console/
 # module resolution walks UP from the importing file, so the dependency tree must
 # sit at /aa/node_modules to be visible to generated code and runner alike.
 RUN cp /aa/runner/package.json /aa/package.json && cd /aa && bun install
+
+# ── ONE compactc, ONE compact-runtime (issues/00011) ─────────────────────────
+# This process imports BOTH generated contract modules — the AA Manager/Minter
+# and the kernel's offer-files contract — and each one opens with
+# `checkRuntimeVersion("<the runtime compactc emitted code for>")`. The compact
+# stage already proved the compiler agrees with the KERNEL's contract package;
+# this proves the same number against what `bun install` actually RESOLVED here,
+# and that exactly one copy is installed. A mismatch used to surface as a
+# contract that refuses to load the first time the console touched it.
+RUN set -eux; \
+    want="$(cat /opt/compact-runtime-version)"; \
+    copies="$(find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' | wc -l | tr -d ' ')"; \
+    test "$copies" = "1" || { echo "FAIL: ${copies} copies of @midnight-ntwrk/compact-runtime are installed at /aa; exactly one must be" >&2; find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' >&2; exit 1; }; \
+    got="$(bun -e 'const p = (await import("/aa/node_modules/@midnight-ntwrk/compact-runtime/package.json", { with: { type: "json" } })).default; console.log(p.version)')"; \
+    test "$got" = "$want" || { echo "FAIL: compactc $(cat /opt/compactc-version) emits code for compact-runtime ${want}, but the runner installed ${got}" >&2; exit 1; }; \
+    echo "runner compact-runtime ${got} == compactc $(cat /opt/compactc-version) runtime target"; \
+    cp /opt/compactc-version         /aa/.compactc-version; \
+    cp /opt/compact-runtime-version  /aa/.compact-runtime-version
 
 RUN printf '%s\n' \
       '#!/bin/bash' \

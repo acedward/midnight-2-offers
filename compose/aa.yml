@@ -84,7 +84,7 @@ services:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
         AA_REF: '${AA_REF:-41de69ded41ff933fe0db8697b264dc46fc6e0cb}'
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        KERNEL_REF: '${KERNEL_REF:-4af102536f02f137b696a4734bd8c936eddf3672}'
+        KERNEL_REF: '${KERNEL_REF:-80bace37bc2412542452e1c597761b2ebce5c677}'
         # The Manager's `execute` comes from the MinoCrab port's PUBLISHED RELEASE
         # by default (k=18: half the prover key, ~2x faster proofs; unaudited
         # third-party compiler, equivalence TESTED not proven — dev chains only).
@@ -145,7 +145,7 @@ services:
         AA_REPO: '${AA_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-v3.git}'
         AA_REF: '${AA_REF:-41de69ded41ff933fe0db8697b264dc46fc6e0cb}'
         KERNEL_REPO: '${KERNEL_REPO:-https://github.com/effectstream/zswap-offerfiles-kernel.git}'
-        KERNEL_REF: '${KERNEL_REF:-4af102536f02f137b696a4734bd8c936eddf3672}'
+        KERNEL_REF: '${KERNEL_REF:-80bace37bc2412542452e1c597761b2ebce5c677}'
         AA_PRUNE_MANAGER_PROVERS: '0'
         MINOCRAB_REPO: '${MINOCRAB_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-minocrab}'
         MINOCRAB_RELEASE: '${MINOCRAB_RELEASE:-v0.2.0}'

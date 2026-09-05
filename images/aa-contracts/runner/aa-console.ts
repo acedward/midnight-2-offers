@@ -52,6 +52,7 @@ import type { Hex20, Hex32 } from "/aa/aalib/bytes.js";
 import { buildOpenSwapOffer } from "/aa/runner/aa-offer.ts";
 import { rawTokenType } from "@midnight-ntwrk/compact-runtime";
 import { zkirSourceReceipt, zkirSourceLine } from "/aa/runner/zkir-source.ts";
+import { shieldedUserRecipient, unshieldedUserRecipient } from "/aa/runner/mint-recipient.ts";
 
 const TAG = "[aa-console]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
@@ -330,22 +331,45 @@ async function joinOfferFiles(walletResult: any) {
     "offerFilesPrivateState", WALLET_PROOF);
 }
 
-/** Mint `amount` of a SHIELDED token to the CALLING wallet (mint_shielded pays
- * to the caller's own coin public key — that is the circuit's design). */
+/** Mint `amount` of a SHIELDED token to the CALLING wallet.
+ *
+ * THE RECIPIENT IS EXPLICIT since kernel PR #67 (KERNEL_REF 80bace3): the
+ * circuit took `ownPublicKey()` before and now takes
+ * `Either<ZswapCoinPublicKey, ContractAddress>`. This console always passes the
+ * LEFT arm holding the CALLING wallet's own coin public key, which reproduces
+ * the old behaviour exactly — every caller here (`faucetJob`,
+ * `fundShieldedJob`) then deposits or spends the coins from that same wallet.
+ * The RIGHT arm (a contract) is never used: a contract recipient must claim the
+ * coin by running its receive circuit in the SAME transaction, which nothing in
+ * this console does, and ledger-v9 rejects the transaction otherwise. */
 async function mintShieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint) {
   const of = await joinOfferFiles(walletResult);
   const nonce = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
-  jlog(j, `mint_shielded ${amount} ${token.name} → this wallet…`);
-  const tx = await (of.handle.callTx as any).mint_shielded(token.sep, amount, nonce);
+  const coinPublicKey = String(walletResult.zswapSecretKeys.coinPublicKey);
+  jlog(j, `mint_shielded ${amount} ${token.name} → this wallet (${coinPublicKey.replace(/^0x/, "").slice(0, 12)}…)`);
+  const tx = await (of.handle.callTx as any).mint_shielded(
+    token.sep,
+    amount,
+    nonce,
+    shieldedUserRecipient(coinPublicKey),
+  );
   jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
   return tx;
 }
 
-/** Mint `amount` of the UNSHIELDED token to an arbitrary 32-byte user address. */
+/** Mint `amount` of the UNSHIELDED token to an arbitrary 32-byte user address.
+ *
+ * Also explicit since PR #67 — `Either<ContractAddress, UserAddress>`, RIGHT
+ * arm. The bytes are the same 32 the old `UserAddress` parameter took; only the
+ * wrapper is new. */
 async function mintUnshieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint, userAddr32: Uint8Array) {
   const of = await joinOfferFiles(walletResult);
   jlog(j, `mint_unshielded ${amount} ${token.name} → ${toHex(userAddr32).slice(0, 12)}…`);
-  const tx = await (of.handle.callTx as any).mint_unshielded(token.sep, amount, { bytes: userAddr32 });
+  const tx = await (of.handle.callTx as any).mint_unshielded(
+    token.sep,
+    amount,
+    unshieldedUserRecipient(toHex(userAddr32)),
+  );
   jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
   return tx;
 }
@@ -952,7 +976,8 @@ function fundShieldedJob(accountId: Hex32, amount: bigint, tokenName = "wBTC"): 
   return enqueue("fund-shielded", async (j) => {
     const token = tokenByName(tokenName);
     if (token.family !== "shielded") throw new Error(`'${tokenName}' is not a shielded token`);
-    // mint_shielded pays the CALLER, so the funder wallet mints to itself…
+    // mint_shielded now names its recipient; mintShieldedTo passes the calling
+    // wallet's own coin public key, so the funder still mints to itself…
     await withProveRetry(j, "fund-shielded-mint", () => session("fund-shielded-mint", async (walletResult) => {
       await mintShieldedTo(walletResult, j, token, amount);
     }, { seed: FUNDER_SEED }));
@@ -973,8 +998,9 @@ function fundShieldedJob(accountId: Hex32, amount: bigint, tokenName = "wBTC"): 
 }
 
 /** Mint straight to a WALLET (no Manager deposit): the taker side of the demo.
- * Shielded mints go to the target wallet itself (the circuit pays its caller);
- * unshielded mints go to the target's 32-byte user address. */
+ * Shielded mints go to the target wallet itself (its own coin public key is
+ * passed as the circuit's recipient); unshielded mints go to the target's
+ * 32-byte user address. */
 function faucetJob(tokenName: string, amount: bigint, target: "relay" | "taker" | "funder"): Job {
   return enqueue("faucet", async (j) => {
     const token = tokenByName(tokenName);

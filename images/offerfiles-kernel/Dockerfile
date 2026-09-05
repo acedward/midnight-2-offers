@@ -15,7 +15,7 @@
 # Like images/umbra-evm, built from a REMOTE clone so
 # `git clone <this repo> && ./up.sh --with offerfiles` works with nothing else
 # checked out. KERNEL_REF defaults to exact commit
-# 4af102536f02f137b696a4734bd8c936eddf3672; the resolved commit is baked at
+# 80bace37bc2412542452e1c597761b2ebce5c677; the resolved commit is baked at
 # /app/.kernel-commit and asserted by the provenance gate.
 #
 # WHY NO ORCHESTRATOR AT ALL. `bun run dev`'s launchMidnight() launches its own
@@ -45,7 +45,7 @@
 # PLAIN 9.0.0-rc.5 proof server (the core one) proves.
 
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=4af102536f02f137b696a4734bd8c936eddf3672
+ARG KERNEL_REF=80bace37bc2412542452e1c597761b2ebce5c677
 # EMPTY ON PURPOSE. The compactc pin has exactly ONE source of truth and it is
 # not this file: `infra/compact-version.txt` inside the fetched kernel tree
 # (0.33.0-rc.2 at the pin above). A hard-coded default here silently keeps
@@ -87,7 +87,26 @@ RUN apt-get update \
 # infra/compact-toolchain.Dockerfile, including the no-symlink rule: the
 # bundled wrapper resolves siblings from `dirname $0`).
 # The pin travels with the source, not with this Dockerfile — see the ARG note.
-COPY --from=source /src/infra/compact-version.txt /opt/compact-version.txt
+#
+# SO DOES THE CHECKSUM (new at 80bace3, kernel PR #67). `infra/compact-checksums.sha256`
+# in the pinned tree records the SHA-256 of every release asset the pin names, and
+# the download is verified against it before a single byte is unzipped. Before this
+# the demo took whatever the release URL served — a tag is a locator, not an
+# identity, and a compiler is the one input where "roughly the right bytes" is
+# worthless. If the pin ever names a version the kernel has no checksum for, the
+# build fails here rather than compiling with an unidentified binary.
+#
+# AND SO DOES THE RUNTIME EXPECTATION. `compactc --runtime-version` is the
+# `checkRuntimeVersion()` string the generated module will demand at import
+# time, so it must equal the `@midnight-ntwrk/compact-runtime` the contract
+# package pins. Upstream hard-codes that number; here it is READ OUT OF THE
+# FETCHED TREE, because a hard-coded copy in this file is exactly the kind of
+# expectation that goes stale one kernel bump later and takes a live stack with
+# it. (The runtime stage re-checks the whole workspace with the kernel's own
+# `bun run check:compact-runtime`.)
+COPY --from=source /src/infra/compact-version.txt   /opt/compact-version.txt
+COPY --from=source /src/infra/compact-checksums.sha256 /opt/compact-checksums.sha256
+COPY --from=source /src/packages/contracts-midnight/contract-offer-files/package.json /opt/contract-package.json
 
 RUN set -eux; \
     COMPACT_VERSION="${COMPACT_VERSION:-$(tr -d ' \t\n\r' < /opt/compact-version.txt)}"; \
@@ -98,13 +117,26 @@ RUN set -eux; \
       amd64) triple="x86_64-unknown-linux-musl" ;; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    url="https://github.com/LFDT-Minokawa/compact/releases/download/compactc-v${COMPACT_VERSION}/compactc_v${COMPACT_VERSION}_${triple}.zip"; \
-    curl --proto '=https' --tlsv1.2 -fLsS -o /tmp/compactc.zip "$url"; \
+    asset="compactc_v${COMPACT_VERSION}_${triple}.zip"; \
+    url="https://github.com/LFDT-Minokawa/compact/releases/download/compactc-v${COMPACT_VERSION}/${asset}"; \
+    curl --proto '=https' --tlsv1.2 -fLsS -o "/tmp/${asset}" "$url"; \
+    expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' /opt/compact-checksums.sha256)"; \
+    test -n "$expected" || { echo "the pinned kernel tree records no SHA-256 for ${asset}" >&2; exit 1; }; \
+    printf '%s  %s\n' "$expected" "/tmp/${asset}" | sha256sum -c -; \
     mkdir -p /opt/compactc; \
-    unzip -q /tmp/compactc.zip -d /opt/compactc; \
-    rm /tmp/compactc.zip; \
+    unzip -q "/tmp/${asset}" -d /opt/compactc; \
+    rm "/tmp/${asset}"; \
     chmod +x /opt/compactc/*; \
-    test -x /opt/compactc/zkir || { echo "asset lacks the default zkir backend" >&2; exit 1; }
+    test -x /opt/compactc/zkir || { echo "asset lacks the default zkir backend" >&2; exit 1; }; \
+    printf '#!/bin/sh\nexec /opt/compactc/compactc "$@"\n' > /usr/local/bin/compactc; \
+    chmod +x /usr/local/bin/compactc; \
+    test "$(compactc --version)" = "${COMPACT_VERSION}"; \
+    want_runtime="$(sed -n 's/.*"@midnight-ntwrk\/compact-runtime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /opt/contract-package.json | head -n 1)"; \
+    test -n "$want_runtime" || { echo "the contract package declares no @midnight-ntwrk/compact-runtime" >&2; exit 1; }; \
+    got_runtime="$(compactc --runtime-version)"; \
+    test "$got_runtime" = "$want_runtime" || { echo "FAIL: compactc ${COMPACT_VERSION} emits code for compact-runtime ${got_runtime}, but the pinned kernel's contract package depends on ${want_runtime}" >&2; exit 1; }; \
+    echo "compactc ${COMPACT_VERSION} / language $(compactc --language-version) / runtime ${got_runtime}"; \
+    printf '%s\n' "${COMPACT_VERSION}" > /opt/compactc-version
 
 COPY --from=source /src/packages/contracts-midnight/contract-offer-files /contract
 # Key generation downloads the universal SRS from srs.midnight.network into
@@ -123,10 +155,20 @@ FROM oven/bun:1.3.11
 WORKDIR /app
 COPY --from=source /src /app
 COPY --from=source /kernel-commit /app/.kernel-commit
+COPY --from=compact /opt/compactc-version /app/.compactc-version
 COPY --from=compact /contract/src/managed /app/packages/contracts-midnight/contract-offer-files/src/managed
 
 # Workspace install. Frozen: the lockfile in the branch IS the tested set.
 RUN bun install --frozen-lockfile
+
+# ONE compact-runtime, and it is the one compactc emitted code for. The kernel's
+# own gate (scripts/check-compact-runtime.ts, PR #67) asserts that the resolved
+# lockfile carries exactly one `@midnight-ntwrk/compact-runtime` locator and that
+# all three manifests plus the root override pin that exact version. Running it
+# here turns a silent `checkRuntimeVersion()` failure at contract-load time — the
+# failure mode issues/00011 was opened about — into a build failure. It is the
+# tree's own script, so it moves with the pin instead of restating a number.
+RUN bun run check:compact-runtime
 
 # ── one image, three entrypoints (demo-infra Phase 11) ───────────────────────
 # This image no longer runs the orchestrator. `bunx orchestrator start

@@ -22,8 +22,12 @@ Everything this stack builds from the kernel repository — the sync node, the b
 solver, the two new services below, and the offer-files contract the AA console calls — comes
 from ONE commit:
 
-> **`effectstream/zswap-offerfiles-kernel` @ `4af102536f02f137b696a4734bd8c936eddf3672`**
+> **`effectstream/zswap-offerfiles-kernel` @ `80bace37bc2412542452e1c597761b2ebce5c677`**
 > — branch `ledger-v9`, [PR #65](https://github.com/effectstream/zswap-offerfiles-kernel/pull/65).
+> It is the merge of `main` @ `a608fa6` into `ledger-v9` @ `358aaca`, so it carries BOTH
+> [#67](https://github.com/effectstream/zswap-offerfiles-kernel/pull/67) (Compact 0.34.0 and
+> typed mint recipients) and [#68](https://github.com/effectstream/zswap-offerfiles-kernel/pull/68)
+> (price-feed blank-env defaults, mint-time name registration).
 
 **THE SHA IS THE IDENTITY, NOT THE BRANCH OR THE PR.** PR #65 was a DRAFT when this pin was
 taken ("DO NOT MERGE UNTIL LEDGER V9 IS THE STANDARD"), and that is fine: the images fetch by
@@ -46,15 +50,39 @@ What this pin brings that the old one did not:
 | **Solver status listener** (`:9100`, bearer-gated) and the **`solver-frontend` monitor site** | #58, #59 | the solver's own view of itself, and a page for it |
 | **6 decimals on every token**; faucets mint whole coins; sNight seeded as a known token | #61, #63 | amounts in the book are whole coins × 10⁶. The pinned zswap-da SPA still displays BASE UNITS — re-pinning it is a separate change |
 | Randomised poster give size (`GIVE_MIN`/`GIVE_MAX`) | #66 | `OFFER_POSTER_GIVE_MIN`/`_MAX` in `.env.example` |
+| **Compact 0.34.0 / compact-runtime 0.19.0**, and an archive SHA-256 recorded in `infra/compact-checksums.sha256` | #67 | ONE toolchain for every contract this repository compiles — see below. Closes `issues/00011` |
+| **Typed mint recipients**: `mint_shielded(sep, amount, nonce, recipient: Either<ZswapCoinPublicKey, ContractAddress>)` and `mint_unshielded(sep, amount, recipient: Either<ContractAddress, UserAddress>)`, changed IN PLACE | #67 | ⚠ **BREAKING**: the offer-files contract's circuits, keys and address are new, so `./down.sh -v` is required. Every caller here moved: the AA console runner and the SPA faucet both pass the calling wallet's own key through the kernel's `mint-recipient` helper |
+| Price-feed config treats blank/whitespace env as unset (`packages/price-feed/src/env.ts`) | #68 | the `prices` entrypoint's unset-blank-knobs workaround is DELETED (00010 Q24 closed) |
+| Mint moved out of the deploy one-shot into a post-kernel one, registering names through the live API | #68 | NOT mirrored here — this demo has no consumer of `minted-tokens.json`, and the names it needs (wBTC/wETH/wUSD) are a different set that its own `register-tokens` one-shot owns |
 
-**The compactc version travels with that SHA.** Both images that compile the offer-files
-contract — `images/offerfiles-kernel` and `images/aa-contracts` — read
-`infra/compact-version.txt` out of the fetched tree (`0.33.0-rc.2` at this pin) instead of
-carrying a hard-coded `ARG`. A hard-coded default is exactly the kind that keeps compiling
-after a kernel bump: the contract still builds, and the deployed keys are simply not the ones
-the pinned kernel expects. `--build-arg COMPACT_VERSION=…` still overrides for an experiment,
-and the AA image additionally REFUSES a kernel that has left the 0.33 line, because one
-compactc compiles both contract sets in that image (see `issues/00011-…`).
+**The compactc version travels with that SHA — and now so does its checksum.** Both images that
+compile the offer-files contract — `images/offerfiles-kernel` and `images/aa-contracts` — read
+`infra/compact-version.txt` out of the fetched tree (**`0.34.0`** at this pin) instead of carrying
+a hard-coded `ARG`. A hard-coded default is exactly the kind that keeps compiling after a kernel
+bump: the contract still builds, and the deployed keys are simply not the ones the pinned kernel
+expects. `--build-arg COMPACT_VERSION=…` still overrides for an experiment.
+
+Three things are asserted at build time, and none of them is a number written down in this
+repository:
+
+* the downloaded release archive must hash to the SHA-256 the pinned tree records in
+  `infra/compact-checksums.sha256` (new at this pin). A release tag is a locator; a compiler is
+  the one input where "roughly the right bytes" is worth nothing.
+* `compactc --runtime-version` — the string the generated module will pass to
+  `checkRuntimeVersion()` — must equal the `@midnight-ntwrk/compact-runtime` that the code loading
+  it actually installs. The kernel image compares it with the fetched contract package and then
+  runs the kernel's own `bun run check:compact-runtime` (exactly ONE resolved locator in the
+  workspace); the AA image compares it with what `bun install` resolved under `/aa`, requiring
+  exactly one copy.
+* on a live stack, `scripts/verify-source-pins.sh` reads `/app/.compactc-version` off the kernel
+  image and `/aa/.compactc-version` off both AA images and requires them EQUAL.
+
+**That is what closed `issues/00011`.** The AA contracts at `AA_REF 41de69d` are a 0.34.0 / 0.19.0
+build (AA PR #11) while the kernel line still declared 0.33.0-rc.2, and this image used to paper
+over the gap by compiling the AA contracts with the kernel's older compactc — legitimate only
+because the emitted ZKIR happened to be byte-identical, which is a coincidence to re-verify per
+release, not a property. Both halves are 0.34.0 by construction now, so the old `0.33.*` guard is
+gone: there is nothing left for it to guard.
 
 **Cow solver source pin.** Cow solver source is not copied into this repository. Its image fetches
 the same commit at build time (`SOLVER_REF` — a separate knob, the same value since the kernel
@@ -69,10 +97,20 @@ site would have had nothing to read.
 (`effectstream/effectstream@templates/zswap-da` remains on ledger-v8). The image therefore fetches
 [`effectstream/effectstream@ea04ff7c`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da)
 directly, verifies the resolved full commit and its `templates/zswap-da` subtree
-(`ea22913c345da3dae36e113fdbced2bb1897de63`), and applies the fail-closed 11-file
-`images/zswap-da/ledger-v9.patch`. The patch carries only dependency/lockfile, compiler manifest,
-and seven TypeScript/API migrations; the other 89 upstream files are taken verbatim and none is
-copied into this repository. The pin is a full SHA and stays the identity even if `v-next` moves.
+(`ea22913c345da3dae36e113fdbced2bb1897de63`), and applies the fail-closed 13-file
+`images/zswap-da/ledger-v9.patch`. The patch carries dependency/lockfile, the compiler manifest,
+the KERNEL's `offer-files.compact`, and eight TypeScript/API modules; the other 87 upstream files
+are taken verbatim and none is copied into this repository.
+
+**Why the contract source is in the patch.** The SPA proves calls against the contract the pinned
+KERNEL deployed, so its compiled artifacts must be the bytes the kernel image produced — same
+source, same compiler, same runtime. At the previous kernel pin the template's copy of
+`offer-files.compact` was already byte-identical to the kernel's, so the patch could stay silent
+and the identity held by luck. Kernel PR #67 changed both mint circuits in place, and the template
+did not follow; the patch now carries the kernel's file and a manifest regenerated with compactc
+0.34.0. The image's `compact` stage verifies the compiler archive against the SHA-256 the kernel
+records and refuses to build if `compactc --runtime-version` disagrees with the
+`@midnight-ntwrk/compact-runtime` the patch installs. The pin is a full SHA and stays the identity even if `v-next` moves.
 Cold builds need GitHub and npm network access. The fetched upstream licenses are preserved in the
 runtime image, and `/.zswap-da-commit` makes the source pin part of CI provenance verification.
 
@@ -718,7 +756,7 @@ inside the compose network against this stack's indexer.
 |---|---|---|
 | `shielded-night-fund` | one-shot (toolkit) | gives the profile's two dedicated wallets NIGHT + a registered DUST address, and **skips** either one that already has both |
 | `shielded-night-deploy` | one-shot (`restart: "no"`) | deploys the contract ONCE per stack and publishes `contract.json` atomically to a named volume |
-| `shielded-night-register` | one-shot (`restart: "no"`) | teaches the offer-files kernel THIS stack's sNight colour, when the `offerfiles` profile is in the stack. No kernel → one log line and exit 0 |
+| `shielded-night-register` | one-shot (`restart: "no"`) | teaches the offer-files kernel THIS stack's sNight colour, when the `offerfiles` profile is in the stack. Every kernel request is retried, bounded and jittered, because health is not schema readiness (infra issue 00016). No kernel → it waits for the name to appear (`SNIGHT_KERNEL_DNS_WAIT_S`, default 300 s — the kernel container starts ~80 s after this one-shot on `--with offerfiles --with shielded-night`), then one log line and exit 0 |
 | `shielded-night` | nginx | serves the SPA and the compiled artifacts; its entrypoint waits for that address and writes `/config.js` before starting nginx |
 | `shielded-night-verify` | never started by `up.sh` | the bun-side assertions `./verify.sh` runs with `compose run --rm` (a compose `profiles:` key keeps it out of `up -d`, exactly as `core.yml`'s `fund` service does) |
 
@@ -748,7 +786,11 @@ and `POST`; there is no `PUT`, `PATCH` or `DELETE`, and `POST` answers **409 `To
 The SQL is not an end run around the API: it is the remedy the kernel's own `000-init.sql`
 prints in the comment above that seed, under `!!! PATCH THIS ROW WHEN DEPLOYING TO ANOTHER
 NETWORK !!!`. Whatever path is taken, the result is re-read through `GET /v1/known-tokens` and
-the one-shot fails if the colour did not land — it never trusts its own write. The row carries
+the one-shot fails if the colour did not land — it never trusts its own write. Every one of those
+requests, and the `UPDATE`, is retried on a bounded jittered budget (8 attempts, 2 s → 15 s, ±3 s;
+`SNIGHT_REGISTER_*`): the kernel answers `/v1/health` while it is still applying `000-init.sql`, so
+a 5xx or a refused connection means "not ready yet" and is waited out, while a 4xx is a real answer
+and fails at once (infra issue 00016). The row carries
 `decimals: 6` and `asset_id: midnight-3`, NIGHT's own asset: sNight is locked 1:1, so one sNight
 base unit is one Star and an equal-base-unit NIGHT ⇄ sNight offer must price at par.
 

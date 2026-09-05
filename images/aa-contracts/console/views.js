@@ -265,7 +265,7 @@ const REPOS = [
     ref: "main @ 41de69de (sha-pinned)",
     notes: [
       ["PR #12", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12", "manager.compact split into a preset plus nine modules — BREAKING: the ledger slot order changed, so this pin needed a redeploy"],
-      ["", "", "compiled in-image with the kernel's compactc 0.33.0-rc.2; measured byte-identical ZKIR to the AA repo's own compactc 0.34.0 pin for all nine circuits"],
+      ["", "", "compiled in-image with the kernel's compactc 0.34.0 / compact-runtime 0.19.0 — the SAME toolchain this AA pin uses, so the AA contracts and the kernel's offer-files contract share one compiler and one runtime"],
     ],
   },
   {
@@ -280,9 +280,11 @@ const REPOS = [
   {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
     role: "offer-files kernel + batcher + the token price service (profile offerfiles) — ONE commit for the whole kernel line",
-    ref: "4af102536f02f137b696a4734bd8c936eddf3672 (branch ledger-v9)",
+    ref: "80bace37bc2412542452e1c597761b2ebce5c677 (branch ledger-v9)",
     notes: [
       ["PR #65", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/65", "the unified ledger-v9 line — DRAFT when pinned; the SHA is the identity, not the branch or the PR"],
+      ["PR #67", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/67", "Compact 0.34.0 / compact-runtime 0.19.0, and typed mint recipients — BREAKING: mint_shielded/mint_unshielded take an explicit Either recipient, so the contract's keys and address are new and this pin needed ./down.sh -v"],
+      ["PR #68", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/68", "price-feed treats blank env as unset, and the mint registers token names through the live API"],
       ["", "", "brings /v1/prices + /v1/quote and the batcher sponsorship gate (#54–#56) — BREAKING: it moves 000-init.sql, so an older postgres volume needs ./down.sh -v"],
       ["", "", "and 6 decimals on every token (#61, #63): the book's amounts are whole coins × 10⁶"],
     ],
@@ -290,7 +292,7 @@ const REPOS = [
   {
     repo: "effectstream/zswap-offerfiles-kernel (solver)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
     role: "COW solver, observation mode, + its status listener :9100 and the solver-frontend monitor site (profile solver)",
-    ref: "pinned 4af1025… — the SAME commit as the kernel (SOLVER_REF is a separate knob)",
+    ref: "pinned 80bace3… — the SAME commit as the kernel (SOLVER_REF is a separate knob)",
     notes: [
       ["PR #58 / #59", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/59", "the read-only status listener and the monitor page it feeds"],
       ["", "", "runs start.solver.ts behind this repo's undeployed-only gate: solver.dev.ts never passes the status option, so the listener could not come up on it"],
@@ -299,7 +301,7 @@ const REPOS = [
   {
     repo: "effectstream/zswap-offerfiles-kernel (offer poster)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
     role: "the offer poster (profile poster) — mints one exact coin and posts one takeable offer per interval, from its own dedicated wallet",
-    ref: "pinned 4af1025… — deploy/scripts/offer-poster.ts from the same commit",
+    ref: "pinned 80bace3… — deploy/scripts/offer-poster.ts from the same commit",
     notes: [
       ["PR #57 / #60 / #66", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/66", "the poster, its journal, and the randomised give size (GIVE_MIN/GIVE_MAX)"],
     ],
@@ -307,7 +309,7 @@ const REPOS = [
   {
     repo: "effectstream/zswap-offerfiles-kernel (price feed)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
     role: "the CoinGecko reference-price feed (profile prices, OPT-IN) — refreshes asset_prices, which /v1/prices, /v1/quote and the batcher's sponsorship gate all read",
-    ref: "pinned 4af1025… — packages/price-feed from the same commit",
+    ref: "pinned 80bace3… — packages/price-feed from the same commit",
     notes: [
       ["PR #54 / #55 / #56", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/56", "the token price service and the feed that keeps it fresh"],
       ["", "", "OPT-IN: 000-init.sql seeds real prices, so every quote works without it — the profile buys FRESH prices, not working ones"],

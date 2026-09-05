@@ -185,10 +185,10 @@ if present proof-server && present aa-proof-server; then
   fi
 fi
 
-KERNEL_EXPECTED="${KERNEL_REF:-4af102536f02f137b696a4734bd8c936eddf3672}"
+KERNEL_EXPECTED="${KERNEL_REF:-80bace37bc2412542452e1c597761b2ebce5c677}"
 # Provenance now, not a build input — and read from the matrix rather than duplicated here.
 INDEXER_EXPECTED="$(pin 'components[indexer-standalone].sourceProvenance.commit')"
-SOLVER_EXPECTED="${SOLVER_REF:-4af102536f02f137b696a4734bd8c936eddf3672}"
+SOLVER_EXPECTED="${SOLVER_REF:-80bace37bc2412542452e1c597761b2ebce5c677}"
 AA_EXPECTED="${AA_REF:-41de69ded41ff933fe0db8697b264dc46fc6e0cb}"
 # The MinoCrab port's release: three DIFFERENT kinds of identity, and only the
 # first is a commit. `MINOCRAB_SUMS_SHA256` is the one that decides which bytes
@@ -239,6 +239,48 @@ if present aa-console; then
   assert_pin aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.aa-commit "$AA_EXPECTED"
   assert_zkir_source aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
 fi
+# ── ONE COMPACT TOOLCHAIN ACROSS THE IMAGES (infra issues/00011) ────────────
+# The kernel image and both AA images compile the SAME offer-files contract, and
+# the AA console loads the kernel's contract module and the AA Manager's in ONE
+# process. If those images were built by different compactc versions their
+# verifier keys differ and the console's offer actions fail against the deployed
+# contract — the failure 00011 was opened about. Each image records the version
+# it actually used, so this compares images rather than restating a constant:
+# there is no number here to go stale when the kernel line moves again.
+read_toolchain() { # <image> <path>
+  docker run --rm --entrypoint cat "$1" "$2" 2>/dev/null | tr -d '\r\n'
+}
+assert_one_toolchain() {
+  local kernel_image="${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}"
+  local base ver image label bad=0
+  base="$(read_toolchain "$kernel_image" /app/.compactc-version)"
+  if [[ -z "$base" ]]; then
+    err "compact toolchain: ${kernel_image} carries no /app/.compactc-version"
+    FAILURES=$(( FAILURES + 1 ))
+    return
+  fi
+  for entry in \
+    "aa:${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" \
+    "aa-console:${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
+  do
+    label="${entry%%:*}"; image="${entry#*:}"
+    ver="$(read_toolchain "$image" /aa/.compactc-version)"
+    [[ -n "$ver" ]] || continue      # image not built in this stack
+    if [[ "$ver" != "$base" ]]; then
+      err "compact toolchain: ${label} image compiled with compactc ${ver}, the kernel image with ${base}"
+      bad=$(( bad + 1 ))
+    fi
+  done
+  if (( bad == 0 )); then
+    ok "one compact toolchain: compactc ${base} in every image that compiles a contract"
+  else
+    FAILURES=$(( FAILURES + bad ))
+  fi
+}
+if present kernel && { present aa-deploy || present aa-console; }; then
+  assert_one_toolchain
+fi
+
 if present evm-rpc; then
   assert_pin umbra-evm "${EVM_IMAGE:-midnight-2-offers/umbra-evm:local}" /app/.umbra-commit "$UMBRA_EXPECTED"
 fi
