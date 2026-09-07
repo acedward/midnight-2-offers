@@ -267,6 +267,11 @@ static_gates() {
   "$REPO_ROOT/scripts/verify-pin-defaults.sh"                            || rc=1
   "$REPO_ROOT/scripts/verify-pin-defaults.sh" --self-test >/dev/null \
     && ok "pin-defaults check self-test passed" || rc=1
+  # The README's pin table is GENERATED from the same defaults; a stale block or a
+  # pin with two values fails here, not in a reader's browser.
+  python3 "$REPO_ROOT/scripts/render-readme-pins.py" --check                || rc=1
+  python3 "$REPO_ROOT/scripts/render-readme-pins.py" --self-test >/dev/null \
+    && ok "README pin-table renderer self-test passed" || rc=1
   return $rc
 }
 

@@ -9,44 +9,136 @@ value only on a throwaway local `undeployed` chain. Never reuse any of them anyw
 
 ## The stack
 
-One row per component: what runs, where to reach it, and exactly which repo/ref it is built
-from. We manage the `acedward/*` and `effectstream/*` repos; rows marked *(upstream)* are
-consumed as-is with no code changes of ours.
+A profile **is** a compose fragment in `compose/`, named after the file, and the word you
+pass to `./up.sh --with <profile>`. Every box below is one compose service with its default
+host port; solid arrows are `depends_on`, dotted arrows are runtime reads that carry no
+start-order guarantee.
 
-| Component | Profile | Endpoint (default) | Source · ref · note |
-|---|---|---|---|
-| Midnight node | `core` | RPC `http://127.0.0.1:9944` (HTTP+WS) | midnightntwrk/midnight-node *(upstream)* — official image `2.0.0-rc.4` pinned by multiarch index digest, `CFG_PRESET=dev` |
-| Indexer | `core` | GraphQL v4 `http://127.0.0.1:8088/api/v4/graphql` (+`/ws`; `/api/v3` aliases v4) | official `4.4.0-rc.3` executable from the [`effectstream/binaries@0.3.120`](https://github.com/effectstream/binaries/releases/tag/0.3.120) warehouse *(development-only, mutable — pinned by SHA-256)*, installed into a thin local image: **no Rust build**, native `amd64` **and** `arm64`. Built upstream from [midnightntwrk/midnight-indexer](https://github.com/midnightntwrk/midnight-indexer) `56561b2f…`, recorded in the image as provenance; includes the standalone SQLite deadlock fix missing from rc1 |
-| Proof server ×2 | `core` + `aa` | plain `http://127.0.0.1:6300`; experimental internal-only | `9.0.0-rc.5` plain (kernel's v6 / zkir-v2 keys) + `9.0.0-rc.5` experimental (the aa profile's zkir-v3 / v7 keys), pulled from `ghcr.io/effectstream/midnight-proof-server` by digest. Exact byte-for-byte mirrors of the upstream `midnightntwrk/proof-server` indexes *(upstream availability at startup is unreliable; the bytes are identical — `images/proof-server-mirror/`)*. Two **different programs**, separately pinned |
-| Proof data (shared cache) | `core` | internal — one named `proof-params` volume | SRS K0-K19 + Ledger-static `9.0.0`, 21 noarch payloads from the same `effectstream/binaries@0.3.120` warehouse. A one-shot initializer verifies every hash and activates ONE immutable generation; both proof servers mount it **read-only**. Not in any image layer, never duplicated per architecture or variant |
-| PostgreSQL (shared store) | `core` | internal only — `docker compose … exec postgres psql -U offerfiles offerfiles` | `postgres:17-alpine` *(upstream)* + `pg_ivm` 1.11 compiled in (`images/postgres/`). ONE server for the stack: db `offerfiles` = the kernel's offer book, db `umbra` = umbra-evm's index |
-| Wallet tooling | `core` | `scripts/fund-wallet.sh`, `verify-wallets.sh` | midnightntwrk/midnight-node-toolkit *(upstream)* — official image `2.0.0-rc.4` pinned by multiarch index digest (must match the node) |
-| umbra-evm (read-only eth JSON-RPC) | `evm` | HTTP `http://127.0.0.1:8545` (chainId 2400) · WS `ws://127.0.0.1:10021` | [acedward/UmbraDB](https://github.com/acedward/UmbraDB) — pinned `5a463485…` from `evm-compat`; [PR #5](https://github.com/acedward/UmbraDB/pull/5) is the home of the JSON-RPC work |
-| Celestia DA devnet | `offerfiles` | DA JSON-RPC `http://127.0.0.1:26658` (bearer token: `scripts/celestia-token.sh`) | app `6.4.10` + node `0.28.4` from the same `effectstream/binaries@0.3.120` warehouse, each archive byte-equal to the official celestiaorg release asset (`images/celestia/official-equality.tsv`); one container, native `amd64` **and** `arm64` |
-| Offer-files kernel (sync node) | `offerfiles` | API `http://127.0.0.1:9999` | [effectstream/zswap-offerfiles-kernel](https://github.com/effectstream/zswap-offerfiles-kernel) — pinned `80bace3…` (`KERNEL_REF`) on branch **`ledger-v9`**, the unified v9 line: kernel + batcher + solver + the token price service (`/v1/prices`, `/v1/quote`) on ONE commit. The pin is the merge of `main` into `ledger-v9` that carries [PR #67](https://github.com/effectstream/zswap-offerfiles-kernel/pull/67) (**compactc 0.34.0 · compact-runtime 0.19.0**, and typed mint recipients: `mint_shielded`/`mint_unshielded` take an explicit `Either` recipient) and [PR #68](https://github.com/effectstream/zswap-offerfiles-kernel/pull/68) (price-feed blank-env defaults, mint-time name registration). The branch is still open as [PR #65](https://github.com/effectstream/zswap-offerfiles-kernel/pull/65) — the SHA is the identity, not the branch. Contract deploys ONCE per stack (`offerfiles-deploy` one-shot, address persisted) |
-| Offer-files batcher | `offerfiles` | `http://127.0.0.1:3334` | same repo/commit — its own container, restarts independently of the kernel; asks the kernel's `/v1/prices` for each offer's legs (fee sponsorship) |
-| — token-name one-shot | `offerfiles` | internal | `register-tokens` — names wBTC/wETH/wUSD in the kernel's registry once the kernel is healthy (`decimals: 6`). Non-fatal. Names are what price a colour since the price service landed |
-| COW solver (observation mode) + sink | `solver` | **nothing published** — see the monitor row below | same repo/commit at `SOLVER_REF`; **not vendored**; generated contract artifacts reuse the service-built kernel image. Runs `start.solver.ts` behind an `undeployed`-only gate. `solver-sink` is the relay's receive half and is internal: it holds the observation-safety counters that `./verify.sh --solver` reads over the compose network |
-| — solver monitor site | `solver` | **`http://127.0.0.1:10802`** | `solver-frontend` from the kernel image — the read-only "is it quoting, and if not why" page. Reads the solver's status listener on the unpublished `:9100`, the kernel API and the sink's `GET /tokens`; holds no wallet, mutates nothing |
-| Offer poster (the book fills itself) | `poster` | health `http://127.0.0.1:10803/health` | same repo/commit — mints one exact coin and posts one takeable offer per interval, paying with its own DUST. Dedicated seed (`0ffe…`), funded by a `poster-fund` one-shot; durable journal on its own volume |
-| zswap-da frontend (swap SPA) | `frontend` | `http://127.0.0.1:10600` | [`effectstream/effectstream@ea04ff7c`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da) — fetched directly at build time and adapted by the checked-in 13-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed. The patch carries the KERNEL's `offer-files.compact` and a manifest regenerated with compactc `0.34.0`, because the SPA proves calls against the contract the kernel deployed. Whole-coin amounts against the 6-decimal kernel, and **usable in a browser on ANY port block**: the image injects `window.MIDNIGHT_HOST_PORTS` at container start and `browser-network-urls.patch` maps the kernel's compose-internal URIs through it |
-| Shielded NIGHT dApp (NIGHT ⇄ sNight) | `shielded-night` | `http://127.0.0.1:10900` | [effectstream/shielded-night](https://github.com/effectstream/shielded-night) — branch **`ledger-v9`** @ `30af63f3…` ([PR #10](https://github.com/effectstream/shielded-night/pull/10), the 2.x port; `main` is the 1.x line). Contract, harness and page from ONE commit, no patch of any kind; the contract is **recompiled in-image** with SHA-256-pinned compactc `0.34.0` and the build fails unless the output is byte-identical to the committed `src/managed/`. Deploys ONCE per stack (`shielded-night-deploy` one-shot, address persisted on a volume and injected into the page as `/config.js`). With `--with offerfiles` a second one-shot names **this stack's** sNight colour in the kernel's token registry — the schema seeds *preview's*, and the colour follows the contract address |
-| AA Manager + Minter | `aa` | deploy receipt in the `aa-out` volume | [acedward/AA-midnight-evm-experiment-v3](https://github.com/acedward/AA-midnight-evm-experiment-v3) — `main @ 41de69de` (sha-pinned; key-breaking merges need a redeploy) · [PR #12](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12) split `manager.compact` into a preset + nine modules. Compiled in-image with the kernel's compactc `0.34.0` / compact-runtime `0.19.0` — ONE toolchain for the AA contracts and the offer-files contract this image also compiles, which is what closed the old two-toolchain hazard — **except `execute`**, which comes from [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release **`v0.2.0`** by default (`AA_ZKIR_SOURCE=minocrab`): the same contract transcribed into MinoCrab, a third-party Rust compiler, landing `execute` at **k = 18 / 211,047 rows** instead of compactc's k = 19 / 382,780 — half the proving key (544 MiB vs 1.14 GB), roughly half the proving time. The image downloads the release's files and takes them by SHA-256; the identity is `sha256(SHA256SUMS)` = `4a8c0183…`, **never the tag**. **Unaudited compiler; equivalence TESTED, NOT PROVEN** (59 differential tests, 5,128 tamper probes, 0 acceptance disagreements) — dev chains only, see [KNOWN-LIMITATIONS](docs/KNOWN-LIMITATIONS.md). `AA_ZKIR_SOURCE=compactc` opts out; `minocrab-all` takes all nine circuits |
-| **AA web console** (this stack's UI) | `aa` | **`http://127.0.0.1:10700`** | this repo (`images/aa-contracts/console/`) — tabs: AA+EVM, AA+Midnight (preview), COW solver feed, infrastructure canvas, Memos, Repos |
-| `@effectstream` packages | (npm) | — | [effectstream/effectstream](https://github.com/effectstream/effectstream) — the versions the kernel pin resolves: `@effectstream/celestia`, `midnight-contracts`, `orchestrator` `@0.200.2` · `mip-zswap-offer@0.4.0-v9.0` · `@midnightntwrk/ledger-v9@1.0.0-rc.3` (a root `overrides` entry, so ONE ledger WASM per process) · midnight-js network-id `5.0.0-beta.6` |
-| Midnight Intents relay | (dropped) | — | [shieldedtech/midnight-intents-swaps](https://github.com/shieldedtech/midnight-intents-swaps) *(upstream)* — pinned `d444c83` by the solver branch; NOT run (the solver observes only). `solver-sink` stands in for its RECEIVE half, plus the one public route the monitor reads (`GET /tokens`) |
-| Price feed (CoinGecko) | `prices` (opt-in) | no port — writes `asset_prices`, read back through the kernel's `/v1/prices` | same repo/commit — the daily CoinGecko refresh of the USD reference prices behind `/v1/prices`, `/v1/quote` and the batcher's sponsorship gate. **Opt-in and skipped by `--all` unless `COINGECKO_API_KEY` is set**: the schema seeds real prices, so quotes work without it, and this is the only component here that talks to a third party and holds a genuine secret |
-| Web Memo (Memos tab) | (embedded) | `https://web-memo.pages.dev` | [acedward/web-memo](https://github.com/acedward/web-memo) — `main`, Cloudflare Pages · builds on [acedward/midnight-ledger PR #2](https://github.com/acedward/midnight-ledger/pull/2) (memo-v3 ledger fork) |
-| dusk-wallet | (related work) | — | [acedward/dusk-wallet](https://github.com/acedward/dusk-wallet/tree/00001-utxo-pinning) — branch `00001-utxo-pinning` · PRIVATE repo |
+```mermaid
+flowchart LR
+  subgraph core["core — always on"]
+    node["node · :9944"]
+    indexer["indexer · :8088"]
+    proof["proof-server · :6300"]
+    params[("proof-params")]
+    pg[("postgres")]
+  end
+  subgraph offerfiles["offerfiles"]
+    celestia["celestia · :26658"]
+    kernel["kernel · :9999"]
+    batcher["batcher · :3334"]
+    register["register-tokens"]
+  end
+  subgraph solver["solver"]
+    cow["solver"]
+    sink["solver-sink"]
+    monitor["solver-frontend · :10802"]
+  end
+  subgraph poster["poster"]
+    op["offer-poster · :10803"]
+  end
+  subgraph prices["prices (opt-in)"]
+    feed["price-feed"]
+  end
+  subgraph aa["aa"]
+    aaproof["aa-proof-server"]
+    aadeploy["aa-deploy"]
+    console["aa-console · :10700"]
+  end
+  subgraph evm["evm"]
+    evmrpc["evm-rpc · :8545 / ws :10021"]
+    wmon["wallet-monitor"]
+  end
+  subgraph frontend["frontend"]
+    spa["frontend (zswap-da) · :10600"]
+  end
+  subgraph sn["shielded-night"]
+    sndapp["shielded-night · :10900"]
+  end
 
-Internal-only ports (never published): `postgres:5432` (the one shared store), celestia consensus `26657`/`9090`,
-`aa-proof-server:6300` (exactly one proof host port exists, core's plain one), and the COW solver's status
-listener `solver:9100` — it serves the solver's whole internal state behind a Bearer, and the monitor site
-above is its only intended reader (`verify-solver.sh` asserts it is unpublished). No service addresses
-another by a host port — everything internal runs
-on the compose network — so remapping host ports cannot break the stack, which is what makes
-[two stacks on one machine](docs/OPERATIONS.md#running-two-stacks-at-once) possible.
+  indexer --> node
+  proof --> params
+  kernel --> celestia & pg & node & indexer & proof
+  batcher --> celestia & node & indexer & proof
+  register --> kernel
+  cow --> sink & kernel & node & indexer
+  monitor -.-> cow
+  op --> kernel
+  feed --> pg
+  aaproof --> params
+  aadeploy --> node & indexer & aaproof
+  console --> aadeploy & kernel
+  evmrpc --> pg & indexer
+  wmon --> pg & indexer
+  spa -.-> kernel & proof
+  sndapp --> node & proof
+```
+
+### Profiles and what they run
+
+One row per profile, in the order `--all` starts them. Service names are the compose names
+you use with `docker compose … logs <service>`. Ports are the `.env.example` defaults.
+
+| Profile | Services | Default endpoints |
+|---|---|---|
+| [`core`](compose/core.yml) — always | `node` · `indexer` · `proof-server` · `proof-params-init` · `postgres` · `fund` | node RPC `http://127.0.0.1:9944` (HTTP+WS) · indexer `http://127.0.0.1:8088/api/v4/graphql` (+`/ws`) · proof `http://127.0.0.1:6300` · postgres internal |
+| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `offerfiles-deploy` · `kernel` · `batcher` · `register-tokens` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` (token: `scripts/celestia-token.sh`) |
+| [`solver`](compose/solver.yml) | `solver` · `solver-sink` · `solver-frontend` | monitor **`http://127.0.0.1:10802`** · status listener `solver:9100` internal only |
+| [`poster`](compose/poster.yml) | `poster-fund` · `offer-poster` | health `http://127.0.0.1:10803/health` |
+| [`prices`](compose/prices.yml) — opt-in, needs `COINGECKO_API_KEY` | `price-feed` | no port; writes `asset_prices`, read back via kernel `/v1/prices` |
+| [`aa`](compose/aa.yml) | `aa-proof-server` · `aa-deploy` · `aa-console` | **AA console `http://127.0.0.1:10700`** · experimental proof server internal only |
+| [`evm`](compose/evm.yml) | `evm-migrate` · `evm-rpc` · `wallet-monitor` | eth JSON-RPC `http://127.0.0.1:8545` (chainId 2400) · WS `ws://127.0.0.1:10021` |
+| [`frontend`](compose/frontend.yml) | `frontend` | zswap-da SPA `http://127.0.0.1:10600` |
+| [`shielded-night`](compose/shielded-night.yml) | `shielded-night-fund` · `shielded-night-deploy` · `shielded-night` · `shielded-night-register` · `shielded-night-verify` | sNight dApp `http://127.0.0.1:10900` |
+
+Internal-only ports (never published): `postgres:5432` (the one shared store), celestia consensus
+`26657`/`9090`, `aa-proof-server:6300` (exactly one proof host port exists, core's plain one), and
+the COW solver's status listener `solver:9100` — it serves the solver's whole internal state
+behind a Bearer, and the monitor site above is its only intended reader (`verify-solver.sh`
+asserts it is unpublished). No service addresses another by a host port — everything internal
+runs on the compose network — so remapping host ports cannot break the stack, which is what
+makes [two stacks on one machine](docs/OPERATIONS.md#running-two-stacks-at-once) possible.
 `BIND_ADDR` (default `127.0.0.1`) is the interface published ports bind to.
+
+### Where every component comes from
+
+Identity is the digest or the full commit SHA, never a tag. The **Pin** column links to the
+exact commit; the **Pinned in** column is every file that carries that default, so you know
+what to edit. **This table is generated** — `scripts/render-readme-pins.py --write` renders it
+from the compose defaults, the Dockerfile `ARG`s, `.env.example` and
+[`config/artifact-decisions.json`](config/artifact-decisions.json); the prose per row lives in
+[`config/readme-components.json`](config/readme-components.json), and `ci-check.sh` fails when
+this block is stale or when one pin has two different defaults in the tree.
+
+<!-- render-readme-pins:begin — GENERATED by scripts/render-readme-pins.py --write from compose/, images/, .env.example and config/artifact-decisions.json. Edit config/readme-components.json, not this block. -->
+| Component | Source | Pin | Pinned in |
+|---|---|---|---|
+| Midnight node `2.0.0-rc.4` | [`midnightntwrk/midnight-node`](https://hub.docker.com/r/midnightntwrk/midnight-node) *(upstream image)*, `CFG_PRESET=dev` | index digest `caf93d6f9fb3…` | `config/artifact-decisions.json` · `.env.example` |
+| Node toolkit `2.0.0-rc.4` (wallet funding) | [`midnightntwrk/midnight-node-toolkit`](https://hub.docker.com/r/midnightntwrk/midnight-node-toolkit) *(upstream image)*, must match the node | index digest `c3efb50d483b…` | `config/artifact-decisions.json` · `.env.example` |
+| Indexer `4.4.0-rc.3` | official executable from the [`effectstream/binaries@0.3.120`](https://github.com/effectstream/binaries/releases/tag/0.3.120) warehouse, no Rust build; built upstream from [`midnightntwrk/midnight-indexer@56561b2f5cf5`](https://github.com/midnightntwrk/midnight-indexer/commit/56561b2f5cf5c6839f678257fc69bed1a8b9ba2c) | SHA-256 per arch | `config/artifact-decisions.json` · `images/indexer/Dockerfile` |
+| Proof server `9.0.0-rc.5` ×2 (plain + experimental) | [`ghcr.io/effectstream/midnight-proof-server`](https://github.com/effectstream/midnight-proof-server), a byte-exact mirror of `midnightntwrk/proof-server` (`images/proof-server-mirror/`) | plain `d96a4d0f3f0f…` · experimental `4f02ca273464…` | `config/artifact-decisions.json` · `images/proof-server-mirror/` |
+| Proof data (SRS K0–K19 + ledger-static) | 21 payloads from `effectstream/binaries@0.3.120`; initializer from [`acedward/midnight-binary-forge`](https://github.com/acedward/midnight-binary-forge) | 21 SHA-256 · [`546185faefcf`](https://github.com/acedward/midnight-binary-forge/commit/546185faefcf91f9d1fe9169041b05394e8e4d29) | `config/artifact-decisions.json` · `images/proof-params/Dockerfile` |
+| Celestia app `6.4.10` / node `0.28.4` | `effectstream/binaries@0.3.120`, each archive byte-equal to the official celestiaorg release (`images/celestia/official-equality.tsv`) | SHA-256 per arch | `config/artifact-decisions.json` · `.env.example` · `compose/offerfiles.yml` · `images/celestia/Dockerfile` |
+| PostgreSQL 17 + `pg_ivm 1.11` | `postgres:17-alpine` *(upstream image)* with `pg_ivm` compiled in; ONE server: db `offerfiles` + db `umbra` | `PG_IVM_VERSION=1.11` | `compose/core.yml` · `images/postgres/Dockerfile` |
+| **Offer-files kernel · batcher · COW solver · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) branch `ledger-v9` ([PR #65](https://github.com/effectstream/zswap-offerfiles-kernel/pull/65)), compactc 0.34.0 · compact-runtime 0.19.0 | [`80bace37bc24`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/80bace37bc2412542452e1c597761b2ebce5c677) (`KERNEL_REF` = `SOLVER_REF`) | `.env.example` · `compose/aa.yml` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/aa-contracts/Dockerfile` · `images/cow-solver/Dockerfile` · `images/offerfiles-kernel/Dockerfile` · `scripts/verify-source-pins.sh` |
+| zswap-da SPA | [`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da), fetched at build time and adapted by `images/zswap-da/ledger-v9.patch` | [`ea04ff7c16da`](https://github.com/effectstream/effectstream/commit/ea04ff7c16dab5118d4bdfeec6e7455c89981827) | `.env.example` · `compose/frontend.yml` · `images/zswap-da/Dockerfile` · `scripts/verify-source-pins.sh` |
+| Shielded NIGHT dApp | [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) branch `ledger-v9` ([PR #10](https://github.com/effectstream/shielded-night/pull/10)); contract recompiled in-image with compactc 0.34.0, byte-identical to the committed artifacts | [`30af63f3865d`](https://github.com/effectstream/shielded-night/commit/30af63f3865d0bc5d5331ae32a7891ad48818303) | `.env.example` · `compose/shielded-night.yml` · `images/shielded-night/Dockerfile` · `scripts/verify-source-pins.sh` |
+| **AA-v3** — Manager + Minter contracts, relay | [`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3) `main`; compiled in-image with the kernel's compactc 0.34.0 | [`41de69ded41f`](https://github.com/acedward/AA-midnight-evm-experiment-v3/commit/41de69ded41ff933fe0db8697b264dc46fc6e0cb) | `.env.example` · `compose/aa.yml` · `images/aa-contracts/Dockerfile` · `scripts/verify-source-pins.sh` |
+| AA `execute` circuit (MinoCrab, k=18) | [`acedward/AA-midnight-evm-experiment-minocrab`](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release `v0.2.0`; default `AA_ZKIR_SOURCE=minocrab`, unaudited compiler, dev chains only | [`7cdfa5b0c994`](https://github.com/acedward/AA-midnight-evm-experiment-minocrab/commit/7cdfa5b0c994a70502ab2b564b509c8abe2f7efb) · `sha256(SHA256SUMS)` `4a8c0183cd88…` | `.env.example` · `compose/aa.yml` · `images/aa-contracts/Dockerfile` · `scripts/verify-aa.sh` · `scripts/verify-source-pins.sh` |
+| AA web console | this repo | — | `images/aa-contracts/console/` |
+| umbra-evm (read-only eth JSON-RPC) | [`acedward/UmbraDB`](https://github.com/acedward/UmbraDB) branch `evm-compat` ([PR #5](https://github.com/acedward/UmbraDB/pull/5)) | [`5a46348585ae`](https://github.com/acedward/UmbraDB/commit/5a46348585ae23994cc408a06f6ef18a78b06273) | `.env.example` · `compose/evm.yml` · `images/umbra-evm/Dockerfile` · `scripts/verify-source-pins.sh` |
+| compactc 0.34.0 (every contract here) | [`midnightntwrk/compact`](https://github.com/midnightntwrk/compact) release, taken by SHA-256 | version + SHA-256 | `config/artifact-decisions.json` · `images/{aa-contracts,shielded-night,zswap-da}/Dockerfile` |
+| `@effectstream/*` packages | [`effectstream/effectstream`](https://github.com/effectstream/effectstream) on npm: `@effectstream/{celestia,midnight-contracts,orchestrator}@0.200.2` · `mip-zswap-offer@0.4.0-v9.0` · `@midnightntwrk/ledger-v9@1.0.0-rc.3` | resolved by the kernel lockfile at `KERNEL_REF` | — |
+| Web Memo (Memos tab, embedded) | [`acedward/web-memo`](https://github.com/acedward/web-memo) `main` on Cloudflare Pages; builds on [`acedward/midnight-ledger` PR #2](https://github.com/acedward/midnight-ledger/pull/2) | unpinned (live site) | console iframe |
+| Midnight Intents relay (NOT run) | [`shieldedtech/midnight-intents-swaps`](https://github.com/shieldedtech/midnight-intents-swaps) *(upstream)*; the solver observes only, `solver-sink` stands in for the relay's receive half | `d444c83` via the solver branch | — |
+| dusk-wallet (related work) | [`acedward/dusk-wallet`](https://github.com/acedward/dusk-wallet/tree/00001-utxo-pinning) branch `00001-utxo-pinning` · PRIVATE | — | — |
+<!-- render-readme-pins:end -->
+
+The long version of each row — why there are two proof servers, what the whole-coin line
+changed, MinoCrab's equivalence testing, the poster's exact-coin guarantee, the price feed's
+secret handling — is in [docs/COMPONENTS.md](docs/COMPONENTS.md); the reasoning behind each
+artifact choice is in [docs/ARTIFACT-DECISIONS.md](docs/ARTIFACT-DECISIONS.md); what does not
+work yet is in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
 
 ### How each external artifact is chosen
 
@@ -70,10 +162,11 @@ component is an image, a downloaded binary, a mirror or a build:
 different bytes without anything here changing, so overrides that supply a tag are rejected
 rather than accepted as a weaker pin. The frozen decisions live in
 [`config/artifact-decisions.json`](config/artifact-decisions.json) with the reasoning in
-[docs/ARTIFACT-DECISIONS.md](docs/ARTIFACT-DECISIONS.md); four offline checks
+[docs/ARTIFACT-DECISIONS.md](docs/ARTIFACT-DECISIONS.md); five offline checks
 (`verify-artifact-decisions.sh`, `verify-artifact-fetch.sh --static`,
-`verify-mirror.py --level offline`, `verify-compose-pins.sh`) keep the matrix, the image
-build pins, the mirror record and the rendered Compose configuration agreeing with each other.
+`verify-mirror.py --level offline`, `verify-compose-pins.sh`, `render-readme-pins.py --check`)
+keep the matrix, the image build pins, the mirror record, the rendered Compose configuration
+and the README's pin table agreeing with each other.
 
 > **The binary warehouse is DEVELOPMENT-ONLY and MUTABLE.** `effectstream/binaries@0.3.120`
 > can re-publish an asset under the same name, so the pinned hashes — not the URL and not the
@@ -211,7 +304,8 @@ scripts/    funding, verification, port-picking, and the ci-check entrypoint
 wallets/    wallets.json — the dev wallets this stack knows about
 tools/      standalone helpers (mnemonic-wallets/ — mnemonic → Lace address derivation)
 vendor/     pinned source absent from public upstream (zswap-da ledger-v9 migration)
-config/     artifact-decisions.json (the frozen artifact contract) + files mounted into containers
+config/     artifact-decisions.json (the frozen artifact contract), readme-components.json
+            (the rows of the README pin table) + files mounted into containers
 docs/       the long-form write-ups this README links to
 .env.example  every host port and pinned image digest, with the Midnight-standard defaults
 ```
