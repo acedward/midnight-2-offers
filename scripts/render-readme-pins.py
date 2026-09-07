@@ -93,7 +93,8 @@ def collect_defaults(root: Path, names: set[str]) -> dict[str, dict[str, set[str
     if not names:
         return found
     alt = "|".join(re.escape(n) for n in sorted(names))
-    compose_re = re.compile(rf"\$\{{({alt}):-({VALUE_RE})\}}")
+    # `${NAME:-value}` in compose and scripts, and bash's `${NAME:=value}` assign-default too
+    compose_re = re.compile(rf"\$\{{({alt}):[-=]({VALUE_RE})\}}")
     arg_re = re.compile(rf"^\s*ARG\s+({alt})=({VALUE_RE})\s*$", re.M)
     env_re = re.compile(rf"^\s*#?\s*({alt})=({VALUE_RE})\s*$", re.M)
     for path in scan_files(root):
