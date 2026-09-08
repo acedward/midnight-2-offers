@@ -416,6 +416,44 @@ These are properties of the upstream dApp and of the 2.x line, not defects intro
 Everything the automated gates *can* prove, they prove; this section is the honest list of what
 they cannot.
 
+### shielded-night cannot track `main` yet — `main`'s 2.x lane is stagenet-only
+
+`SHIELDED_NIGHT_REF` points at the long-lived **`ledger-v9`** branch
+(`30af63f3865d0bc5d5331ae32a7891ad48818303`) rather than at `main`, and the reason changed on
+2026-09-07. Before that, `main` was simply the 1.x / ledger-v8 line. Upstream
+[PR #13](https://github.com/effectstream/shielded-night/pull/13) (`main` @
+`edac395d4a2517879c2315daca7ed72f09eaf17c`) added Preview / Preprod / **Stagenet** support with
+protocol-isolated adapters, so `main` now carries a real 2.x tree — and it is easy to conclude
+from that alone that the re-pin is available. It is not. The 2.x half of `main` is wired to
+**stagenet only**, and this stack has no stagenet: it is a local `undeployed` devnet.
+
+Measured at `edac395` on 2026-09-08:
+
+| What the demo needs | What `main` provides |
+|---|---|
+| a 2.x deploy on `undeployed` | `contracts/v2/scripts/deploy.ts`: *"The v2 deployment command only supports MN_ENV=stagenet."* `profile.ts` exports one profile (`stagenet()`, `networkId: 'stagenet'`) and `deploy.ts` hard-codes `walletNetworkId: NetworkId.StageNet` |
+| a 2.x read-only verify on `undeployed` | `contracts/v2/scripts/verify-deployment.ts`: the same refusal |
+| a deployer that runs inside a throwaway container | `MN_MAINTENANCE_KEY_FILE` is mandatory and must be on **durable** storage — upstream's README says outright that a path inside an ephemeral container or volume does not qualify |
+| the page to select the 2.x adapter for `undeployed` | `frontend/src/lib/networks.ts` declares `undeployed` as `protocolFamily: 'midnight-1.x'`; only `stagenet` is `'midnight-2.x'`, and `useShieldedNight.ts` picks the adapter on exactly that field. There is no env or runtime seam |
+| a round-trip gate on 2.x | `contracts/v2/test/` is two unit files. The `MN_EXTERNAL_STACK` integration suite this profile uses as its gate lives in the 1.x tree and has no 2.x counterpart |
+
+The `undeployed` lane that *does* exist on `main` — `MN_ENV=undeployed`, `DEPLOY_OUT`, the four
+`MN_*_URL` overrides, `MN_EXTERNAL_STACK` — is entirely on the **ledger-v8** side, and a
+ledger-v8 client cannot deploy to or read a ledger-9 chain. That is the same wall that caused
+the `ledger-v9` branch to be created in the first place.
+
+**What would unblock the re-pin**, in the upstream repository and not here: an `undeployed()`
+profile in `contracts/v2/scripts/profile.ts` with the `MN_*_URL` overrides it already has the
+helper for, `MN_ENV` widened in the v2 deploy/verify scripts with the maintenance-key file
+optional on a throwaway devnet, `undeployed` moved to `protocolFamily: 'midnight-2.x'` in
+`networks.ts`, and a 2.x counterpart of the external-stack integration suite. Until that lands,
+this repository stays on `ledger-v9` — and it does **not** close the gap locally by patching
+`networks.ts` in the image or by forcing `MN_ENV=stagenet` against a local devnet. The first
+breaks the profile's founding no-patch rule; the second would tag the deploy transaction and
+derive the contract and deployer addresses under the *stagenet* network id while the toolkit
+that funds the deployer, the kernel, the faucet, the zswap-da SPA and the browser wallet are
+all on `undeployed`.
+
 - **The browser flow is not automatable, and that is by design.** The page has no in-page
   wallet: it enumerates `window.midnight.*` (dApp-connector 4.x) and **refuses a wallet that
   does not implement `getProvingProvider`**, because proving is wallet-owned — the page never

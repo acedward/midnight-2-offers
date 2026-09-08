@@ -200,9 +200,11 @@ MINOCRAB_RELEASE_EXPECTED="${MINOCRAB_RELEASE:-v0.2.0}"
 AA_ZKIR_SOURCE_EXPECTED="${AA_ZKIR_SOURCE:-minocrab}"
 UMBRA_EXPECTED="${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-400880ceb6814738d1ae193dae18ad5128922edc}"
-# effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port. The default here and
-# the Dockerfile ARG default and compose/shielded-night.yml all state the same SHA; this
-# assertion is what proves the RUNNING images were actually built from it.
+# effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port, and the only line whose
+# `undeployed` lane is 2.x (`main` gained a 2.x tree in upstream PR #13 but wires it to
+# stagenet only — docs/KNOWN-LIMITATIONS.md). The default here and the Dockerfile ARG default
+# and compose/shielded-night.yml all state the same SHA; this assertion is what proves the
+# RUNNING images were actually built from it.
 SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-30af63f3865d0bc5d5331ae32a7891ad48818303}"
 # effectstream/mint-test-tokens branch `main` — the six local test-token issuers and their mint
 # site. ONE pin for both runtime targets, and it is the one identity in this profile that

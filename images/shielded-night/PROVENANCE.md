@@ -31,12 +31,22 @@ and zswap-da images are unaffected and keep their own bun pins — this is scope
 
 ## Why this repository pins a branch and not `main`
 
-`effectstream/shielded-night`'s `main` is the Midnight **1.x / ledger-v8** line — that is what
-its live preview deployment runs, and it is what the sibling repository `midnight-1-offers`
-pins for the same profile. This stack is **2.x**: node 2.0.0-rc.4, indexer 4.4.0-rc.3,
-proof-server 9.0.0-rc.5, ledger 9. The `ledger-v9` branch is the port; its own CI runs the unit
-tier, the frontend build, the byte-exact contract rebuild and the full integration suite
-against exactly this triple.
+This stack is **2.x** on the `undeployed` network: node 2.0.0-rc.4, indexer 4.4.0-rc.3,
+proof-server 9.0.0-rc.5, ledger 9. The `ledger-v9` branch is the port, and the only line of
+this dApp on which the `undeployed` deploy / verify / round-trip lane is a 2.x lane; its own
+CI runs the unit tier, the frontend build, the byte-exact contract rebuild and the full
+integration suite against exactly this triple. The sibling repository `midnight-1-offers`
+pins `main` for the same profile.
+
+`main` was the Midnight 1.x / ledger-v8 line when this image was written. **It is not any
+more** — upstream [PR #13](https://github.com/effectstream/shielded-night/pull/13) (`main` @
+`edac395d4a2517879c2315daca7ed72f09eaf17c`, 2026-09-07) added protocol-isolated 1.x and 2.x
+trees. It is still not usable here, for a different reason: `main`'s 2.x half is wired to
+**stagenet only** (`contracts/v2/scripts/deploy.ts` and `verify-deployment.ts` refuse every
+`MN_ENV` but `stagenet`; `frontend/src/lib/networks.ts` declares `undeployed` as
+`protocolFamily: 'midnight-1.x'`), so the only `undeployed` lane it offers is the ledger-v8
+one. `docs/KNOWN-LIMITATIONS.md` carries the full measurement and what would have to land
+upstream before this pin can move.
 
 Because *only the pin* distinguishes the two images, the pin is not trusted. Stage `source`
 asserts the line in both directions, in both packages **and in both resolved lockfiles**:

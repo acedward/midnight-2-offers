@@ -70,7 +70,7 @@
     },
     {
       "component": "Shielded NIGHT dApp",
-      "source": "[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) branch `ledger-v9` ([PR #10](https://github.com/effectstream/shielded-night/pull/10)); contract recompiled in-image with compactc 0.34.0, byte-identical to the committed artifacts",
+      "source": "[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) branch `ledger-v9` — the only line whose `undeployed` lane is 2.x (`main`'s 2.x tree is **stagenet-only**, see `docs/KNOWN-LIMITATIONS.md`); contract recompiled in-image with compactc 0.34.0, byte-identical to the committed artifacts",
       "pin": "{commit:SHIELDED_NIGHT_REF@effectstream/shielded-night}",
       "pinnedIn": "{files:SHIELDED_NIGHT_REF}"
     },

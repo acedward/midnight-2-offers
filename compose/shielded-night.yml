@@ -89,10 +89,18 @@ services:
       args: &shielded_night_build_args
         SHIELDED_NIGHT_REPO: '${SHIELDED_NIGHT_REPO:-https://github.com/effectstream/shielded-night.git}'
         # Branch `ledger-v9` — the ledger-v9 port, whose own CI is green on THIS stack's triple
-        # (node 2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5). `main` is the
-        # 1.x/ledger-v8 line and is what the sibling repository midnight-1-offers pins. The
-        # image ASSERTS the line in both directions and in both resolved lockfiles, because
-        # nothing else distinguishes the two builds.
+        # (node 2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5), and the only line
+        # on which this dApp's `undeployed` deploy/verify/round-trip lane is a 2.x lane. The
+        # sibling repository midnight-1-offers pins `main`. The image ASSERTS the line in both
+        # directions and in both resolved lockfiles, because nothing else distinguishes the
+        # two builds.
+        #
+        # `main` is NO LONGER "the 1.x line" — since upstream PR #13 it carries both
+        # generations — but its 2.x half is STAGENET-ONLY (`contracts/v2/scripts/deploy.ts`
+        # refuses every MN_ENV but `stagenet`; `frontend/src/lib/networks.ts` declares
+        # `undeployed` as `midnight-1.x` with no seam), so it still cannot serve this stack.
+        # Full measurement: images/shielded-night/Dockerfile's header and
+        # docs/KNOWN-LIMITATIONS.md.
         SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-30af63f3865d0bc5d5331ae32a7891ad48818303}'
         # DELIBERATELY NOT OVERRIDABLE from the environment. The pinned tree's own package.json
         # runs `compact compile +0.34.0` and the image asserts that line still says so, then

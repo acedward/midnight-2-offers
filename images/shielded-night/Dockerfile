@@ -18,12 +18,36 @@
 #
 # ─── THE LINE THIS IMAGE IS ON, and why the pin is a BRANCH head ─────────────
 # This stack is Midnight 2.x: node 2.0.0-rc.4, indexer 4.4.0-rc.3, proof-server 9.0.0-rc.5,
-# ledger 9. shielded-night's `main` is the 1.x / ledger-v8 line (it is what the live preview
-# deployment runs), so this image pins the repository's long-lived `ledger-v9` branch — the
-# port whose own CI is green on exactly this triple. The sibling repository midnight-1-offers
-# pins `main` for the same profile. NOTHING but the pin distinguishes the two images, which is
-# precisely why stage `source` below CHECKS the line in both directions rather than trusting
-# the SHA to be the one somebody meant.
+# ledger 9, and the ONE network it runs is `undeployed`. This image therefore pins the
+# repository's long-lived `ledger-v9` branch — the port whose own CI is green on exactly this
+# triple, and on which the `undeployed` deploy/verify/round-trip lane IS the 2.x lane. The
+# sibling repository midnight-1-offers pins `main` for the same profile. NOTHING but the pin
+# distinguishes the two images, which is precisely why stage `source` below CHECKS the line in
+# both directions rather than trusting the SHA to be the one somebody meant.
+#
+# `main` IS NOT A DROP-IN, and the reason is not the one this comment used to give. Since
+# effectstream/shielded-night PR #13 (`main` @ edac395d4a2517879c2315daca7ed72f09eaf17c,
+# merged 2026-09-07) `main` is no longer "the 1.x line": it carries BOTH generations in
+# protocol-isolated trees — 1.x at `src/` + `frontend/protocols/v1` (compactc 0.31.1,
+# ledger-v8), 2.x at `contracts/v2/` + `frontend/protocols/v2` (compactc 0.34.0, ledger-v9).
+# But the 2.x half is wired to STAGENET ONLY, and this stack has no stagenet:
+#
+#   * contracts/v2/scripts/deploy.ts   "The v2 deployment command only supports MN_ENV=stagenet"
+#   * contracts/v2/scripts/verify-deployment.ts   the same refusal for the verifier
+#   * contracts/v2/scripts/profile.ts  exports one profile, stagenet(), networkId 'stagenet';
+#                                      deploy.ts hard-codes walletNetworkId StageNet, and
+#                                      MN_MAINTENANCE_KEY_FILE is mandatory AND must be durable
+#   * frontend/src/lib/networks.ts     `undeployed` is declared protocolFamily 'midnight-1.x';
+#                                      only `stagenet` is 'midnight-2.x', and useShieldedNight
+#                                      picks the adapter on exactly that field. No env seam.
+#   * contracts/v2/test/               two unit files — the 2.x tree has NO integration suite,
+#                                      so MN_EXTERNAL_STACK round trips have no 2.x counterpart
+#
+# So on `main` the only `undeployed` lane is the ledger-v8 one, which cannot talk to a ledger-9
+# chain at all. Tracking `main` here needs an UPSTREAM change first (bring `undeployed` onto
+# the 2.x profile); until that lands, this pin stays on `ledger-v9`. Do not "fix" this by
+# patching networks.ts or by setting MN_ENV=stagenet against a local devnet — see the no-patch
+# rule below, and docs/KNOWN-LIMITATIONS.md § "shielded-night cannot track `main` yet".
 #
 # NO PATCH OF ANY KIND, of the source OR of the built output. The things a compose-hosted
 # deployment needs from this dApp — a RUNTIME contract-address override, env-overridable
@@ -52,7 +76,9 @@ ARG NGINX_BASE=nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2
 
 ARG SHIELDED_NIGHT_REPO=https://github.com/effectstream/shielded-night.git
 # effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port, full CI green on this
-# stack's triple (unit, frontend, byte-exact rebuild, 17/17 integration).
+# stack's triple (unit, frontend, byte-exact rebuild, 17/17 integration). Its PR #10 is CLOSED
+# (the branch is kept, the PR was not the delivery vehicle); `main` is NOT a substitute — see
+# the header.
 ARG SHIELDED_NIGHT_REF=30af63f3865d0bc5d5331ae32a7891ad48818303
 # NOT a free choice: the pinned tree's package.json runs `compact compile +0.34.0` and its CI
 # pins COMPACT_VERSION 0.34.0. Stage `source` asserts the tree still says so, so this ARG and
