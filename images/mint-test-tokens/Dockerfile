@@ -326,14 +326,32 @@ COPY --from=source /.mint-test-tokens-commit /.mint-test-tokens-commit
 
 COPY entrypoint-common.sh /usr/local/lib/mint-test-tokens/entrypoint-common.sh
 COPY entrypoint-deploy.sh entrypoint-verify.sh entrypoint-registry-bridge.sh entrypoint-mint-test.sh \
+     entrypoint-registry-env.sh entrypoint-faucet-mint.sh \
      /usr/local/bin/
+# THIS REPO'S OWN v2 RUNNER, and the only file here that is not upstream's.
+# It lands BESIDE upstream's `deploy.ts` and `mint-wallet-test.ts` so that the
+# generated contract modules (`./managed/<privacy>/contract/index.js`), the
+# workspace sources it imports (`../../packages`, `../../scripts`) and
+# `contracts/v2/node_modules` all resolve exactly as they do for them. It is an
+# untracked file in that work tree, which is safe BY MEASUREMENT rather than by
+# hope: `scripts/lib/deployment-provenance.ts::resolveReproducibleSourceRevision`
+# scopes its `git diff` / `git ls-files --others` / `--ignored` to four declared
+# paths, and this is under none of them — and the assertion below re-proves that
+# scoped tree is clean after every COPY in this stage.
+COPY runner/faucet-mint.ts /app/contracts/v2/faucet-mint.ts
 RUN set -eux; \
     chmod 0755 /usr/local/bin/entrypoint-deploy.sh /usr/local/bin/entrypoint-verify.sh \
-               /usr/local/bin/entrypoint-registry-bridge.sh /usr/local/bin/entrypoint-mint-test.sh; \
-    chmod 0644 /usr/local/lib/mint-test-tokens/entrypoint-common.sh; \
+               /usr/local/bin/entrypoint-registry-bridge.sh /usr/local/bin/entrypoint-mint-test.sh \
+               /usr/local/bin/entrypoint-registry-env.sh /usr/local/bin/entrypoint-faucet-mint.sh; \
+    chmod 0644 /usr/local/lib/mint-test-tokens/entrypoint-common.sh /app/contracts/v2/faucet-mint.ts; \
     # compose mounts named volumes over both. Creating them here means a `docker run` without
     # the volumes fails on the deploy itself rather than on a missing directory.
     mkdir -p /registry /app/.local; \
+    # `faucet-mint` runs `node --import tsx`, resolved from contracts/v2's own
+    # node_modules with that directory as the cwd — the same way upstream's
+    # `npm --prefix contracts/v2 run test:wallet` runs mint-wallet-test.ts.
+    # Asserted here so a dependency change surfaces at build time.
+    test -d /app/contracts/v2/node_modules/tsx; \
     # The tree must still be clean AFTER the copy — a COPY that lost a file, or an apt layer
     # that wrote into the work tree, would otherwise surface as a failed deploy.
     cd /app && test -z "$(git status --porcelain -- \

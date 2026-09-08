@@ -31,8 +31,8 @@ healthy":
 | evm-rpc (`--with evm`) | `eth_chainId` answers over HTTP, **and** the WS port completes a `101 Switching Protocols` handshake | A TCP probe of a *published* port proves nothing: docker's port proxy accepts the connection before it dials the container, so `nc -z` reports a working endpoint that refuses every client |
 | solver-frontend (`--with solver`) | the container healthcheck (`/health` on the monitor itself) | Deliberately says nothing about the solver: a monitor whose health followed the thing it monitors would be reported down exactly when it is needed. The solver's own wait, one line above it in `up.sh`, is what proves the solver is quoting |
 | price-feed (`--with prices`) | nothing container-side — the KERNEL's `GET /v1/prices` is polled until `feed.last_ok_at` is non-null (bounded by `PRICES_WAIT_TIMEOUT`, default 180 s); a timeout is a WARN | The feed publishes no port and has no healthcheck: it is a *writer*, and its liveness signal is a row. `price_feed_status` is deliberately NOT seeded by `000-init.sql`, so a non-null `last_ok_at` means exactly "a cycle completed against THIS database" and nothing weaker. A timeout is a warning because a feed that cannot reach CoinGecko still leaves every quote working from the seeded prices; `./verify.sh --prices` is the gate |
-| faucet-site (`--with faucet`) | the container healthcheck, then the SITE's own `/metadata.undeployed.json` is READ over HTTP and required to be `ready` with six active deployments | `service_completed_successfully` on `faucet-deploy` is not enough: it is equally satisfied by a deploy that took the RESUME path against a registry from a previous chain, and by a site container still blocking on an empty volume. It is read through HTTP rather than off the volume because that is where a browser reads it — a page still serving a previous inode would pass a filesystem check and fail a user. `up.sh` then waits on `registry-bridge`'s exit code, but only when `offerfiles` is also up (with no kernel that one-shot exits 0 by design) |
-| offer-poster (`--with poster`) | the container healthcheck (`/health` binds), then `/health` is READ: `degraded` is a WARN, `failed` is a failure | `/health` answers 200 while the poster is `starting` and while it is `degraded` (no DUST yet) — 503-ing on `degraded` would make Compose restart a container that is correctly waiting for NIGHT. So healthy proves only that the server bound, which happens after wallet sync + dust registration + the dust wait + the contract join (hence `POSTER_WAIT_TIMEOUT=900`). `./verify.sh --poster` is the gate that requires a real mint and a posted offer |
+| faucet-site (`--with faucet`) | the container healthcheck, then the SITE's own `/metadata.undeployed.json` is READ over HTTP and required to be `ready` with six active deployments | `service_completed_successfully` on `faucet-deploy` is not enough: it is equally satisfied by a deploy that took the RESUME path against a registry from a previous chain, and by a site container still blocking on an empty volume. It is read through HTTP rather than off the volume because that is where a browser reads it — a page still serving a previous inode would pass a filesystem check and fail a user. `up.sh` then waits on `registry-env`'s and `faucet-mint`'s exit codes unconditionally — the rest of the stack consumes both, and a failure there otherwise surfaces three services away as a container that never starts — and on `registry-bridge`'s only when `offerfiles` is also up (with no kernel that one-shot exits 0 by design) |
+| offer-poster (`--with poster`, which now also requires `--with faucet`) | the container healthcheck (`/health` binds), then `/health` is READ: `degraded` is a WARN, `failed` is a failure | `/health` answers 200 while the poster is `starting` and while it is `degraded` — 503-ing on `degraded` would make Compose restart a container that is correctly waiting for NIGHT, or one that has simply run out of coins. So healthy proves only that the server bound, which happens after wallet sync + dust registration + the dust wait (hence `POSTER_WAIT_TIMEOUT=900`; there is no contract to join any more). The reason to expect since the contract removal is `insufficient_inventory` — the poster no longer mints. `./verify.sh --poster` is the gate that requires an adopted coin and a posted offer |
 
 ## Verifying and tearing down
 
@@ -45,8 +45,9 @@ healthy":
 ./verify.sh --no-celestia # skip the celestia section even when it is up
 ./verify.sh --solver     # require the solver section: sink safety counters, the status listener's
                          #   bearer gate (200 with / 401 without), :9100 unpublished, monitor page
-./verify.sh --poster     # require the poster section: state, mints >= 1, and lastOfferId present
-                         #   in the KERNEL's book with a whole-coin give leg and a quoted want leg
+./verify.sh --poster     # require the poster section: state, inventoryAdoptions + reoffers >= 1,
+                         #   and lastOfferId present in the KERNEL's book with a give leg of
+                         #   EXACTLY OFFER_POSTER_GIVE_AMOUNT and a quoted want leg
 ./verify.sh --prices     # require the price-feed section: the container is running, a cycle
                          #   completed with no error, the rows it wrote are recent, and BOTH legs
                          #   of a /v1/quote are `source: feed` rather than `seed`
@@ -77,21 +78,32 @@ count filters on.
 `packages/database/migrations/000-init.sql` breaks that: the kernel applies the init file only
 against an EMPTY database, and it has no migration path for a database that already exists
 (new `migrationTable` entries never reach a synced DB). The ledger-v9 pin
-(`80bace37bc2412542452e1c597761b2ebce5c677`) is such a move — it adds the token price
+(`5d794f9a27f6d65529bf176650405f740531d430`) is such a move — it adds the token price
 service's `asset_prices` / `price_feed_status` tables and `known_tokens.decimals`, with seeded
 reference prices. A `postgres-data` volume older than that pin produces a stack where every
 container is healthy and every quote is wrong. `scripts/verify-kernel.sh` asserts
 `GET /v1/prices` returns the seeded asset table for exactly this reason, and its failure names
 the fix.
 
-**And the `80bace3` pin needs it for a second, independent reason: the offer-files CONTRACT
-changed.** Kernel PR #67 gave `mint_shielded` and `mint_unshielded` an explicit recipient, so
-their circuits, verifier keys and the deployed contract's address are all new. The
-`offerfiles-deploy` volume holds an address, and a stack that still had one from an older pin
-would JOIN that contract with keys this build does not have — every mint and every take would
-fail against it. `aa-out` goes for the same reason (the AA contracts are recompiled by a
-different compactc). Neither is caught by the database assertion above, which is exactly why
-`./down.sh -v` and not a selective cleanup is the instruction.
+**And the `5d794f9` pin needs it for a second, independent reason: the offer-files CONTRACT is
+GONE.** Kernel PRs #69/#70 deleted it — no `packages/contracts-midnight`, no
+`mint_shielded`/`mint_unshielded`, no deploy, and no `contractAddress` in
+`GET /v1/midnight/config`. The `offerfiles-deploy` service and the volume that held its address
+are gone with it, which is not something an upgrade can do to a running stack: compose leaves an
+orphaned volume behind, and every colour derived from that address stays in the database naming a
+contract nothing can call. `aa-out` goes for the same reason and one more of its own — the AA
+console now mints through the LOCAL issuers, so its deploy receipt belongs to a chain whose faucet
+registry has to match. And `faucet-registry` is the new load-bearing one: every token id in the
+stack is derived from an issuer contract on THIS chain, so a registry beside a different genesis
+names six contracts that do not exist. None of that is caught by the database assertion above,
+which is exactly why `./down.sh -v` and not a selective cleanup is the instruction.
+
+The kernel's schema also seeds the six local names at this pin (`TWBTC`…`UTWBTC`, with their real
+decimals and their CoinGecko asset ids) carrying **PreProd** colours. `registry-bridge` re-points
+those seeded rows at this chain's colours and leaves their `asset_id` alone, which is what makes a
+brand-new colour priceable — and it only works on a database that HAS those seeds. A
+`postgres-data` volume older than them takes a different, weaker path; see the `PRICE_FEED_MAP`
+note in `compose/offerfiles.yml`.
 
 `./down.sh -v` **is** the full reset — there is no second cleanup step to remember, and no state
 outside what it removes:
@@ -107,9 +119,9 @@ What it removes, and what each piece of state is keyed to:
 | chain data | volume `<project>_node-data` | the genesis it was created with |
 | indexed blocks | volume `<project>_indexer-data` | that same genesis |
 | eth balances/logs/cursors (db `umbra`) **and** the offer book (db `offerfiles`) | volume `<project>_postgres-data` | that same genesis |
-| the deployed offer-files contract address | volume `<project>_offerfiles-deploy` | that same genesis |
 | the batcher's accepted-but-unsubmitted inputs | volume `<project>_offerfiles-batcher` | that same genesis |
-| the six local test-token identities (`metadata.undeployed.json`) | volume `<project>_faucet-registry` | that same genesis — the runner records the chain name, runtime version and genesis hash in the file, and refuses to reuse it against a different one |
+| the six local test-token identities (`metadata.undeployed.json`) **and the ids rendered from them** (`stack-tokens.env`) | volume `<project>_faucet-registry` | that same genesis — the runner records the chain name, runtime version and genesis hash in the file, and refuses to reuse it against a different one. `registry-env` re-renders the env file on every bring-up for the same reason: a colour is a property of a contract on one chain |
+| the offer poster's journal | volume `<project>_offer-poster-state` | that same genesis — and the coins it describes, which live on the chain and die with it. `faucet-mint` re-mints inventory on the next bring-up |
 | the faucet deploy journal + its private state store | volume `<project>_faucet-journal` | the same, and the registry beside it |
 | Celestia chain + validator keyring + bridge store | volume `<project>_celestia-data` | its own Celestia genesis |
 | the DA auth token + handoff file | volume `<project>_celestia-auth` | the bridge store above |
@@ -168,12 +180,29 @@ Open **http://127.0.0.1:10950/?network=undeployed**.
    journalled, resumable — and publishes `metadata.undeployed.json` onto the `faucet-registry`
    volume by atomic rename.
 3. **`faucet-verify`** (one-shot, **no seed**) re-verifies all six against the chain.
-4. **`registry-bridge`** (one-shot) names the six colours in the kernel's `known_tokens`, or
-   logs one line and exits 0 when the `offerfiles` profile is not in this stack.
-5. **`faucet-site`** starts on `faucet-verify`'s `service_completed_successfully`, blocks until
+4. **`registry-env`** (one-shot, no seed, no chain access) reads the registry and publishes
+   `/registry/stack-tokens.env` on the same volume by atomic rename: a `<SYMBOL>_TOKEN_ID` block
+   per token plus the role names other profiles read (`OFFER_POSTER_GIVE_TOKEN`/`WANT_TOKEN`,
+   `SOLVER_PROVISION_TOKEN_IN`/`OUT`, and `MAKER_OFFER_*` / `E2E_TOKEN_*` when their symbols are
+   set). Seconds long, and it re-runs on every bring-up because `./down.sh -v` gives every token a
+   new colour.
+5. **`faucet-mint`** (one-shot) mints the demo's inventory: by default four coins of exactly
+   `OFFER_POSTER_GIVE_AMOUNT` twBTC into the offer poster's wallet, plus anything named in
+   `FAUCET_MINT_GRANTS`. It is idempotent BY BALANCE — compose re-runs a completed one-shot on
+   every `up`, so it reads each recipient's balance and mints only the shortfall — and it waits
+   for the RECIPIENT's own wallet to see each mint before it returns. That wait is what makes the
+   next run's idempotence honest, and it is also the proof that the shielded encrypted-output path
+   works for a third party. Each coin is a full proof cycle on a cold devnet, so
+   `FAUCET_MINT_POSTER_COINS` is the knob that decides how long `--with faucet` takes.
+6. **`registry-bridge`** (one-shot) names the six colours in the kernel's `known_tokens` once the
+   kernel is healthy, or logs one line and exits 0 when the `offerfiles` profile is not in this
+   stack. It is last of the one-shots because it is the only one that waits on another profile.
+7. **`faucet-site`** starts on `faucet-verify`'s `service_completed_successfully`, blocks until
    it can read the registry, and serves it.
-6. `up.sh` waits for the healthcheck, then **reads the registry back over HTTP** and names the
-   six symbols in its summary line.
+8. `up.sh` waits for the healthcheck, then **reads the registry back over HTTP** and names the
+   six symbols in its summary line. It then waits on `registry-env`'s and `faucet-mint`'s exit
+   codes: both are consumed by services in other fragments, and a failure in either otherwise
+   turns up much later as a poster that exits 78 or never posts.
 
 The first bring-up is the slow one — funding plus six real deploys proved on a cold chain —
 which is why `FAUCET_WAIT_TIMEOUT` defaults to 1500 s rather than the core services' 120–420 s.
@@ -223,14 +252,83 @@ marker** and the next run refuses to submit again: reconcile the node and indexe
 dedicated (offline); the page and the v2 receiver ZK artifacts serve as bytes and a missing
 artifact answers 404 rather than the app shell; the registry served **over HTTP** is `ready`
 with six active deployments and the expected symbols, colours and *real* decimals (8/18/6, not
-6 everywhere); the three one-shots exited 0; upstream's read-only verification passes **freshly**
-against the chain; and — only when `offerfiles` is up — the kernel's `GET /v1/known-tokens` names
-all six with exactly those colours and decimals.
+6 everywhere); **all five** one-shots exited 0 (`faucet-fund`, `faucet-deploy`, `faucet-verify`,
+`registry-env`, `faucet-mint`); `/registry/stack-tokens.env` carries a 64-hex id for all six
+symbols and for both poster role names, and the poster's two legs are different tokens (equal legs
+make `poster-config.ts` exit 78, which would otherwise only be discovered as a restart loop);
+upstream's read-only verification passes **freshly** against the chain; and — only when
+`offerfiles` is up — the kernel's `GET /v1/known-tokens` names all six with exactly those colours
+and decimals. The env file is read out of the VOLUME through a throwaway container, never off the
+host: it is a named volume, and reading it any other way would be reading something else.
 
 The mint is **opt-in** (`--mint`), because it is a proof cycle on a cold devnet. It mints
 `twUSDC` — a *shielded* token, because the shielded path is the one that needs
 `additionalCoinEncPublicKeyMappings` to be right for a third-party recipient, and an unshielded
 mint would pass even if that were broken.
+
+## The `poster` profile — and sizing its inventory
+
+```bash
+./up.sh --with faucet --with offerfiles --with poster    # or ./up.sh --all
+./verify.sh --poster                                     # REQUIRE the section
+./scripts/verify-poster.sh --static                      # the offline seed-distinctness check
+OFFER_POSTER_DRY_RUN=1 docker compose … run --rm offer-poster   # inspect + quote, post nothing
+```
+
+### It needs `--with faucet`, and `up.sh` says so before anything is built
+
+`./up.sh --with offerfiles --with poster` **exits 2** with a named error rather than letting compose
+fail. Two consequences of the contract removal put it there. The poster's two token ids are now
+required, explicit 64-hex values that exist only once this chain's issuers are deployed — so they
+cannot be written into `.env.example`, and `registry-env` renders them onto the `faucet-registry`
+volume instead. And the poster no longer mints: the coins it offers come from `faucet-mint`. Both
+of those services, and the volume, are declared in `compose/faucet.yml`, so without that fragment
+compose does not render at all and says only `service "registry-env" … not found`, which names
+nothing useful.
+
+The profile is deliberately **not** auto-added. Asking for a stack that cannot exist should be
+answered, not quietly turned into a third profile — the faucet deploys six contracts and takes
+minutes, which is not a thing to start on somebody's behalf. `--all` includes both anyway.
+
+An operator who wants neither can still pin both ids by hand: `OFFER_POSTER_GIVE_TOKEN` and
+`OFFER_POSTER_WANT_TOKEN` in `.env` skip the file lookup entirely. The coins still have to come
+from somewhere.
+
+### Inventory sizing: three numbers that have to agree
+
+The poster **selects** a coin worth exactly `OFFER_POSTER_GIVE_AMOUNT` out of its own wallet and
+never creates or splits one. Inventory is therefore finite and externally supplied, and a coin is
+tied up from the moment it is offered until the wallet releases it (`OFFER_POSTER_TTL_MINUTES`) or
+a taker spends it. Steady state needs roughly
+
+```
+coins ≈ OFFER_POSTER_TTL_MINUTES × 60000 / OFFER_POSTER_INTERVAL_MS
+```
+
+| Knob | Default | What raising it does |
+|---|---|---|
+| `FAUCET_MINT_POSTER_COINS` | `4` | more coins at bring-up. Each is a full proof cycle on a cold devnet, so this is also what makes `--with faucet` slower |
+| `OFFER_POSTER_INTERVAL_MS` | `300000` (5 min) | slower ticks, so inventory lasts longer |
+| `OFFER_POSTER_TTL_MINUTES` | `10` | coins come back LATER — raising this makes starvation more likely, not less |
+
+The defaults leave about two of the four coins in flight, with headroom. `OFFER_POSTER_GIVE_AMOUNT`
+defaults to `100000000` — one whole twBTC at 8 decimals — and `compose/faucet.yml` and
+`compose/poster.yml` read the SAME variable, so the coin that is minted and the coin that is looked
+for cannot drift apart.
+
+**`degraded: insufficient_inventory` is the honest answer, not a fault to retry away.** A restart
+cannot create inventory, and this deployment never pretends it can. `./verify.sh --poster` fails on
+it and prints `freeCoins` plus the three knobs above; that is the number to read before changing
+any of them.
+
+### What the verify section asserts
+
+`state` not `degraded`; `inventoryAdoptions + reoffers ≥ 1` — which REPLACES the old `mints ≥ 1`,
+because `poster-health.ts` reports no `mints` field and no `offer_poster_mints_total` metric at
+this pin; `lastOfferId` present in the KERNEL's open book; a give leg of **exactly**
+`OFFER_POSTER_GIVE_AMOUNT` (the old "a multiple of 10⁶" check encoded the belief that every token
+here had 6 decimals, which the six local ones do not); a non-zero, actually-quoted want leg; and
+`offer_poster_inventory_adoptions_total` scrapeable on `/metrics`.
 
 ## Running two stacks at once
 
@@ -331,6 +429,16 @@ because the repository once shipped a split kernel pin, and every OTHER check co
 image against ONE of the copies — so the failure read as a stale image rather than as the
 configuration defect it was. Each gate that has a `--self-test` runs it, so a check that stopped
 biting is reported as a failure rather than passing vacuously.
+
+`verify-compose-pins.sh` gained the combination `core offerfiles faucet poster`, which is the
+pairing itself asserted: since the contract removal the poster mounts the `faucet-registry` volume
+and waits on `registry-env` and `faucet-mint`, so `core offerfiles poster` alone CANNOT render —
+which is correct, and is why it is not in the list. Its widest combination gained `poster` and
+`prices` too. That last change fixed a latent defect in passing: the `--self-test` guard compared
+the rendered combination against a hard-coded string that had lost `faucet` when that fragment was
+added, so it never matched and `--self-test` always took the "no full-stack rendering" failure
+branch instead of running the negative fixtures. It now compares against the last entry of the
+list, so the two cannot drift apart again — a gate that stopped biting, caught by the rule above.
 
 Three details that make it safe to run on a shared box, and that are worth copying if you write
 your own harness:

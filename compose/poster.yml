@@ -1,26 +1,53 @@
 # offer-poster — the book fills itself.  Profile: `poster`
 #
-#   ./up.sh --with offerfiles --with poster        (or ./up.sh --all)
+#   ./up.sh --with faucet --with offerfiles --with poster        (or ./up.sh --all)
 #
+# ─── IT NOW NEEDS `faucet` TOO, AND THAT IS THE HEADLINE CHANGE ─────────────
 # The poster needs the offer-files kernel to post into, so `--with offerfiles`
-# is not optional here — this fragment declares no kernel of its own, exactly
-# like compose/solver.yml.
+# was never optional here — this fragment declares no kernel of its own. Since
+# KERNEL_REF 5d794f9 it also needs `--with faucet`, for two reasons that are
+# both consequences of the offer-files contract being deleted upstream:
+#
+#   1. BOTH TOKEN IDS ARE REQUIRED AND EXPLICIT. `poster-config.ts` rule 3:
+#      "TOKEN IDS ARE EXPLICIT". There is no contract left to derive a colour
+#      from, and this chain's colours do not exist until the faucet issuers are
+#      deployed — so they cannot be written into `.env.example` either. The
+#      `registry-env` one-shot renders them onto the shared `faucet-registry`
+#      volume and this service's entrypoint resolves the pair by SYMBOL.
+#   2. THE POSTER NO LONGER MINTS. It SELECTS an existing coin of the exact
+#      GIVE_AMOUNT and never creates one, so its inventory is external. The
+#      `faucet-mint` one-shot is what puts spendable coins in its wallet.
+#
+# An operator who wants neither can still pin both ids by hand: setting
+# OFFER_POSTER_GIVE_TOKEN and OFFER_POSTER_WANT_TOKEN in `.env` skips the file
+# lookup entirely — but the coins still have to come from somewhere.
 #
 # ─── WHAT IT DOES ───────────────────────────────────────────────────────────
 # Every POST_INTERVAL_MS it either re-offers a coin its journal says came back,
-# or mints ONE fresh GIVE_TOKEN coin from the offer-files contract's faucet
-# circuit (fees from its OWN dust) and posts a single ZSwap offer whose only
-# input is that exact coin. The want leg is sized from the kernel's
-# `GET /v1/quote` each tick, which is what keeps the offer sponsorable by the
-# batcher. It keeps a durable journal, and serves /health, /metrics and /journal
-# on :9977.
+# or adopts one already-spendable GIVE_TOKEN coin from its own wallet, and posts
+# a single ZSwap offer whose only input is that exact coin. The want leg is
+# sized from the kernel's `GET /v1/quote` each tick, which is what keeps the
+# offer sponsorable by the batcher. It keeps a durable journal, and serves
+# /health, /metrics and /journal on :9977.
 #
 # So the demo book is never empty and never stale, without a human — and it is
 # what the solver's monitor site then shows the solver quoting against.
 #
+# ─── INVENTORY IS FINITE NOW. SIZE IT. ──────────────────────────────────────
+# A coin is tied up from the moment it is offered until the wallet releases it
+# (OFFER_POSTER_TTL_MINUTES) or a taker spends it. With ticks every
+# OFFER_POSTER_INTERVAL_MS, steady state needs roughly
+# `TTL_MINUTES * 60000 / INTERVAL_MS` coins in the wallet. The defaults below —
+# 4 coins (FAUCET_MINT_POSTER_COINS), a 5-minute tick and a 10-minute TTL —
+# leave ~2 in flight, with headroom. Change one and check the other two, or the
+# poster reports `degraded: insufficient_inventory`, which is the HONEST answer
+# and not a fault to retry away: a restart cannot create inventory and this
+# deployment never tries to.
+#
 # ─── TWO SERVICES ───────────────────────────────────────────────────────────
 #   poster-fund   ONE-SHOT (toolkit image): sends the poster's dedicated wallet
 #                 unshielded NIGHT from genesis. Idempotent, chain-read based.
+#                 It funds FEES only — the swap tokens come from `faucet-mint`.
 #   offer-poster  the loop (kernel image).
 #
 # `profiles:` is deliberately NOT used — this repo's notion of a profile is the
@@ -97,11 +124,11 @@ services:
       MIDNIGHT_INDEXER_HTTP: 'http://indexer:8088/api/v4/graphql'
       MIDNIGHT_INDEXER_WS: 'ws://indexer:8088/api/v4/graphql/ws'
       MIDNIGHT_PROOF_SERVER_URL: 'http://proof-server:6300'
-      # Where the deploy one-shot published the contract address. The entrypoint
-      # also exports MIDNIGHT_CONTRACT_ADDRESS from it, which the poster prefers;
-      # this is the fallback the poster resolves on its own.
-      CONTRACT_SHARE_DIR: '/deploy-out'
       ZSWAP_API: 'http://kernel:9999'
+      # Where `registry-env` published THIS chain's token ids. Read by the
+      # entrypoint, not by the poster process — the process only ever sees the
+      # two resolved 64-hex ids.
+      STACK_TOKENS_ENV: '/registry/stack-tokens.env'
       # A DEDICATED seed, and it must stay dedicated. Public like every other
       # secret in this repo. `0ffe…` is a mnemonic for "offer"; it collides with
       # nothing in wallets/wallets.json, with no seed in .env.example, and with
@@ -111,54 +138,76 @@ services:
       # The alternative wallet input: a BIP-39 phrase, derived Lace-compatibly.
       # Set exactly ONE of the two — both together is a startup error.
       POSTER_MNEMONIC: '${POSTER_MNEMONIC:-}'
+      # ── THE MARKET, chosen by SYMBOL ───────────────────────────────────────
+      # The poster process reads 64-hex ids; an operator thinks in symbols, and
+      # the ids do not exist until this stack's issuers are deployed. So the
+      # SYMBOLS live here and `entrypoint-offer-poster.sh` resolves each to
+      # `<SYMBOL>_TOKEN_ID` out of STACK_TOKENS_ENV above.
+      #
+      # twBTC -> twUSDC, and BOTH LEGS ARE PRICED: the kernel's `000-init.sql`
+      # seeds TWBTC against `bitcoin` and TWUSDC against `usd-coin`, and
+      # `registry-bridge` re-points those rows at this chain's colours without
+      # touching their asset ids. A priced pair is what lets the want leg be
+      # quoted each tick and the offer be sponsored.
+      #
+      # WHY NOT twETH FOR THE WANT LEG (it is the prettier decimals story):
+      # twETH has 18 decimals and the give leg is one whole twBTC (~$77k at the
+      # seeded reference price), so the quoted want would be ~3.2e19 base units
+      # — past Uint<64>. twUSDC at 6 decimals lands on ~7.5e10. The 8/18-decimal
+      # pair is still exercised, by `verify-kernel.sh`'s twBTC->twETH quote.
+      OFFER_POSTER_GIVE_SYMBOL: '${OFFER_POSTER_GIVE_SYMBOL:-twBTC}'
+      OFFER_POSTER_WANT_SYMBOL: '${OFFER_POSTER_WANT_SYMBOL:-twUSDC}'
+      # An explicit id ALWAYS wins over the symbol lookup. Blank (the default)
+      # means "resolve it from the registry".
+      GIVE_TOKEN: '${OFFER_POSTER_GIVE_TOKEN:-}'
+      WANT_TOKEN: '${OFFER_POSTER_WANT_TOKEN:-}'
       # ── every knob below is BLANK BY DEFAULT on purpose ────────────────────
       # Blank means "the code's default", and the code is the single place those
       # numbers are written down (deploy/scripts/lib/poster-config.ts). The
       # entrypoint unsets the blank ones so the container's environment never
-      # claims otherwise. The defaults that matter: GIVE_TOKEN=WBTC,
-      # WANT_TOKEN=WETH, GIVE_AMOUNT=1 whole coin (10^6 base units),
-      # POST_INTERVAL_MS=60000.
+      # claims otherwise.
       #
-      # WBTC/WETH are the FAUCET's names, and since 00010 the AA console, the
-      # zswap-da SPA faucet and `register-tokens` all derive the same colour for
-      # them — so the poster's offers are in the SAME market a console taker
-      # trades in, and both legs price against real reference rates (WBTC =
-      # bitcoin, WETH = ethereum in the kernel's name map).
-      GIVE_TOKEN: '${OFFER_POSTER_GIVE_TOKEN:-}'
-      GIVE_AMOUNT: '${OFFER_POSTER_GIVE_AMOUNT:-}'
-      # A RANGE instead of the fixed amount above: whole coins, at most 6
-      # decimals, drawn log-uniformly per FRESH mint so the book carries a
-      # spread of sizes. Both ends or neither; mutually exclusive with
-      # GIVE_AMOUNT (the poster exits 78 naming both). GIVE_SIZE_SEED makes the
-      # sequence reproducible and is not a secret.
+      # GIVE_AMOUNT IS NOT BLANK, and it is the one number two fragments must
+      # agree on: the poster selects a coin of EXACTLY this many base units and
+      # never splits one, and `faucet-mint` mints coins of exactly this size.
+      # They cannot drift because both read the SAME variable —
+      # `${OFFER_POSTER_GIVE_AMOUNT}`, defaulting to one whole twBTC
+      # (10^8 base units at 8 decimals) here and in compose/faucet.yml.
+      GIVE_AMOUNT: '${OFFER_POSTER_GIVE_AMOUNT:-100000000}'
+      # An inclusive BASE-UNIT range may replace the fixed amount: it selects an
+      # existing coin in that range, and (since the mint went away) it does NOT
+      # split or create one. Both ends or neither; mutually exclusive with
+      # GIVE_AMOUNT (the poster exits 78 naming both) — blank GIVE_AMOUNT in
+      # `.env` before using them.
       GIVE_MIN: '${OFFER_POSTER_GIVE_MIN:-}'
       GIVE_MAX: '${OFFER_POSTER_GIVE_MAX:-}'
-      GIVE_SIZE_SEED: '${OFFER_POSTER_SIZE_SEED:-}'
-      WANT_TOKEN: '${OFFER_POSTER_WANT_TOKEN:-}'
       # Blank = the want leg is sized from GET /v1/quote every tick, which is
       # what keeps the offer sponsorable. Setting it FORCES an amount and
       # downgrades the sponsorship check to a warning.
       WANT_AMOUNT: '${OFFER_POSTER_WANT_AMOUNT:-}'
-      POST_INTERVAL_MS: '${OFFER_POSTER_INTERVAL_MS:-}'
-      OFFER_TTL_MINUTES: '${OFFER_POSTER_TTL_MINUTES:-}'
-      COIN_VISIBLE_TIMEOUT_MS: '${OFFER_POSTER_COIN_VISIBLE_TIMEOUT_MS:-}'
+      # NOT blank, and paired: see "INVENTORY IS FINITE NOW" in the header.
+      # A 5-minute tick with a 10-minute wallet TTL keeps ~2 of the 4 prefunded
+      # coins in flight, so the book always carries a live offer and the poster
+      # never starves.
+      POST_INTERVAL_MS: '${OFFER_POSTER_INTERVAL_MS:-300000}'
+      OFFER_TTL_MINUTES: '${OFFER_POSTER_TTL_MINUTES:-10}'
       RECONCILE_INTERVAL_MS: '${OFFER_POSTER_RECONCILE_INTERVAL_MS:-}'
       POSTER_MAX_REOFFERS_PER_TICK: '${OFFER_POSTER_MAX_REOFFERS_PER_TICK:-}'
       SHUTDOWN_GRACE_MS: '${OFFER_POSTER_SHUTDOWN_GRACE_MS:-}'
       HEALTH_STALE_TICKS: '${OFFER_POSTER_HEALTH_STALE_TICKS:-}'
-      # The floor of spendable DUST a tick requires before it will MINT (a
-      # re-offer costs none).
-      POSTER_MIN_DUST: '${OFFER_POSTER_MIN_DUST:-}'
+      # POSTER_MIN_DUST, POSTER_DUST_WAIT_TIMEOUT_MS, GIVE_SIZE_SEED and
+      # COIN_VISIBLE_TIMEOUT_MS are GONE from `poster-config.ts` with the mint —
+      # a poster that neither mints nor waits on its own dust has no use for
+      # them — so they are not forwarded here either.
       POSTER_SYNC_TIMEOUT_MS: '${OFFER_POSTER_SYNC_TIMEOUT_MS:-}'
-      POSTER_DUST_WAIT_TIMEOUT_MS: '${OFFER_POSTER_DUST_WAIT_TIMEOUT_MS:-}'
       # POST /v1/offers retry ladder (ROOT_UNKNOWN / UTXO_NOT_LIVE only) and the
       # liveness poll that follows an accepted post.
       POSTER_POST_RETRIES: '${OFFER_POSTER_POST_RETRIES:-}'
       POSTER_POST_RETRY_MS: '${OFFER_POSTER_POST_RETRY_MS:-}'
       POSTER_LIVE_TRIES: '${OFFER_POSTER_LIVE_TRIES:-}'
       POSTER_LIVE_INTERVAL_MS: '${OFFER_POSTER_LIVE_INTERVAL_MS:-}'
-      # Startup-only: derive the colours, read a quote, report, exit 0. Never
-      # mints, never posts. `restart: unless-stopped` would keep re-running it,
+      # Startup-only: inspect the configured inventory, read a quote, report,
+      # exit 0. Never posts. `restart: unless-stopped` would keep re-running it,
       # so use `docker compose run --rm offer-poster` for a one-off dry run.
       DRY_RUN: '${OFFER_POSTER_DRY_RUN:-}'
       # Refuses to start on a corrupt or foreign journal unless this is true —
@@ -172,14 +221,25 @@ services:
       # HOST side with POSTER_HEALTH_PORT.
       POSTER_HEALTH_PORT: '9977'
     volumes:
-      - 'offerfiles-deploy:/deploy-out:ro'   # read the address, never write it
+      # READ-ONLY, and a DIRECTORY: `registry-env` publishes stack-tokens.env by
+      # atomic rename beside the registry it derives from, so a single-file bind
+      # mount would stay attached to the previous inode. The volume is declared
+      # in compose/faucet.yml, which is why `--with faucet` is required.
+      - 'faucet-registry:/registry:ro'
       - 'offer-poster-state:/var/lib/offer-poster'
     depends_on:
       kernel: { condition: service_healthy }
-      offerfiles-deploy: { condition: service_completed_successfully }
-      # NOT just ordering: without NIGHT the poster has no dust, cannot pay for
-      # a mint, and sits at `degraded: insufficient_dust` forever.
+      # NOT just ordering: without NIGHT the poster has no dust, cannot pay a
+      # transaction fee, and sits degraded forever.
       poster-fund: { condition: service_completed_successfully }
+      # The two token ids this stack's poster cannot start without.
+      registry-env: { condition: service_completed_successfully }
+      # THE INVENTORY, and the serialization rule in one. `faucet-mint` opens a
+      # wallet facade on POSTER_SEED to learn its keys and to read its balance;
+      # two facades on one seed against one Midnight node force each other's
+      # connection down, so it must be COMPLETE before this container starts —
+      # which is also exactly when the coins are there to adopt.
+      faucet-mint: { condition: service_completed_successfully }
       node: { condition: service_healthy }
       indexer: { condition: service_healthy }
     healthcheck:

@@ -8,7 +8,7 @@
 // because its isolated image context does not contain the upstream solver tree.
 // That tree is public and not copied here: the Cow solver image fetches
 // effectstream/zswap-offerfiles-kernel PR #65 (branch `ledger-v9`) directly at
-// exact SHA 80bace37bc2412542452e1c597761b2ebce5c677. The separate browser SPA
+// exact SHA 5d794f9a27f6d65529bf176650405f740531d430. The separate browser SPA
 // is fetched through FRONTEND_REPO/FRONTEND_REF.
 //
 // The canonical JSON bodies are pinned by that package's

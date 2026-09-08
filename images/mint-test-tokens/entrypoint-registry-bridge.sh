@@ -140,11 +140,23 @@ read_rows() {
         console.error(`${token.symbol}: decimals out of range: ${token.decimals}`); process.exit(1);
       }
       // The kernel s known_tokens.name is UNIQUE and is what the SPA, the solver monitor and
-      // price-map.ts key on. The registry symbol is used verbatim.
+      // price-map.ts key on.
       if (!/^[A-Za-z0-9._-]{1,32}$/.test(token.symbol)) {
         console.error(`${token.symbol}: symbol is not a usable registry name`); process.exit(1);
       }
-      out.push(`${token.symbol} ${colour} ${token.privacy} ${token.decimals}`);
+      // UPPER-CASED, AND LOAD-BEARING (project questions Q6). `POST /v1/known-tokens`
+      // normalises with `String(name).trim().toUpperCase().slice(0, 16)`, so the kernel
+      // NEVER holds `twBTC` — it holds `TWBTC`. The kernel s own 000-init.sql seeds
+      // exactly those six upper-case names at this pin (with the PREPROD colours, and
+      // WITH their asset ids), so on a fresh database the POST answers 409 and the
+      // UPDATE lane runs. That UPDATE is `WHERE name = :tk_name`, which is
+      // case-SENSITIVE in postgres: sending the registry spelling would match no row,
+      // return an empty RETURNING, be classified as not-ready and fail the bring-up
+      // after eight retries. Normalising here — on OUR side, once, for all three lanes —
+      // is what makes the write land on the SEEDED row and therefore what lets that
+      // row s asset_id survive: the colour is re-pointed, `bitcoin`/`ethereum`/
+      // `usd-coin`/`usdm-2` stay, and GET /v1/quote prices this chain s colours.
+      out.push(`${token.symbol.toUpperCase()} ${colour} ${token.privacy} ${token.decimals}`);
     }
     if (out.length !== 6) { console.error(`expected 6 tokens, read ${out.length}`); process.exit(1); }
     process.stdout.write(out.join("\n"));
@@ -152,7 +164,7 @@ read_rows() {
 }
 
 ROWS="$(read_rows)" || die "could not read the six tokens out of ${REGISTRY_FILE}"
-log "registry ${REGISTRY_FILE}:"
+log "registry ${REGISTRY_FILE} (names normalised to the kernel's upper case):"
 while IFS=' ' read -r sym colour kind dec; do
   log "  ${sym} ${colour:0:16}… ${kind} decimals=${dec}"
 done <<< "${ROWS}"
@@ -217,11 +229,17 @@ current_state() { # <name> <colour>
 
 # post_token — register a MISSING row through the API.
 #
-# NO asset_id. `known_tokens.asset_id` REFERENCES asset_prices(asset_id), and these six local
-# test tokens have no asset behind them: a value that is not already a priced asset would fail
-# the foreign key, and a wrong one would price twBTC as something it is not. NULL is the state
-# the kernel's resolver handles explicitly — priced BY NAME through price-map.ts — which is what
-# a test token registered at runtime is meant to be.
+# NO asset_id, and at this pin that costs nothing. `known_tokens.asset_id` REFERENCES
+# asset_prices(asset_id): a value that is not already a priced asset fails the foreign key, and
+# a wrong one would price twBTC as something it is not. This one-shot has no price opinion and
+# should not acquire one — the registry it reads carries none.
+#
+# It does not need one either. On a fresh database the six names are SEEDED by the kernel s own
+# 000-init.sql WITH their asset ids, so this lane is not the one that runs — the UPDATE below
+# is, and it leaves asset_id alone. The POST lane only runs on a Postgres volume that PREDATES
+# those seeds, and there the row arrives with a NULL asset_id, which is the state the kernel s
+# resolver handles explicitly: priced BY NAME, through PRICE_FEED_MAP (compose/offerfiles.yml
+# names all six) and then price-map.ts. Both paths end priced; neither invents a price here.
 post_token() { # <name> <colour> <kind> <decimals>
   ZS_API="${ZSWAP_API}" TK_NAME="$1" TK_COLOUR="$2" TK_KIND="$3" TK_DECIMALS="$4" node -e '
       const res = await fetch(`${process.env.ZS_API}/v1/known-tokens`, {
@@ -249,6 +267,13 @@ post_token() { # <name> <colour> <kind> <decimals>
 }
 
 # update_token — the one case the API cannot express: one row, one colour, BY NAME.
+#
+# IT IS THE NORMAL PATH AT THIS KERNEL PIN, not the exception it was written as. A fresh
+# database seeds TWBTC/TWETH/TWUSDC/TWUSDM/UTWUSDC/UTWBTC with the PREPROD colours, which do not
+# exist on this chain, so every one of the six answers 409 on POST and lands here. The columns
+# it sets are exactly the three that are wrong (token_color, kind, decimals); `asset_id` is
+# deliberately NOT in the SET list, because the seeded value is the correct one and is what
+# prices the row afterwards.
 #
 # THE SQL ARRIVES ON STDIN, NOT VIA `--command`, and that is not a style choice: psql's
 # `-c/--command` sends a string the server must parse whole and DOES NOT expand `:'var'`

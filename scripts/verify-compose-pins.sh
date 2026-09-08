@@ -62,13 +62,20 @@ COMBOS=(
   "core faucet"
   "core offerfiles faucet"
   "core offerfiles solver"
+  # `poster` is rendered WITH `faucet`, and that pairing is the assertion. Since the
+  # contract removal the poster mounts the `faucet-registry` volume (for the token ids
+  # `registry-env` renders) and waits on `registry-env` and `faucet-mint`. Those are
+  # declared in compose/faucet.yml, so `core offerfiles poster` alone CANNOT render —
+  # which is correct and is why it is not listed: a poster with no token issuer has
+  # nothing to post.
+  "core offerfiles faucet poster"
   # `core offerfiles prices` is rendered with an EMPTY env file ON PURPOSE, and that is
   # the point of listing it: the price feed is the one service that needs a real secret,
   # and this proves the fragment still RENDERS without it. A `${COINGECKO_API_KEY:?…}`
   # would fail right here — which is exactly what it would do inside `./down.sh` for
   # every operator who has no key, since down.sh passes every fragment (00010 Q23).
   "core offerfiles prices"
-  "core offerfiles aa evm faucet frontend shielded-night solver"
+  "core offerfiles aa evm faucet frontend poster prices shielded-night solver"
 )
 
 FAILURES=0
@@ -108,7 +115,12 @@ for combo in "${COMBOS[@]}"; do
   # initializer and both toolkit one-shots — so every fixture has something to break. A
   # fixture whose target service is absent would mutate nothing and be scored as "the checker
   # did not bite", which is a failure for the wrong reason.
-  [[ -z "$FIRST_RENDER" && "$combo" == "core offerfiles aa evm frontend shielded-night solver" ]] \
+  # IT MUST NAME THE WIDEST COMBO EXACTLY. This string used to be a stale copy that
+  # had lost `faucet` when that fragment was added, so it never matched, FIRST_RENDER
+  # stayed empty and `--self-test` took the "no full-stack rendering" failure branch
+  # instead of running the fixtures. Compared against the last COMBOS entry rather than
+  # a second copy of it, so the two cannot drift again.
+  [[ -z "$FIRST_RENDER" && "$combo" == "${COMBOS[${#COMBOS[@]}-1]}" ]] \
     && FIRST_RENDER="$render" && continue
   rm -f "$render"
 done

@@ -39,7 +39,9 @@ ARG FRONTEND_REF=ea04ff7c16dab5118d4bdfeec6e7455c89981827
 # The one image whose compactc pin is NOT read out of a fetched kernel tree —
 # this image never clones the kernel. It is written down here instead, together
 # with the SHA-256 of each release asset, copied from the pinned kernel's
-# `infra/compact-checksums.sha256` at KERNEL_REF 80bace3. Stage 1 verifies the
+# `infra/compact-checksums.sha256` at KERNEL_REF 5d794f9 — where both files still read
+# 0.34.0 and these two hashes, though nothing upstream consumes them any more since
+# the kernel image stopped compiling anything (PR #70). Stage 1 verifies the
 # download against it and then asserts that the compiler's own
 # `--runtime-version` equals the `@midnight-ntwrk/compact-runtime` the PATCHED
 # template installs — so this ARG, the patch and the kernel cannot drift apart

@@ -11,7 +11,7 @@
 # which is exactly why `faucet-mint-test` below has one, the same way compose/core.yml's
 # toolkit `fund` service and compose/shielded-night.yml's verify driver do.
 #
-# ─── SIX SERVICES, TWO IMAGES, ONE UPSTREAM COMMIT ──────────────────────────
+# ─── EIGHT SERVICES, TWO IMAGES, ONE UPSTREAM COMMIT ────────────────────────
 #   faucet-fund       ONE-SHOT: gives this profile's dedicated deployer wallet NIGHT and a
 #                     registered DUST address, before anything tries to pay a fee
 #   faucet-deploy     ONE-SHOT: deploys/RESUMES the six issuers and publishes
@@ -19,8 +19,18 @@
 #   faucet-verify     ONE-SHOT: the read-only verification (no seed) the site is gated on
 #   registry-bridge   ONE-SHOT: upserts the six colours into the kernel's known_tokens —
 #                     conditional, and silent when the `offerfiles` profile is absent
+#   registry-env      ONE-SHOT: renders the six token IDs into /registry/stack-tokens.env
+#   faucet-mint       ONE-SHOT: prefunds the demo wallets with spendable local coins
 #   faucet-site       the static directory on :10950, reading the registry from the volume
 #   faucet-mint-test  NEVER STARTED BY up.sh: proves a real mint through upstream's runner
+#
+# ─── THE LAST TWO ARE NEW, AND THEY ARE WHY THE REST OF THE STACK WORKS ─────
+# At KERNEL_REF 5d794f9 the offer-files contract is gone: the kernel mints nothing, the
+# poster mints nothing, and every token id in the stack is an EXPLICIT 64-hex value that
+# only exists once these issuers are deployed. `registry-env` is how those ids reach the
+# other profiles (an env file on the shared volume, sourced by their entrypoints — compose
+# `env_file:` is evaluated on the HOST before any container runs and cannot read a volume),
+# and `faucet-mint` is how spendable COINS reach the wallets that have to offer them.
 #
 # ─── IT DEPENDS ONLY ON `core` ──────────────────────────────────────────────
 # node, indexer and proof-server — nothing else. `./up.sh --with faucet` on its own is legal
@@ -246,6 +256,127 @@ services:
       # this same fragment. Bridging a registry the chain has not confirmed would put six names
       # on six colours nobody can spend.
       faucet-verify: { condition: service_completed_successfully }
+
+  # ── registry-env ────────────────────────────────────────────────────────────
+  # Turns THIS chain's registry into an env file the rest of the stack sources.
+  #
+  # WHY IT IS A SERVICE AND NOT compose `env_file:`. Compose evaluates `env_file:`
+  # on the HOST at render time — before any container has run, with no access to a
+  # named volume — and these ids do not exist until `faucet-deploy` has published
+  # the registry. The alternatives measured were a two-phase bring-up (up, read the
+  # volume from the host, re-up) and a host bind-mount for the registry directory;
+  # both trade the atomic-rename property and the one-volume-per-stack isolation
+  # for nothing. Recorded as Q9 in the project's questions file.
+  #
+  # It opens no wallet, proves nothing and touches no chain — it is a JSON read and
+  # an atomic file write, seconds long, and it re-runs on every bring-up because
+  # `./down.sh -v` gives every token a new colour.
+  #
+  # THE SYMBOL CHOICES LIVE HERE, not in the renderer: it is handed one symbol per
+  # role and resolves each against the registry, so a market change is a compose
+  # edit. `POSTER_*` is what compose/poster.yml then reads back.
+  registry-env:
+    image: '${FAUCET_RUNNER_IMAGE:-midnight-2-offers/mint-test-tokens:local}'
+    build:
+      context: '../images/mint-test-tokens'
+      target: 'runner'
+      args: *faucet_build_args
+    entrypoint: ['/usr/local/bin/entrypoint-registry-env.sh']
+    restart: 'no'
+    volumes:
+      # READ-WRITE, and the only service besides the deploy runner that writes
+      # here. It publishes `stack-tokens.env` by atomic rename beside the registry
+      # it derives from; the site never serves it (serve-static.mjs answers only
+      # `/metadata.<network>.json` out of this directory).
+      - 'faucet-registry:/registry'
+    environment:
+      # NO SEED, deliberately — this one-shot has no wallet and needs none.
+      MN_NETWORK: 'undeployed'
+      MN_METADATA_OUTPUT_DIR: '/registry'
+      # role -> SYMBOL. An empty value omits that pair of lines entirely; a symbol
+      # the registry does not carry is a hard failure, so a typo cannot silently
+      # produce a file the poster then reports as missing.
+      POSTER_GIVE_SYMBOL: '${OFFER_POSTER_GIVE_SYMBOL:-twBTC}'
+      POSTER_WANT_SYMBOL: '${OFFER_POSTER_WANT_SYMBOL:-twUSDC}'
+      # Upstream's `solver-provision` one-shot is NOT in this stack (measured: the
+      # solver's published ladders derive from the kernel BOOK, not from the ladder
+      # file, and it needs no swap-token inventory at all — see docs/COMPONENTS.md).
+      # The two ids are rendered anyway, because they cost nothing and they are
+      # what an operator who enables that one-shot has to paste.
+      SOLVER_TOKEN_IN_SYMBOL: '${SOLVER_PROVISION_TOKEN_IN_SYMBOL:-twBTC}'
+      SOLVER_TOKEN_OUT_SYMBOL: '${SOLVER_PROVISION_TOKEN_OUT_SYMBOL:-twUSDC}'
+      MAKER_GIVE_SYMBOL: '${MAKER_OFFER_GIVE_SYMBOL:-}'
+      MAKER_WANT_SYMBOL: '${MAKER_OFFER_WANT_SYMBOL:-}'
+      E2E_TOKEN_IN_SYMBOL: '${E2E_TOKEN_IN_SYMBOL:-}'
+      E2E_TOKEN_OUT_SYMBOL: '${E2E_TOKEN_OUT_SYMBOL:-}'
+    depends_on:
+      # The registry must be VERIFIED, not merely published: rendering ids the
+      # chain has not confirmed would point the poster at coins nobody can spend.
+      faucet-verify: { condition: service_completed_successfully }
+
+  # ── faucet-mint ─────────────────────────────────────────────────────────────
+  # ONE-SHOT: the demo's wallets end up holding spendable local test-token coins.
+  #
+  # WHY BRING-UP NEEDS IT. The poster stopped minting with the contract; it selects
+  # an existing coin of exactly OFFER_POSTER_GIVE_AMOUNT and never creates one. So
+  # without this one-shot `--with poster` posts nothing, forever, and reports
+  # `degraded: insufficient_inventory` — correctly.
+  #
+  # IT IS IDEMPOTENT BY BALANCE, which is not optional: compose re-runs a completed
+  # one-shot on EVERY `up` (measured, T4.7), and an unconditional mint would grow
+  # the poster's wallet by four coins per bring-up. Each grant states a TARGET and
+  # only the shortfall is minted.
+  #
+  # IT IS ALSO THE WALLET-SERIALIZATION POINT. `runner/faucet-mint.ts` opens a
+  # facade on each recipient's seed to learn its keys and read its balance, and two
+  # facades on one seed against one Midnight node force each other's connection
+  # down — so every service whose seed appears in a grant must wait for this to
+  # COMPLETE. compose/poster.yml does exactly that.
+  faucet-mint:
+    image: '${FAUCET_RUNNER_IMAGE:-midnight-2-offers/mint-test-tokens:local}'
+    build:
+      context: '../images/mint-test-tokens'
+      target: 'runner'
+      args: *faucet_build_args
+    entrypoint: ['/usr/local/bin/entrypoint-faucet-mint.sh']
+    restart: 'no'
+    volumes:
+      - 'faucet-registry:/registry:ro'
+      # Its private state store, beside the deploy journal.
+      - 'faucet-journal:/app/.local'
+    tmpfs:
+      # ONE SEED FILE PER RECIPIENT, plus the deployer's, plus the plan JSON that
+      # names them. RAM only, 0600, gone when the container exits — the same rule
+      # the deploy one-shot follows, and the reason no seed ever reaches a layer or
+      # a volume.
+      - '/run/faucet:mode=0700,size=64k'
+    environment:
+      <<: *faucet_env
+      # THE POSTER GRANT. These two are the SAME variables compose/poster.yml
+      # gives the poster, so the coin minted here and the coin the poster looks
+      # for cannot drift: it matches on an EXACT base-unit value.
+      #
+      # 10^8 base units = one whole twBTC at the registry's 8 decimals.
+      OFFER_POSTER_GIVE_SYMBOL: '${OFFER_POSTER_GIVE_SYMBOL:-twBTC}'
+      OFFER_POSTER_GIVE_AMOUNT: '${OFFER_POSTER_GIVE_AMOUNT:-100000000}'
+      # How many such coins the poster should hold. Steady state needs about
+      # `OFFER_POSTER_TTL_MINUTES * 60000 / OFFER_POSTER_INTERVAL_MS` of them; the
+      # defaults (10 min / 5 min) put ~2 in flight, so 4 has headroom. 0 disables
+      # the grant. Each coin is a full proof cycle on a cold devnet — this is the
+      # knob that decides how long `--with faucet` takes.
+      FAUCET_MINT_POSTER_COINS: '${FAUCET_MINT_POSTER_COINS:-4}'
+      POSTER_SEED: '${POSTER_SEED:-0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe}'
+      # ANYTHING ELSE: `label:seedhex:symbol:amount:coins`, semicolon-separated.
+      # EMPTY BY DEFAULT and that is measured, not forgotten (Q10): the AA console
+      # MINTS ITS OWN tokens through these very issuers, and upstream states that
+      # the solver "needs NO SWAP-TOKEN INVENTORY to quote or settle whole-maker
+      # rungs. It needs NIGHT/DUST, and that is all." Nothing is minted on the
+      # chance it might be wanted; every entry costs a proof cycle.
+      FAUCET_MINT_GRANTS: '${FAUCET_MINT_GRANTS:-}'
+    depends_on:
+      # The ids AND the confirmation: a mint against an unverified registry could
+      # target a contract this chain does not have.
+      registry-env: { condition: service_completed_successfully }
 
   # ── faucet-site ─────────────────────────────────────────────────────────────
   # The page. Upstream's own static server, because the registry is not a file in the document

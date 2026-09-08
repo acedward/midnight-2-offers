@@ -84,32 +84,38 @@ async function loadInfo() {
   $("s-net").textContent = i.network;
   $("s-manager").textContent = short(i.manager);
   $("s-minter").textContent = short(i.minter);
+  // DECIMALS ARE SHOWN, because they are not all 6 any more: the six local
+  // issuers are 8/18/6/6/6/8, and every amount in this page is BASE UNITS.
   $("s-tokens").textContent = (i.tokens ?? []).length
-    ? i.tokens.map((t) => `${t.name} (${t.family}, ${short(t.color)})`).join(" · ")
-    : `unresolved — ${i.tokensError ?? "kernel down?"}`;
-  // Token selects: unshielded tokens for Fund, shielded for Fund-shielded/swap.
+    ? i.tokens.map((t) => `${t.name} (${t.family}, ${t.decimals}d, ${short(t.color)})`).join(" · ")
+    : `unresolved — ${i.tokensError ?? "faucet profile down?"}`;
+  // ── DEFAULT SELECTIONS ARE POSITIONAL, NOT NAMED ─────────────────────────
+  // These used to be the literals "wUSD"/"wBTC"/"wETH" — names this console
+  // invented and derived colours for. The tokens now come from the local
+  // mint-test-tokens registry (`/api/info.tokensSource === "mint-test-tokens"`),
+  // so a hard-coded symbol would break the page the day the registry changed
+  // one. "the Nth of this family, in registry order" keeps the same three roles
+  // (give / want / unshielded) without naming anything.
+  const ofFamily = (family) => (i.tokens ?? []).filter((x) => x.family === family);
+  const nth = (family, index) => (ofFamily(family)[index] ?? ofFamily(family)[0])?.name;
   const fillTokens = (sel, family, def) => {
     const el = $(sel);
     el.innerHTML = "";
-    for (const t of (i.tokens ?? []).filter((x) => x.family === family)) el.append(new Option(t.name, t.name));
+    for (const t of ofFamily(family)) el.append(new Option(`${t.name} (${t.decimals}d)`, t.name));
     if (def && [...el.options].some((o) => o.value === def)) el.value = def;
   };
-  fillTokens("fund-token", "unshielded", "wUSD");
-  fillTokens("fs-token", "shielded", "wBTC");
-  fillTokens("sw-give-token", "shielded", "wBTC");
-  fillTokens("sw-want-token", "shielded", "wETH");
-  { // send-to-address: ALL tokens
-    const el = $("sd-token");
+  fillTokens("fund-token", "unshielded", nth("unshielded", 0));
+  fillTokens("fs-token", "shielded", nth("shielded", 0));
+  fillTokens("sw-give-token", "shielded", nth("shielded", 0));
+  fillTokens("sw-want-token", "shielded", nth("shielded", 1));
+  const fillAll = (sel, def) => {
+    const el = $(sel);
     el.innerHTML = "";
-    for (const t of (i.tokens ?? [])) el.append(new Option(`${t.name} (${t.family})`, t.name));
-    if ([...el.options].some((o) => o.value === "wBTC")) el.value = "wBTC";
-  }
-  { // faucet: ALL tokens
-    const el = $("fc-token");
-    el.innerHTML = "";
-    for (const t of (i.tokens ?? [])) el.append(new Option(`${t.name} (${t.family})`, t.name));
-    if ([...el.options].some((o) => o.value === "wETH")) el.value = "wETH";
-  }
+    for (const t of (i.tokens ?? [])) el.append(new Option(`${t.name} (${t.family}, ${t.decimals}d)`, t.name));
+    if (def && [...el.options].some((o) => o.value === def)) el.value = def;
+  };
+  fillAll("sd-token", nth("shielded", 0));   // send-to-address
+  fillAll("fc-token", nth("shielded", 1));   // faucet
   $("s-relay").innerHTML = "";
   const pill = document.createElement("span");
   pill.className = `pill ${i.relay.funded ? "ok" : "warn"}`;

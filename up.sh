@@ -208,6 +208,29 @@ while IFS= read -r p; do
 done < <(running_profiles)
 export PROFILES
 
+# ── `poster` requires `faucet`, since the contract removal ───────────────────
+#
+# The offer poster no longer mints. It resolves BOTH token ids out of
+# `/registry/stack-tokens.env` (rendered by `registry-env`) and offers coins put
+# in its wallet by `faucet-mint` — both on the `faucet` fragment's volume, both
+# named in its `depends_on`. Without that fragment compose fails to render at
+# all, with `service "registry-env" ... not found`, which says nothing about the
+# cause. This says it once, before anything is built.
+#
+# NOT auto-added: `./up.sh --with offerfiles --with poster` asking for a stack
+# that cannot exist should be told so, not silently given a third profile — the
+# faucet deploys six contracts and takes minutes, which is not a thing to start
+# on somebody's behalf. `--all` includes both anyway.
+if [[ " $PROFILES " == *" poster "* && " $PROFILES " != *" faucet "* ]]; then
+  err "the 'poster' profile needs 'faucet' too"
+  info "  since KERNEL_REF 5d794f9 the offer-files contract is gone: the poster mints nothing."
+  info "  Both of its token ids are explicit 64-hex values that exist only once this stack's"
+  info "  issuers are deployed, and the coins it offers come from the faucet-mint one-shot."
+  info "      ./up.sh --with faucet --with offerfiles --with poster"
+  info "  (or ./up.sh --all, which includes every profile)."
+  exit 2
+fi
+
 log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
 # Print the readable version AND the digest that is the actual identity: a version alone
 # cannot be checked against anything, and a bare hash tells an operator nothing.
@@ -414,6 +437,40 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" faucet "* ]]; then
       log "faucet: six issuers ready — ${FAUCET_TOKENS}"
     fi
   fi
+  # ── the two one-shots the REST of the stack depends on ────────────────────
+  # `registry-env` renders this chain's token ids onto the shared volume and
+  # `faucet-mint` puts spendable coins in the poster's wallet. Compose gates the
+  # poster on both, so a failure there shows up as a container that never starts
+  # — with the cause three services away. Waited for here, where the reason is
+  # still in front of the operator.
+  if (( ! FAILED )); then
+    for oneshot in registry-env faucet-mint; do
+      os_cid="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=${oneshot}" 2>/dev/null | head -1)"
+      if [[ -z "$os_cid" ]]; then
+        err "no ${oneshot} container — the poster cannot resolve a token id or find inventory"
+        FAILED=1
+        continue
+      fi
+      os_code="$(docker wait "$os_cid" 2>/dev/null || echo "")"
+      if [[ "$os_code" == "0" ]]; then
+        case "$oneshot" in
+          registry-env) log "registry-env: this chain's token ids are on /registry/stack-tokens.env" ;;
+          faucet-mint)  log "faucet-mint: the demo wallets hold their local test-token inventory" ;;
+        esac
+      else
+        err "${oneshot} exited ${os_code:-<unknown>}"
+        info "  logs: docker logs ${os_cid}"
+        case "$oneshot" in
+          registry-env) info "  without it the offer poster exits 78: both token ids are required and explicit" ;;
+          faucet-mint)  info "  without it the offer poster reports degraded: insufficient_inventory forever" ;;
+        esac
+        FAILED=1
+      fi
+    done
+  fi
+
   # `registry-bridge` teaches the kernel this stack's six local colours. It cannot be expressed
   # as a compose dependency of anything (a profile here IS a fragment filename, so it may not
   # name a service from offerfiles.yml, and nothing in offerfiles.yml may name it), so its
@@ -500,14 +557,16 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]]; then
 fi
 
 # The offer poster. Its healthcheck cannot come up until the wallet has synced,
-# registered its dust address and seen a spendable DUST UTXO, and the contract
-# has been joined — minutes on a cold 2.x chain, which is why the timeout is its
-# own variable.
+# registered its dust address and seen a spendable DUST UTXO — minutes on a cold
+# 2.x chain, which is why the timeout is its own variable. (There is no contract
+# to join any more; there is inventory to find instead.)
 #
-# `degraded` is a WARNING here and not a failure: the poster is up, it is telling
-# the truth about why it is not minting yet, and the funding one-shot may simply
-# still be settling. `./verify.sh --poster` is the gate that turns that into a
-# FAIL, because a gate that also had to wait would either be flaky or slow.
+# `degraded` is a WARNING here and not a failure: the poster is up and telling
+# the truth about why it is not posting yet, and a one-shot may still be
+# settling. `./verify.sh --poster` is the gate that turns that into a FAIL,
+# because a gate that also had to wait would either be flaky or slow. The reason
+# to expect since the contract removal is `insufficient_inventory` — the poster
+# no longer mints, so its coins come from `faucet-mint`.
 if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]]; then
   wait_compose_healthy offer-poster "${POSTER_WAIT_TIMEOUT:-900}" || FAILED=1
   if (( ! FAILED )); then
@@ -632,7 +691,7 @@ if [[ " $PROFILES " == *" solver "* ]]; then
   info "solver monitor     http://${HOST_ADDR}:${SOLVER_FRONTEND_PORT:-10802}   (read-only: is it quoting, and if not why)"
 fi
 if [[ " $PROFILES " == *" poster "* ]]; then
-  info "offer poster       http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health   (mints one coin, posts one offer, every interval)"
+  info "offer poster       http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health   (posts one PREFUNDED coin as an offer, every interval)"
 fi
 if [[ " $PROFILES " == *" prices "* ]]; then
   # No URL of its own: the feed serves nothing. What it produced is read here.

@@ -21,7 +21,7 @@ UTXOs, DUST balance 1.25 × 10²⁴ specks.
 | Name | Seed | Role |
 |---|---|---|
 | `genesis-1` | `0x…0001` (32 bytes) | faucet — the default funding source for `fund-wallet.sh` |
-| `genesis-2` | `0x…0002` (32 bytes) | reserved as the offer-files batcher wallet, for when that profile lands |
+| `genesis-2` | `0x…0002` (32 bytes) | the offer-files batcher's wallet (`BATCHER_WALLET_SEED`) — and since the contract removal took the mint one-shot with it, the only facade on that seed in the stack |
 | `genesis-3` | `0x…0003` (32 bytes) | spare prefunded wallet / second demo actor |
 | `lace-test` | `a51c86de…0593ec9` (64 bytes, 128 hex chars) | Midnight's own canonical test wallet — **importable into Lace from a mnemonic, see below** |
 
@@ -103,17 +103,24 @@ Two wallets are funded by neither genesis nor `fund-wallet.sh`:
 
 | Wallet | Seed | Who funds it |
 |---|---|---|
-| `offer-poster` | `0ffe0ffe…0ffe` | `compose/poster.yml`'s `poster-fund` one-shot, before the poster starts |
+| `offer-poster` | `0ffe0ffe…0ffe` | NIGHT from `compose/poster.yml`'s `poster-fund` one-shot, **and test-token INVENTORY from `compose/faucet.yml`'s `faucet-mint` one-shot** — both before the poster starts |
 | `faucet-deployer` | `fa7cefa7…fa7c` | `compose/faucet.yml`'s `faucet-fund` one-shot, before the six issuers are deployed |
 
 Both carry `funding: "compose-one-shot"` in `wallets/wallets.json`, a kind that neither
 `fund-in-container.sh` nor `verify-wallets.sh` selects — both filter on `genesis` /
 `fund-script` / `mnemonic` — because this wallet's lifecycle belongs to the profile, not to the
 funding script. `poster-fund` sends it 4 × 5 000 000 000 000 stars of unshielded NIGHT (several
-LARGE UTXOs, because DUST is generated per UTXO and the poster pays for a mint AND an offer
-every interval) and stops there: the POSTER registers its own DUST address at startup and waits
-for a spendable UTXO. A second registrant for a value the service already owns would make "the
-poster could not register" unreportable.
+LARGE UTXOs, because DUST is generated per UTXO and the poster pays a fee every interval) and
+stops there: the POSTER registers its own DUST address at startup and waits for a spendable UTXO.
+A second registrant for a value the service already owns would make "the poster could not
+register" unreportable.
+
+**Since the contract removal this wallet holds two kinds of value, funded by two different
+services.** NIGHT (and the DUST it generates) pays fees, and comes from `poster-fund` as it always
+did. The twBTC coins the poster OFFERS are new: it no longer mints them from a faucet circuit, so
+`faucet-mint` puts them there — four coins of exactly `OFFER_POSTER_GIVE_AMOUNT` by default. That
+inventory is finite, it lives on the chain, and it dies with `./down.sh -v`; see
+[OPERATIONS.md](OPERATIONS.md#inventory-sizing-three-numbers-that-have-to-agree) for sizing it.
 
 **It must stay dedicated.** The poster refuses to start (exit 78) if its seed equals
 `MIDNIGHT_WALLET_SEED` / `MIDNIGHT_GENESIS_SEED`, `BATCHER_WALLET_SEED`, `SOLVER_SEED`,
@@ -126,8 +133,10 @@ an exit 78 on a live stack.
 ## The `faucet` profile's two wallets
 
 The `faucet` profile deploys the six [mint-test-tokens](https://github.com/effectstream/mint-test-tokens)
-issuers onto this chain and serves their mint site. It has **two dedicated seeds**, and they
-are funded very differently on purpose.
+issuers onto this chain and serves their mint site. It has **two dedicated seeds** of its own, and
+they are funded very differently on purpose. Since the offer-files contract's mint circuits went
+away it also runs `faucet-mint`, which borrows the seed of every wallet it grants coins to for the
+length of one container — see [below](#faucet-mint-opens-every-wallet-it-grants-to).
 
 | Wallet | Seed (64 hex = 32 bytes) | `funding` | Role |
 |---|---|---|---|
@@ -173,6 +182,51 @@ Both are ordinary BIP-32 master seeds, so the toolkit's `show-address` and the w
 account-0/index-0 role derivation produce the same wallet — the addresses in
 `wallets/wallets.json` were produced with
 `midnight-node-toolkit:2.0.0-rc.4 show-address --network undeployed`.
+
+### `faucet-mint` opens every wallet it grants to
+
+The two seeds above are the ones this profile OWNS. Since the offer-files contract's mint circuits
+went away, the profile also runs `faucet-mint` — the one-shot that puts spendable local coins in
+the demo's wallets — and for the length of that one container it holds the seed of every wallet it
+grants to as well.
+
+**Which wallets that is.** By default exactly one: `offer-poster` (`POSTER_SEED`), granted
+`FAUCET_MINT_POSTER_COINS` (4) coins of `OFFER_POSTER_GIVE_SYMBOL` (twBTC) at exactly
+`OFFER_POSTER_GIVE_AMOUNT` (100000000 — one whole twBTC at 8 decimals). Anything else is named in
+`FAUCET_MINT_GRANTS=label:seedhex:symbol:amount:coins;…`, which is **empty by default**, and
+measured to be rather than forgotten: the AA console mints its own tokens through these very
+issuers, and the solver needs no swap-token inventory at all. Every entry costs a full proof cycle
+on a cold devnet.
+
+**Why it holds those seeds, and where.** It opens a wallet facade on each recipient — to learn its
+keys, because a mint needs the recipient's coin public key and a shielded mint its encryption
+public key too, and to READ ITS BALANCE, which is what makes the one-shot idempotent. Compose
+re-runs a completed one-shot on every `up`, so an unconditional mint would grow the poster's wallet
+by four coins per bring-up; instead each grant states a target and only the shortfall is minted.
+Every seed is rendered into the tmpfs at `/run/faucet` (mode 0600, RAM only, gone when the
+container exits), the same rule `faucet-deploy` follows: no seed reaches an image layer or a
+volume.
+
+**Only the deployer pays.** One funded fee payer — `faucet-deployer` — signs every mint, so a
+recipient needs no NIGHT and no DUST of its own. That is what makes adding a grant cheap: a new
+recipient is a seed, not a funding step. After each mint the runner waits for the RECIPIENT's own
+wallet to discover the balance, which is both what makes the next run's idempotence honest and what
+proves the shielded encrypted-output path (`additionalCoinEncPublicKeyMappings`) rather than merely
+that a transaction was accepted.
+
+**Why `offer-poster` waits for it to COMPLETE, and not merely to start.** Two wallet facades on one
+seed against one Midnight node force each other's connection down, silently — the rule that governs
+every wallet in this file. `faucet-mint` holds a facade on `POSTER_SEED`; the poster holds one for
+its whole life. So `compose/poster.yml` gates on `faucet-mint: service_completed_successfully`,
+which is also, conveniently, exactly the moment the coins are there to adopt. Any future service
+whose seed appears in a grant needs the same gate.
+
+**The three genesis seeds are refused outright as grant recipients.** `genesis-1` is the funding
+faucet *and* the offer-files kernel's `MIDNIGHT_WALLET_SEED`, `genesis-2` is the batcher's and
+`genesis-3` is the AA deploy wallet's — each already has a long-lived facade somewhere in the
+stack, so a grant to one would take that service offline with no error naming the cause instead of
+funding anything. The refusal is in the entrypoint's seed writer, alongside the hex validation, not
+in a comment.
 
 ### The six tokens they mint
 

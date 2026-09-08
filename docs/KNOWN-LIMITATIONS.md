@@ -120,7 +120,7 @@ control is worse than one that is gone.
   toolkit that transacts happily against a ledger-v9 chain, so only its `Node:` line is used as a
   compatibility signal.
 
-## The ledger-v9 kernel re-pin (2026-09-03)
+## The ledger-v9 kernel re-pin (2026-09-03), and the contract removal on top of it
 
 - **⚠ An existing `postgres-data` volume must be wiped.** The pin moves
   `migrations/000-init.sql` (the token price service's `asset_prices`,
@@ -129,11 +129,26 @@ control is worse than one that is gone.
   that already exists. A stale volume produces a stack where every container is healthy and
   every quote is wrong. `scripts/verify-kernel.sh` asserts `GET /v1/prices` returns the seeded
   asset table so the situation is loud, and the fix is `./down.sh -v && ./up.sh …`.
-- **Every token now has 6 decimals and faucets mint whole coins.** Amounts in the book are
-  whole coins × 10⁶. The `frontend` profile's zswap-da SPA is re-pinned to a template that
-  reads and writes WHOLE COINS, so a 1-coin offer reads `1 WBTC` rather than `1000000`. Any
-  external client that predates the re-pin — a saved curl, a script holding base units — is the
-  thing that needs updating now, not the SPA.
+- **⚠ The offer-files CONTRACT is gone, and that needs the same wipe for a second, independent
+  reason.** Kernel PRs #69/#70 (merged by #71, which is the `5d794f9…` pin) deleted it: no
+  `packages/contracts-midnight`, no `mint_shielded`/`mint_unshielded`, no compactc in the kernel
+  image, and no `contractAddress` in `GET /v1/midnight/config`. The `offerfiles-deploy` and
+  `register-tokens` services are gone, and so is the `offerfiles-deploy` volume — which an upgrade
+  cannot tidy away for you: compose leaves it orphaned, and any colour derived from that address
+  stays in the database naming a contract nothing can call. `aa-out` and `faucet-registry` go for
+  their own reasons; see [OPERATIONS.md](OPERATIONS.md#full-reset).
+- **`--with offerfiles` is no longer a useful stack on its own.** The kernel comes up and serves an
+  empty book, because nothing in that profile can create a token any more. `--with poster` is
+  stricter still: it needs `--with faucet` and `up.sh` refuses the pair without it (exit 2). The
+  smallest useful combination is `./up.sh --with faucet --with offerfiles`.
+- **Decimals are per token, and "6 everywhere" is now actively wrong.** Amounts in the book are
+  base units at each token's own scale: twBTC 8, twETH 18, twUSDC 6, twUSDM 6, utwUSDC 6, utwBTC 8.
+  The kernel's `known_tokens.decimals` still carries `DEFAULT 6` with a comment claiming that is
+  universal; `registry-bridge` sends each real value explicitly, so the registry is right and the
+  comment is stale. The `frontend` profile's zswap-da SPA is pinned to a template that reads and
+  writes WHOLE COINS against a 6-decimal assumption, which predates these six tokens — a display
+  concern, and re-pinning it is a separate change. Any external client that predates the re-pin —
+  a saved curl, a script holding base units — is the thing that needs updating.
 - **The SPA's in-page wallet now works on any port block — but only through the page's own
   `/config.js`.** `GET /v1/midnight/config` reports the URIs the KERNEL dials: compose
   hostnames on CONTAINER ports, and no node URI at all. The image injects
@@ -145,12 +160,26 @@ control is worse than one that is gone.
   `proof-server`): renaming a service in `compose/core.yml` without updating
   `images/zswap-da/docker-entrypoint-frontend.sh` silently stops the mapping.
   `./verify.sh --frontend` asserts the served map matches the stack's ports.
-- **The AA console's shielded token colours moved.** The console used to derive them from
-  private domain separators, which produced a `wBTC` no other component in the stack could
-  mint or take. It now uses the faucet's own `domainSepFromName`, so console, offer poster,
-  `register-tokens` and the SPA faucet all mean ONE colour per name — and both legs price
-  against real reference rates. Breaking only in the sense that the colours differ from a
-  previous stack's; they already differed after every `./down.sh -v`, which this pin requires.
+- **The AA console's token set moved, and it no longer derives a colour at all.** It used to
+  compute `rawTokenType(domainSepFromName(name), offerFilesContractAddress)` with the address read
+  from `GET /v1/midnight/config`; both halves are gone. It now reads
+  `${AA_FAUCET_URL}/metadata.undeployed.json` and takes symbol, colour, decimals, privacy and the
+  per-token ISSUER ADDRESS out of it — six tokens, one contract each — and its faucet, fund and
+  send actions call each issuer's own `mint` circuit. Three consequences. The tokens the console
+  offers are named `twBTC`/`twETH`/… rather than `wBTC`/`wETH`/`wUSD`, and its UI defaults became
+  positional ("the Nth token of this family, in registry order") rather than those literals. The
+  console no longer registers names in the kernel — it used to POST every token with a hardcoded
+  `decimals: 6`, wrong for four of the six, and `registry-bridge` owns `known_tokens` now. And the
+  `aa` profile's swap panel needs the `faucet` profile to have tokens at all. Nothing about
+  deposits, withdrawals or the EIP-712 action set changed: the Manager only ever saw 32 raw colour
+  bytes.
+- **The AA images are pinned to mint-test-tokens as well now, and that pin must match the faucet's
+  exactly.** The console loads the issuers' COMMITTED generated modules, copied into the
+  image and never recompiled, because those exact bytes are the ones whose verifier keys the
+  `faucet` profile registered on chain. `MINT_TEST_TOKENS_REF` in `compose/aa.yml` and in
+  `compose/faucet.yml` must be the same commit; `verify-source-pins.sh` asserts
+  `/aa/.mint-test-tokens-commit` on both AA images, because an AA image built from a different
+  commit would prove against keys this stack never deployed and nothing else would notice.
 - **The solver's status token is public.** `SOLVER_STATUS_AUTH_TOKEN` has a fixed default in
   `compose/solver.yml`, exactly like `SOLVER_RELAY_AUTH_TOKEN` and every other secret in this
   repository. It must exist (the solver refuses a value under 32 characters) but it only
@@ -179,37 +208,83 @@ control is worse than one that is gone.
   `docker exec $(docker ps -q -f label=com.docker.compose.service=solver-sink) bun -e 'console.log(await (await fetch("http://127.0.0.1:8080/api/snapshot")).text())'`.
   Block offsets +10 and +11 of `pick-ports.sh` are now unused rather than renumbered, on purpose:
   renumbering would have moved every port above them on every existing stack.
-- **The `poster` profile only works on `undeployed`,** and needs `--with offerfiles`: it mints
-  through the offer-files contract's permissionless dev faucet circuit, which exists for this
-  devnet. Its seed is public like every other seed here, and it must never be scaled past one
-  replica — two wallet facades on one seed against one node force each other's connection down.
+- **`packages/solver/config/ladders.dev.json` inside the solver image names PREPROD colours, and
+  is inert on this stack.** It is harmless, and it is recorded here because a reader who finds it
+  will reasonably mistake it for configuration and try to "fix" it. Measured at this pin: the
+  ladders the solver PUBLISHES are derived from the kernel's BOOK (`deriveLadderPush` over
+  `cache.book.all()`), and the identifiers on the wire are the book offers' own lower-cased 64-hex
+  colours — so a colour minted minutes ago quotes fine. The config file is consumed only by
+  `packages/solver/src/engine.ts`, which nothing in `run.ts` or `swap-job-executor.ts` imports at
+  this commit, and `SOLVER_LADDER_CONFIG` left unset is a WARNING, never a refusal. Nothing in
+  `packages/solver` or `packages/solver-core` consults `known_tokens` at all. Upstream's
+  `solver-provision` one-shot is deliberately NOT in this stack either: it would require funding
+  the solver wallet with NIGHT and DUST, which this demo's observation-mode solver does not have,
+  and upstream states plainly that the solver "needs NO swap-token inventory to quote or settle
+  whole-maker rungs. It needs NIGHT/DUST, and that is all." `registry-env` renders
+  `SOLVER_PROVISION_TOKEN_IN`/`_OUT` regardless, so an operator who does enable it has the ids.
+- **The `poster` profile only works on `undeployed`,** and now needs `--with faucet` as well as
+  `--with offerfiles`. It used to mint through the offer-files contract's permissionless dev faucet
+  circuit; that circuit is gone, so both of its token ids come from `registry-env`'s
+  `stack-tokens.env` on the `faucet-registry` volume and its coins come from `faucet-mint`. Its
+  seed is public like every other seed here, and it must never be scaled past one replica — two
+  wallet facades on one seed against one node force each other's connection down, which is also
+  why it waits for `faucet-mint` to COMPLETE rather than merely to start.
+- **The offer poster's inventory is FINITE, and `insufficient_inventory` is a normal steady-state
+  failure if three numbers are mis-sized.** It selects a coin worth exactly
+  `OFFER_POSTER_GIVE_AMOUNT` and never creates or splits one, and a coin is tied up from the moment
+  it is offered until the wallet releases it (`OFFER_POSTER_TTL_MINUTES`) or a taker spends it — so
+  steady state needs about `TTL_MINUTES × 60000 / OFFER_POSTER_INTERVAL_MS` coins. The demo
+  defaults (4 coins, a 5-minute tick, a 10-minute TTL) leave roughly two in flight, with headroom.
+  When it does run out, `degraded: insufficient_inventory` is the honest report and not a fault to
+  retry away: **a restart cannot create inventory**, and nothing in this deployment mints on
+  demand. `./verify.sh --poster` fails on it and names `FAUCET_MINT_POSTER_COINS`,
+  `OFFER_POSTER_INTERVAL_MS` and `OFFER_POSTER_TTL_MINUTES` along with the live `freeCoins`.
+  Raising the TTL makes starvation MORE likely, not less, which is the one counter-intuitive part.
+- **The poster's health document lost its `mints` field.** `poster-health.ts` reports no `mints`
+  and no `offer_poster_mints_total` metric at this pin. The successors are `inventoryAdoptions`,
+  `reoffers`, `freeCoins`, `candidates` and the metrics
+  `offer_poster_inventory_adoptions_total` / `offer_poster_free_coins`. A dashboard or scrape
+  config that predates the re-pin reads zeros, not errors.
 - **The `price-feed` service is OPT-IN, and off by default.** Without `--with prices` the stack
   quotes from the CoinGecko values `000-init.sql` seeded on 2026-09-02: real ratios, but static.
   The profile needs `COINGECKO_API_KEY` — the only genuine secret this repository uses — and
   internet access at runtime, so `./up.sh --all` skips it (out loud) when no key is set, and
   `./up.sh --with prices` refuses to start without one. A key is never defaulted, never baked
   into an image and never committed; it travels as the `x-cg-demo-api-key` header.
-- **The price feed refreshes ASSETS, not colours.** `PRICE_FEED_MAP` and the built-in name map
-  are what decide that `WBTC` means `bitcoin`; a colour whose name is unknown stays unpriced no
-  matter how often the feed runs. Naming is `register-tokens`' job.
+- **The price feed refreshes ASSETS, not colours.** What decides that a colour means `bitcoin` is,
+  in order: the `asset_id` on its `known_tokens` row, then `PRICE_FEED_MAP`, then the built-in name
+  map. A colour with none of those stays unpriced no matter how often the feed runs. Naming is
+  `registry-bridge`'s job now — `register-tokens` went with the contract — and on a fresh database
+  it works by re-pointing the kernel's own SEEDED rows, which is what preserves their `asset_id`.
+  `PRICE_FEED_MAP` is also read by the NODE only: `packages/price-feed` fetches `SEEDED_ASSET_IDS`
+  and ignores it.
 - **A running feed does not guarantee fresh prices.** A provider outage, a `429` or a lost key
   leaves the last good rows in place — nothing is ever deleted — so the failure mode is STALE,
   not missing, and it is silent unless you look: `./verify.sh --prices` is what turns it into a
   failure (`PRICES_MAX_AGE_S`, default 3600 s). On the default 24 h interval a long-lived stack
   needs that limit raised, or `PRICE_FEED_INTERVAL_MS` lowered.
-- **The AA image compiles the AA contracts with the KERNEL's compactc — and that is now the same
-  compactc the AA repo pins.** This image compiles the AA contracts AND the kernel's offer-files
-  contract with ONE compactc and loads both with ONE `compact-runtime`, because two runtime copies
-  in one process fail `instanceof` and because generated code opens with `checkRuntimeVersion()`.
-  Until the kernel moved to Compact 0.34.0 the two halves disagreed — `AA_REF 41de69de…` is a
-  0.34.0 / 0.19.0 build while the kernel line declared 0.33.0-rc.2 — and this image compiled the
-  AA contracts with the kernel's older compactc, justified by a MEASURED byte-identical ZKIR for
-  all nine circuits. That was a coincidence to re-verify at every pin, not a property, and it is
-  gone: at `KERNEL_REF 80bace3…` both halves are 0.34.0 / 0.19.0 by construction. What remains is
-  the constraint itself — **the AA pin and the kernel pin cannot be moved independently**. The
-  build fails closed if `compactc --runtime-version` disagrees with what either side installs, and
-  `verify-source-pins.sh` fails on a live stack if the kernel image and the AA images do not carry
-  the same `compactc` version.
+- **The KERNEL image has no compactc any more, and the AA image is the only one that still takes
+  its compiler pin from the kernel tree.** Kernel PR #70 deleted the `compact` build stage along
+  with the contract, and `images/offerfiles-kernel` now asserts its own absence at build time
+  (`test ! -e /app/packages/contracts-midnight`, `! command -v compactc`). `verify-source-pins.sh`
+  asserts the
+  same thing on a live stack — the kernel image must carry NO `/app/.compactc-version` — and its
+  "one toolchain" check compares the two AA images to each other, because there is no kernel-side
+  version left to compare them against. What the kernel image does bake is
+  `/app/.compact-runtime-version`, from the root manifest's override; upstream's one live compact
+  fact is `bun run check:compact-runtime`, exactly one `@midnight-ntwrk/compact-runtime@0.19.0`
+  resolving across the workspace.
+
+  The AA image still reads its compiler pin (`0.34.0`) and the release hashes out of the fetched
+  kernel tree — `infra/compact-version.txt` and `infra/compact-checksums.sha256` survive there but
+  are ORPHANED, read by nothing upstream — and it still loads everything it compiles with ONE
+  `compact-runtime`, because two runtime copies in one process fail `instanceof` and generated code
+  opens with `checkRuntimeVersion()`. **The constraint gained a third party.** The console now also
+  loads mint-test-tokens' COMMITTED artifacts, so the image asserts that the copied artifacts'
+  `compiler/contract-info.json` `runtime-version` equals the installed runtime, and its
+  compactc-vs-runtime expectation moved from the kernel's deleted `contract-offer-files/package.json`
+  to mint-test-tokens' `contracts/v2/package.json`. **The AA pin, the kernel pin and the
+  mint-test-tokens pin cannot be moved independently.** The build fails closed on any disagreement.
 
 ## The AA Manager's `execute` circuit comes from an unaudited third-party compiler
 
@@ -256,7 +331,10 @@ honest list of what they cannot.
   `faucet-mint-test` (`./scripts/verify-faucet.sh --mint`), which runs upstream's own
   `contracts/v2/mint-wallet-test.ts`: it mints to a **second** wallet and waits for that wallet
   to discover the balance through its regular chain scan, so it proves the encrypted-output path
-  a real wallet depends on rather than merely that a transaction was accepted.
+  a real wallet depends on rather than merely that a transaction was accepted. Since the contract
+  removal the `faucet-mint` one-shot makes the same claim on **every** bring-up, for the wallets
+  the demo actually uses: it mints each recipient's shortfall and then waits for that recipient's
+  own wallet to see the balance. `--mint` remains the isolated, opt-in version of the proof.
 - **An EXTENSION wallet only reaches the stack on the DEFAULT port block.** Same limitation the
   `shielded-night` profile has, for the same reason: an extension's `undeployed` preset
   hardcodes node `9944`, indexer `8088`, proof-server `6300`, and nothing this stack serves can
@@ -269,13 +347,27 @@ honest list of what they cannot.
   `registry-bridge` sends each token's real value explicitly, so the *registry* is right — but
   any demo amount, quote assertion or UI display that assumed 6 has to be re-read against the
   registry. `scripts/verify-faucet.sh` asserts the real values, so a regression to 6 fails a gate.
-- **The six local symbols are not the kernel's price-map names.** `price-map.ts`'s default map is
-  keyed by NAME (`WBTC` → bitcoin, `WETH` → ethereum), and these are `twBTC`/`twETH`/…, so the
-  six bridge in **unpriced**: `registry-bridge` deliberately sends no `asset_id`, because
-  `known_tokens.asset_id` REFERENCES `asset_prices(asset_id)` and a fabricated value would either
-  fail the foreign key or price a test token as something it is not. Quotes over these tokens are
-  therefore unpriced until a later change teaches the kernel the mapping — recorded as a
-  follow-up, and out of scope for the profile that merely names them.
+- **The six local symbols reach the kernel UPPER-CASED, and pricing depends on it.**
+  `POST /v1/known-tokens` normalises with `String(name).trim().toUpperCase().slice(0, 16)`, so the
+  kernel holds `TWBTC` and never `twBTC`; `name` is `UNIQUE`, and the schema at this pin already
+  SEEDS all six upper-case names — with their real decimals, their CoinGecko asset ids, and
+  **PreProd** colours no local chain has. So every POST answers 409 and the `UPDATE … WHERE name`
+  lane is the normal path, not the exception. That UPDATE is case-SENSITIVE, which is why
+  `registry-bridge` normalises on all three lanes (read, POST, UPDATE): sending the registry's own
+  spelling matched no row and would have failed every bring-up after eight retries. Because the
+  UPDATE re-points only `token_color`, `kind` and `decimals` and leaves `asset_id` alone, the
+  seeded asset survives and a colour minted an hour ago is priceable. `scripts/verify-kernel.sh`
+  asserts the end of that chain: six names with decimals 8/18/6/6/6/8, and a `GET /v1/quote` that
+  prices 1 twBTC → twETH with a positive suggested amount.
+- **`PRICE_FEED_MAP` is a belt for one case only.** `compose/offerfiles.yml` defaults it to
+  `TWBTC=bitcoin,TWETH=ethereum,TWUSDC=usd-coin,TWUSDM=usdm-2,UTWUSDC=usd-coin,UTWBTC=bitcoin`, and
+  a fresh database never consults it, because the seeded `asset_id` wins. It matters on a
+  `postgres-data` volume that PREDATES those seeds, where the bridge takes the POST lane and the
+  row arrives with a NULL `asset_id` — the built-in name map knows `WBTC`/`WETH`/`USDC`/`USDM` and
+  never the `TW*` spellings, so without the override those rows quote unpriced. `registry-bridge`
+  still sends no `asset_id` itself, deliberately: `known_tokens.asset_id` REFERENCES
+  `asset_prices(asset_id)`, a fabricated value would fail the foreign key or price a test token as
+  something it is not, and the registry it reads carries no price opinion to pass on.
 - **`registry-bridge` writes one `UPDATE` directly to postgres.** The kernel serves only
   `GET`/`POST` for `known_tokens`, its insert is `ON CONFLICT (token_color) DO NOTHING`, and
   `name` is `UNIQUE` — so a row whose NAME exists carrying a different colour answers 409 and

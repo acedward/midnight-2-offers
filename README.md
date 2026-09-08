@@ -20,12 +20,25 @@ active. The proof servers deliberately cannot start until that check passes.
 
 > ### ⚠ Upgrading a checkout that ran an older kernel pin: `./down.sh -v` is REQUIRED
 >
-> **At the `80bace3` pin the offer-files CONTRACT ITSELF changed.** `mint_shielded` and
-> `mint_unshielded` take an explicit recipient now, so their circuits — and therefore the
-> deployed contract's verifier keys and its address — are new. A stack still holding the
-> `offerfiles-deploy` volume from an older pin would JOIN a contract whose keys this build
-> does not have, and every mint and take would fail against it. The `aa-out` volume goes for
-> the same reason: the AA contracts are recompiled by a different compactc.
+> **At the `5d794f9` pin the offer-files CONTRACT IS GONE.** Kernel PRs #69/#70 deleted it:
+> no deploy, no `mint_shielded`/`mint_unshielded`, no `packages/contracts-midnight`, no
+> compactc in the kernel image, and `GET /v1/midnight/config` no longer answers a
+> `contractAddress`. The `offerfiles-deploy` and `register-tokens` services are gone with it,
+> and so is the `offerfiles-deploy` volume that held the address.
+>
+> **The tokens are external now**, and this stack issues them itself: the `faucet` profile
+> deploys six `mint-test-tokens` issuers, `registry-bridge` names their colours in the kernel,
+> `registry-env` renders their ids onto the shared volume and `faucet-mint` prefunds the offer
+> poster. Consequences worth knowing before the first `./up.sh`:
+>
+> * **`--with poster` now needs `--with faucet`.** The poster no longer mints — it selects an
+>   existing coin of exactly `OFFER_POSTER_GIVE_AMOUNT` — and both of its token ids are
+>   explicit 64-hex values that only exist once the issuers are deployed. `up.sh` refuses the
+>   combination rather than letting compose fail on a missing service.
+> * **Decimals are per token, not 6 everywhere**: twBTC 8, twETH 18, twUSDC/twUSDM/utwUSDC 6,
+>   utwBTC 8. Every amount in this stack is base units at the token's own scale.
+> * The `aa-out` volume goes too: the AA console now mints through the local issuers, and its
+>   image carries their artifacts.
 >
 > The kernel also moved to the unified `ledger-v9` line, which adds the token price
 > service — new tables (`asset_prices`, `price_feed_status`, `known_tokens.decimals`) with
@@ -107,7 +120,6 @@ flowchart LR
     celestia["celestia · :26658"]
     kernel["kernel · :9999"]
     batcher["batcher · :3334"]
-    register["register-tokens"]
   end
   subgraph solver["solver"]
     cow["solver"]
@@ -139,13 +151,14 @@ flowchart LR
     fdeploy["faucet-deploy"]
     fsite["faucet-site · :10950"]
     fbridge["registry-bridge"]
+    fenv["registry-env"]
+    fmint["faucet-mint"]
   end
 
   indexer --> node
   proof --> params
   kernel --> celestia & pg & node & indexer & proof
   batcher --> celestia & node & indexer & proof
-  register --> kernel
   cow --> sink & kernel & node & indexer
   monitor -.-> cow
   op --> kernel
@@ -160,6 +173,10 @@ flowchart LR
   fdeploy --> node & indexer & proof
   fsite --> fdeploy
   fbridge -.-> kernel
+  fenv --> fdeploy
+  fmint --> fenv & node & indexer & proof
+  op --> fenv & fmint
+  console -.-> fsite
   you -.-> console & monitor & spa & sndapp & fsite
   evmw -.-> console & evmrpc
   lace -.-> node & indexer & proof
@@ -177,15 +194,15 @@ you use with `docker compose … logs <service>`. Ports are the `.env.example` d
 | Profile | Services | Default endpoints |
 |---|---|---|
 | [`core`](compose/core.yml) — always | `node` · `indexer` · `proof-server` · `proof-params-init` · `postgres` · `fund` | node RPC `http://127.0.0.1:9944` (HTTP+WS) · indexer `http://127.0.0.1:8088/api/v4/graphql` (+`/ws`) · proof `http://127.0.0.1:6300` · postgres internal |
-| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `offerfiles-deploy` · `kernel` · `batcher` · `register-tokens` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` (token: `scripts/celestia-token.sh`) |
+| [`offerfiles`](compose/offerfiles.yml) | `celestia` · `kernel` · `batcher` | kernel API `http://127.0.0.1:9999` · batcher `http://127.0.0.1:3334` · Celestia DA RPC `http://127.0.0.1:26658` (token: `scripts/celestia-token.sh`) |
 | [`solver`](compose/solver.yml) | `solver` · `solver-sink` · `solver-frontend` | monitor **`http://127.0.0.1:10802`** · status listener `solver:9100` internal only |
-| [`poster`](compose/poster.yml) | `poster-fund` · `offer-poster` | health `http://127.0.0.1:10803/health` |
+| [`poster`](compose/poster.yml) — **needs `faucet` too** | `poster-fund` · `offer-poster` | health `http://127.0.0.1:10803/health` |
 | [`prices`](compose/prices.yml) — opt-in, needs `COINGECKO_API_KEY` | `price-feed` | no port; writes `asset_prices`, read back via kernel `/v1/prices` |
 | [`aa`](compose/aa.yml) | `aa-proof-server` · `aa-deploy` · `aa-console` | **AA console `http://127.0.0.1:10700`** · experimental proof server internal only |
 | [`evm`](compose/evm.yml) | `evm-migrate` · `evm-rpc` · `wallet-monitor` | eth JSON-RPC `http://127.0.0.1:8545` (chainId 2400) · WS `ws://127.0.0.1:10021` |
 | [`frontend`](compose/frontend.yml) | `frontend` | zswap-da SPA `http://127.0.0.1:10600` |
 | [`shielded-night`](compose/shielded-night.yml) | `shielded-night-fund` · `shielded-night-deploy` · `shielded-night` · `shielded-night-register` · `shielded-night-verify` | sNight dApp `http://127.0.0.1:10900` |
-| [`faucet`](compose/faucet.yml) | `faucet-fund` · `faucet-deploy` · `faucet-verify` · `registry-bridge` · `faucet-site` · `faucet-mint-test` | test-token faucet `http://127.0.0.1:10950/?network=undeployed` |
+| [`faucet`](compose/faucet.yml) | `faucet-fund` · `faucet-deploy` · `faucet-verify` · `registry-bridge` · `registry-env` · `faucet-mint` · `faucet-site` · `faucet-mint-test` | test-token faucet `http://127.0.0.1:10950/?network=undeployed` |
 
 Internal-only ports (never published): `postgres:5432` (the one shared store), celestia consensus
 `26657`/`9090`, `aa-proof-server:6300` (exactly one proof host port exists, core's plain one), and
@@ -216,9 +233,9 @@ this block is stale or when one pin has two different defaults in the tree.
 | Proof data (SRS K0–K19 + ledger-static) | 21 payloads from `effectstream/binaries@0.3.120`; initializer from [`acedward/midnight-binary-forge`](https://github.com/acedward/midnight-binary-forge) | 21 SHA-256 · [`546185faefcf`](https://github.com/acedward/midnight-binary-forge/commit/546185faefcf91f9d1fe9169041b05394e8e4d29) | `config/artifact-decisions.json` · `images/proof-params/Dockerfile` |
 | Celestia app `6.4.10` / node `0.28.4` | `effectstream/binaries@0.3.120`, each archive byte-equal to the official celestiaorg release (`images/celestia/official-equality.tsv`) | SHA-256 per arch | `config/artifact-decisions.json` · `.env.example` · `compose/offerfiles.yml` · `images/celestia/Dockerfile` |
 | PostgreSQL 17 + `pg_ivm 1.11` | `postgres:17-alpine` *(upstream image)* with `pg_ivm` compiled in; ONE server: db `offerfiles` + db `umbra` | `PG_IVM_VERSION=1.11` | `compose/core.yml` · `images/postgres/Dockerfile` |
-| **Offer-files kernel · batcher · COW solver · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) branch `ledger-v9` ([PR #65](https://github.com/effectstream/zswap-offerfiles-kernel/pull/65)), compactc 0.34.0 · compact-runtime 0.19.0 | [`80bace37bc24`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/80bace37bc2412542452e1c597761b2ebce5c677) (`KERNEL_REF` = `SOLVER_REF`) | `.env.example` · `compose/aa.yml` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/aa-contracts/Dockerfile` · `images/cow-solver/Dockerfile` · `images/offerfiles-kernel/Dockerfile` · `scripts/verify-source-pins.sh` |
+| **Offer-files kernel · batcher · COW solver · offer poster · price feed** (ONE image) | [`effectstream/zswap-offerfiles-kernel`](https://github.com/effectstream/zswap-offerfiles-kernel) branch `ledger-v9` ([PR #65](https://github.com/effectstream/zswap-offerfiles-kernel/pull/65)), compactc 0.34.0 · compact-runtime 0.19.0 | [`5d794f9a27f6`](https://github.com/effectstream/zswap-offerfiles-kernel/commit/5d794f9a27f6d65529bf176650405f740531d430) (`KERNEL_REF` = `SOLVER_REF`) | `.env.example` · `compose/aa.yml` · `compose/offerfiles.yml` · `compose/solver.yml` · `images/aa-contracts/Dockerfile` · `images/cow-solver/Dockerfile` · `images/offerfiles-kernel/Dockerfile` · `scripts/verify-source-pins.sh` |
 | zswap-da SPA | [`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da), fetched at build time and adapted by `images/zswap-da/ledger-v9.patch` | [`ea04ff7c16da`](https://github.com/effectstream/effectstream/commit/ea04ff7c16dab5118d4bdfeec6e7455c89981827) | `.env.example` · `compose/frontend.yml` · `images/zswap-da/Dockerfile` · `scripts/verify-source-pins.sh` |
-| **mint-test-tokens** — six local test-token issuers + the faucet site | [`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` ([PR #4](https://github.com/effectstream/mint-test-tokens/pull/4)); **NO compiler in the image** — `contracts/v2/managed/` is tracked upstream and the deploy runner re-proves those bytes against the pinned commit on every run | [`7ecad008b07a`](https://github.com/effectstream/mint-test-tokens/commit/7ecad008b07acb2a491d8291e05455cbd638910f) | `.env.example` · `compose/faucet.yml` · `images/mint-test-tokens/Dockerfile` · `scripts/verify-source-pins.sh` |
+| **mint-test-tokens** — six local test-token issuers + the faucet site | [`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` ([PR #4](https://github.com/effectstream/mint-test-tokens/pull/4)); **NO compiler in the image** — `contracts/v2/managed/` is tracked upstream and the deploy runner re-proves those bytes against the pinned commit on every run | [`7ecad008b07a`](https://github.com/effectstream/mint-test-tokens/commit/7ecad008b07acb2a491d8291e05455cbd638910f) | `.env.example` · `compose/aa.yml` · `compose/faucet.yml` · `images/aa-contracts/Dockerfile` · `images/mint-test-tokens/Dockerfile` · `scripts/verify-source-pins.sh` |
 | Shielded NIGHT dApp | [`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) branch `ledger-v9` ([PR #10](https://github.com/effectstream/shielded-night/pull/10)); contract recompiled in-image with compactc 0.34.0, byte-identical to the committed artifacts | [`30af63f3865d`](https://github.com/effectstream/shielded-night/commit/30af63f3865d0bc5d5331ae32a7891ad48818303) | `.env.example` · `compose/shielded-night.yml` · `images/shielded-night/Dockerfile` · `scripts/verify-source-pins.sh` |
 | **AA-v3** — Manager + Minter contracts, relay | [`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3) `main`; compiled in-image with the kernel's compactc 0.34.0 | [`41de69ded41f`](https://github.com/acedward/AA-midnight-evm-experiment-v3/commit/41de69ded41ff933fe0db8697b264dc46fc6e0cb) | `.env.example` · `compose/aa.yml` · `images/aa-contracts/Dockerfile` · `scripts/verify-source-pins.sh` |
 | AA `execute` circuit (MinoCrab, k=18) | [`acedward/AA-midnight-evm-experiment-minocrab`](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release `v0.2.0`; default `AA_ZKIR_SOURCE=minocrab`, unaudited compiler, dev chains only | [`7cdfa5b0c994`](https://github.com/acedward/AA-midnight-evm-experiment-minocrab/commit/7cdfa5b0c994a70502ab2b564b509c8abe2f7efb) · `sha256(SHA256SUMS)` `4a8c0183cd88…` | `.env.example` · `compose/aa.yml` · `images/aa-contracts/Dockerfile` · `scripts/verify-aa.sh` · `scripts/verify-source-pins.sh` |

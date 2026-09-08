@@ -185,10 +185,10 @@ if present proof-server && present aa-proof-server; then
   fi
 fi
 
-KERNEL_EXPECTED="${KERNEL_REF:-80bace37bc2412542452e1c597761b2ebce5c677}"
+KERNEL_EXPECTED="${KERNEL_REF:-5d794f9a27f6d65529bf176650405f740531d430}"
 # Provenance now, not a build input — and read from the matrix rather than duplicated here.
 INDEXER_EXPECTED="$(pin 'components[indexer-standalone].sourceProvenance.commit')"
-SOLVER_EXPECTED="${SOLVER_REF:-80bace37bc2412542452e1c597761b2ebce5c677}"
+SOLVER_EXPECTED="${SOLVER_REF:-5d794f9a27f6d65529bf176650405f740531d430}"
 AA_EXPECTED="${AA_REF:-41de69ded41ff933fe0db8697b264dc46fc6e0cb}"
 # The MinoCrab port's release: three DIFFERENT kinds of identity, and only the
 # first is a commit. `MINOCRAB_SUMS_SHA256` is the one that decides which bytes
@@ -238,33 +238,51 @@ assert_zkir_source() { # <label> <image>
 
 if present aa-deploy; then
   assert_pin aa "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.aa-commit "$AA_EXPECTED"
-  assert_pin aa-offerfiles-contract "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.kernel-commit "$KERNEL_EXPECTED"
+  # The kernel tree is still cloned into this image, but ONLY for the compactc pin
+  # and its checksums — the offer-files contract it used to compile is gone. The
+  # label is kept because a stale AA image built against a pre-#69 kernel is
+  # exactly what this file exists to catch.
+  assert_pin aa-kernel-toolchain "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.kernel-commit "$KERNEL_EXPECTED"
+  # THE NEW ONE, and the important one: the console mints through the LOCAL
+  # issuers, whose COMMITTED artifacts this image copies. Their verifier keys are
+  # what the `faucet` profile registered on chain, so an AA image built from a
+  # different mint-test-tokens commit would prove against keys this stack never
+  # deployed. Same pin as compose/faucet.yml, asserted on the running image.
+  assert_pin aa-mint-test-tokens "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
   assert_zkir_source aa "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}"
 fi
 if present aa-console; then
   assert_pin aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.aa-commit "$AA_EXPECTED"
+  assert_pin aa-console-kernel-toolchain "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.kernel-commit "$KERNEL_EXPECTED"
+  assert_pin aa-console-mint-test-tokens "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
   assert_zkir_source aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
 fi
 # ── ONE COMPACT TOOLCHAIN ACROSS THE IMAGES (infra issues/00011) ────────────
-# The kernel image and both AA images compile the SAME offer-files contract, and
-# the AA console loads the kernel's contract module and the AA Manager's in ONE
-# process. If those images were built by different compactc versions their
-# verifier keys differ and the console's offer actions fail against the deployed
-# contract — the failure 00011 was opened about. Each image records the version
-# it actually used, so this compares images rather than restating a constant:
-# there is no number here to go stale when the kernel line moves again.
+#
+# THE COMPARISON MOVED WITH THE CONTRACT. It used to be kernel-image vs AA-image:
+# both compiled the SAME offer-files contract, and the AA console loaded that
+# contract's module and the AA Manager's in ONE process, so a compactc mismatch
+# meant verifier keys that did not match the deployed contract — the failure
+# issues/00011 was opened about. At KERNEL_REF 5d794f9 the kernel image compiles
+# NOTHING and ships no compactc, so that comparison has no left-hand side.
+#
+# The invariant it protected is still real, and it now has three parties:
+#   1. the two AA images must share one compactc (they compile the same Manager
+#      and Minter, and `aa-console` loads what `aa-deploy` deployed);
+#   2. each AA image's INSTALLED @midnight-ntwrk/compact-runtime must equal what
+#      its compactc emits — asserted inside the image at build time;
+#   3. …and must equal the runtime the COPIED mint-test-tokens artifacts were
+#      built for, which is the cross-repo half and also an in-image assertion.
+#
+# (2) and (3) cannot be re-checked from here without shipping more receipts, and
+# an image that failed them does not exist. (1) can, and it is the one a stale
+# image reintroduces: two AA images from different builds. Each records the
+# version it used, so this compares images rather than restating a constant.
 read_toolchain() { # <image> <path>
   docker run --rm --entrypoint cat "$1" "$2" 2>/dev/null | tr -d '\r\n'
 }
 assert_one_toolchain() {
-  local kernel_image="${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}"
-  local base ver image label bad=0
-  base="$(read_toolchain "$kernel_image" /app/.compactc-version)"
-  if [[ -z "$base" ]]; then
-    err "compact toolchain: ${kernel_image} carries no /app/.compactc-version"
-    FAILURES=$(( FAILURES + 1 ))
-    return
-  fi
+  local base="" ver image label entry bad=0 seen=0
   for entry in \
     "aa:${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" \
     "aa-console:${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
@@ -272,18 +290,41 @@ assert_one_toolchain() {
     label="${entry%%:*}"; image="${entry#*:}"
     ver="$(read_toolchain "$image" /aa/.compactc-version)"
     [[ -n "$ver" ]] || continue      # image not built in this stack
+    seen=$(( seen + 1 ))
+    if [[ -z "$base" ]]; then
+      base="$ver"
+      continue
+    fi
     if [[ "$ver" != "$base" ]]; then
-      err "compact toolchain: ${label} image compiled with compactc ${ver}, the kernel image with ${base}"
+      err "compact toolchain: ${label} image compiled with compactc ${ver}, the other AA image with ${base}"
       bad=$(( bad + 1 ))
     fi
   done
+  if (( seen == 0 )); then
+    err "compact toolchain: no AA image carries /aa/.compactc-version"
+    FAILURES=$(( FAILURES + 1 ))
+    return
+  fi
   if (( bad == 0 )); then
-    ok "one compact toolchain: compactc ${base} in every image that compiles a contract"
+    ok "one compact toolchain: compactc ${base} in every image that compiles a contract (${seen} image(s))"
   else
     FAILURES=$(( FAILURES + bad ))
   fi
+  # The kernel image must ship NONE. This is the demo-side twin of upstream's own
+  # CI assertion and of the in-image check in images/offerfiles-kernel/Dockerfile:
+  # "a fresh clone has zero Compact compilation for the kernel line" (spec SC-001)
+  # stated as something a running stack can fail.
+  local kernel_image="${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}"
+  if present kernel; then
+    if [[ -n "$(read_toolchain "$kernel_image" /app/.compactc-version)" ]]; then
+      err "compact toolchain: ${kernel_image} still carries /app/.compactc-version — it should compile nothing"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      ok "the kernel image ships no compactc (contract-free kernel line)"
+    fi
+  fi
 }
-if present kernel && { present aa-deploy || present aa-console; }; then
+if present aa-deploy || present aa-console; then
   assert_one_toolchain
 fi
 

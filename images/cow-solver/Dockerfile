@@ -2,7 +2,7 @@
 #
 # Source: https://github.com/effectstream/zswap-offerfiles-kernel/pull/65,
 # branch `ledger-v9` (draft at the time of pinning — the SHA is the identity),
-# exact SHA 80bace37bc2412542452e1c597761b2ebce5c677. Clean-clone builds fetch
+# exact SHA 5d794f9a27f6d65529bf176650405f740531d430. Clean-clone builds fetch
 # that upstream commit directly; Cow solver source is not copied into this repo.
 # The separate browser SPA is fetched through FRONTEND_REPO/FRONTEND_REF and
 # contains no solver implementation.
@@ -13,15 +13,22 @@
 # the SHA `verify-source-pins.sh` expects, and a future divergence must not need
 # a Dockerfile change to be expressible.
 #
-# The compiled offer-files contract comes from the `kernel-image` named build
-# context. Compose wires that context to `service:kernel`, which both orders the
-# builds and shares the kernel image's already-compiled compactc 0.33.0-rc.2
-# artifacts. The solver is observation-only and never proves a circuit, so
-# compiling an identical second artifact set would add time and disk for no
-# functional coverage.
+# ── THE CONTRACT OVERLAY IS GONE (KERNEL_REF 5d794f9) ───────────────────────
+# This image used to restore the kernel image's compiled offer-files artifacts
+# over the solver source, because they are gitignored upstream and `bun install`
+# would otherwise leave a workspace that could not resolve them. Kernel PRs
+# #69/#70 deleted the contract and the whole `packages/contracts-midnight`
+# workspace, so there is nothing to overlay and nothing that imports it — the
+# COPY now fails the build outright with "not found", which is how this was
+# caught.
+#
+# The `kernel-image` named build context STAYS, and still earns its keep: it is
+# the base layer (so the two images share one bun runtime and one node_modules
+# cache) and, because compose wires it to `service:kernel`, it also ORDERS the
+# builds. What it no longer carries across is a contract.
 
 ARG SOLVER_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG SOLVER_REF=80bace37bc2412542452e1c597761b2ebce5c677
+ARG SOLVER_REF=5d794f9a27f6d65529bf176650405f740531d430
 
 FROM debian:stable-slim AS source
 
@@ -40,20 +47,22 @@ RUN git init -q . \
  && git rev-parse HEAD > /solver-commit \
  && rm -rf .git
 
-FROM kernel-image AS kernel-src
 FROM kernel-image
 
 WORKDIR /app
 
-# Overlay the pinned solver branch onto the service-built kernel runtime, then
-# restore the generated managed artifacts (gitignored in the public source).
+# Overlay the pinned solver branch onto the service-built kernel runtime.
 # Existing node_modules are retained as an install cache; the solver branch's
 # frozen lockfile determines the final dependency graph.
 COPY --from=source /src /app
-COPY --from=kernel-src /app/packages/contracts-midnight/contract-offer-files/src/managed /app/packages/contracts-midnight/contract-offer-files/src/managed
 COPY --from=source /solver-commit /app/.solver-commit
 
-RUN test -f /app/packages/contracts-midnight/contract-offer-files/src/managed/contract/index.js
+# The contract workspace must be ABSENT, not merely unused. Upstream's own CI
+# asserts the same thing inside the kernel image; asserting it here as well is
+# what stops a stale `kernel-image` base — one built before the re-pin, which
+# would still carry `packages/contracts-midnight` — from silently producing a
+# solver image with a contract in it.
+RUN test ! -e /app/packages/contracts-midnight
 RUN bun install --frozen-lockfile
 
 # Assert the single-WASM property the whole v9 migration rests on: two ledger

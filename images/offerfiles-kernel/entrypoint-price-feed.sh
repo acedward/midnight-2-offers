@@ -55,7 +55,7 @@ set -euo pipefail
 # edge case.
 #
 # The pinned kernel fixes it at the source: `packages/price-feed/src/env.ts`
-# (new at KERNEL_REF 80bace3) adds `optionalString`/`optionalNumber`, which treat
+# (new at KERNEL_REF 80bace3, unchanged at 5d794f9) adds `optionalString`/`optionalNumber`, which treat
 # blank — and whitespace-only — as unset, and `loadPriceFeedConfig()` reads every
 # optional knob through them. Upstream removed the same workaround from its own
 # `entrypoint-common.sh` in the same commit, stating that the config loader owns

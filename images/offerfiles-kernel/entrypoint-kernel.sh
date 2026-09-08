@@ -20,6 +20,12 @@
 # NO orchestrator: `bunx orchestrator start start.external.ts` launched six
 # processes here and re-deployed the contract on every recreate. main.dev.ts is
 # a plain single-process bun entrypoint.
+#
+# AND NO CONTRACT AT ALL since KERNEL_REF 5d794f9: the offer-files contract was
+# deleted upstream (kernel PRs #69/#70), so there is no address to load and no
+# deploy one-shot to wait on. The tokens this book trades are issued OUTSIDE the
+# kernel, by the `faucet` profile's mint-test-tokens issuers, and named in the
+# kernel's registry by `registry-bridge`.
 
 . /usr/local/lib/offerfiles/entrypoint-common.sh
 
@@ -27,7 +33,6 @@ ROLE=kernel
 
 load_celestia_env
 run_preflight "$ROLE"
-load_contract_address "$ROLE"
 
 # Fail fast and legibly on a half-configured database. Without PGLITE=false the
 # node would silently use the embedded path this phase removed; without DB_HOST

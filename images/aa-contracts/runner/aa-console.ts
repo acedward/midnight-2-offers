@@ -50,7 +50,6 @@ import { recoverSigner, addressForPrivateKey } from "/aa/aalib/signature.js";
 import { metamaskSign } from "/aa/aalib/metamask.js";
 import type { Hex20, Hex32 } from "/aa/aalib/bytes.js";
 import { buildOpenSwapOffer } from "/aa/runner/aa-offer.ts";
-import { rawTokenType } from "@midnight-ntwrk/compact-runtime";
 import { zkirSourceReceipt, zkirSourceLine } from "/aa/runner/zkir-source.ts";
 import { shieldedUserRecipient, unshieldedUserRecipient } from "/aa/runner/mint-recipient.ts";
 
@@ -102,97 +101,141 @@ const OFFER_POSTER_URL = process.env["AA_OFFER_POSTER_URL"] ?? "http://offer-pos
 // monitor's two variables above.
 const FAUCET_URL = process.env["AA_FAUCET_URL"] ?? "http://faucet-site:14119";
 const FAUCET_PUBLIC_URL = process.env["AA_FAUCET_PUBLIC_URL"] ?? "http://127.0.0.1:10950";
+// The registry document name is per NETWORK, and the faucet site serves
+// `/metadata.<network>.json` out of the mounted directory by path. This stack is
+// `undeployed` and the profile's entrypoints refuse anything else, so the
+// variable exists to keep the one spelling in one place rather than to be
+// changed.
+const NETWORK_KEY = process.env["AA_FAUCET_NETWORK"] ?? "undeployed";
 // Shielded funding runs on the aa-deploy wallet (genesis-3): prefunded, and it
 // already holds the shielded colour minted at bring-up. The RELAY wallet stays
 // shielded-free (T7.5 rule) — that is the entire reason for the second seed.
 const FUNDER_SEED = process.env["MIDNIGHT_WALLET_SEED"]
   ?? "0000000000000000000000000000000000000000000000000000000000000003";
-// ── THE UNIFIED TOKEN SET (user direction 2026-08-26; derivation unified 00010)
-// The demo's tokens are the ones the OFFER-FILES contract mints — the same
-// colours the kernel's own faucet creates — used for every shielded/unshielded
-// flow here. The console-private AA Minter token and the shielded-NIGHT
-// want-leg workaround are RETIRED (shielded NIGHT is not a real mintable token).
-// colour = rawTokenType(domainSep, offerFilesContractAddress), resolved at
-// startup from the kernel's /v1/midnight/config; names are registered in the
-// kernel's dev token registry so every UI shows the same wBTC/wETH/wUSD.
+// ── THE TOKEN SET IS THE LOCAL FAUCET'S REGISTRY (PR-B) ─────────────────────
+// It used to be three colours this console DERIVED:
+// `rawTokenType(domainSepFromName("WBTC"), offerFilesContractAddress)`, with the
+// address read from the kernel's `GET /v1/midnight/config`. Both halves of that
+// are gone at KERNEL_REF 5d794f9. Kernel PRs #69/#70 deleted the offer-files
+// contract, so there is no address to derive from — `/v1/midnight/config` now
+// answers four fields and `contractAddress` is not one of them, asserted by
+// upstream's own `api.test.ts` (`expect(body.contractAddress).toBeUndefined()`).
 //
-// THE DOMAIN SEPARATOR IS THE FAUCET'S, NOT THIS FILE'S (00010 Q11). It used to
-// be 32 bytes of 0xa1 / 0xb2 / 0xc3 — a console-private derivation. Nothing
-// else in the world produced those colours, so:
-//   * the offer poster (kernel `deploy/scripts/offer-poster.ts`), which derives
-//     WBTC as `rawTokenType(domainSepFromName("WBTC"), addr)`, minted a
-//     DIFFERENT colour under the SAME name. `known_tokens.name` is UNIQUE, so
-//     one of the two registrations lost with 409 and that side's leg quoted
-//     UNPRICED — and the two "WBTC" markets on one contract were disjoint, so a
-//     console taker could never take a poster offer.
-//   * the kernel's price map (`DEFAULT_NAME_ASSET_MAP`) prices WBTC as bitcoin
-//     and WETH as ethereum BY NAME, which the old colours never reached.
-// The derivation below is `domainSepFromName` from the pinned kernel tree's
-// `docs/src/wallet/mintable.ts` (the zswap-da faucet's own function), copied
-// rather than imported: this console image carries the AA repo's node_modules,
-// not the kernel workspace. It is pure and 12 lines; keep it byte-equal.
-const FAUCET_PREFIX = "zswap-da-faucet:";
-function domainSepFromName(name: string): Uint8Array {
-  const out = new Uint8Array(32);
-  const enc = new TextEncoder().encode(FAUCET_PREFIX + name);
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < 32; i++) {
-    h = (h ^ (enc[i % enc.length] ?? i + 7)) >>> 0;
-    h = Math.imul(h, 16777619) >>> 0;
-    out[i] = h & 0xff;
-  }
-  return out;
-}
-// `name` is the display spelling; `faucetName` is what the derivation and the
-// registry see (the registry upper-cases, and the faucet's presets are
-// upper-case). wUSD is unshielded and is NOT one of the faucet's six presets —
-// the derivation is defined for any name, so it stays this stack's own
-// unshielded token, just built the same way as the other two.
-const TOKEN_DEFS = [
-  { name: "wBTC", faucetName: "WBTC", family: "shielded" as const },
-  { name: "wETH", faucetName: "WETH", family: "shielded" as const },
-  { name: "wUSD", faucetName: "WUSD", family: "unshielded" as const },
-];
-type TokenInfo = { name: string; family: "shielded" | "unshielded"; sep: Uint8Array; color: string };
-const tokens: { list: TokenInfo[]; offerFilesAddress: string | null; error: string | null } = {
-  list: [], offerFilesAddress: null, error: null,
+// The tokens are EXTERNAL now, and this stack issues them with the `faucet`
+// profile: six mint-test-tokens issuers, one contract each. So the console reads
+// the registry those issuers publish instead of computing anything —
+// `GET ${AA_FAUCET_URL}/metadata.<network>.json`, the same document its infra
+// probe already reads, served by `faucet-site` out of the shared volume and
+// re-opened by path on every request so a redeploy is picked up with no restart.
+//
+// WHAT THAT BUYS, beyond working at all:
+//   * REAL DECIMALS. The old code registered every token as `decimals: 6`. The
+//     six are 8/18/6/6/6/8, and a wrong scale is off by a factor of 10^n in
+//     every price, quote and sponsorship verdict. They now come from the
+//     registry, which is also where `registry-bridge` gets the ones it writes
+//     into the kernel — one source, so the two cannot disagree.
+//   * THE ISSUER ADDRESS PER TOKEN. Each token has its OWN contract, so a mint
+//     joins that token's issuer rather than one shared faucet.
+//   * NO NAME REGISTRATION HERE. `registry-bridge` owns `known_tokens` now, and
+//     it writes the kernel's own upper-case spelling with the seeded `asset_id`
+//     intact. A second writer racing it could only get in the way.
+//
+// `domainSepFromName` and the `rawTokenType` import went with the derivation:
+// the issuers' colours are `tokenType(_domain, kernel.self())` computed ON CHAIN
+// at deploy time and published as `tokenId`, so re-deriving them here would be
+// re-implementing a fact the registry already states.
+type TokenInfo = {
+  /** The registry symbol, verbatim — `twBTC`, `utwUSDC`, … */
+  name: string;
+  family: "shielded" | "unshielded";
+  /** 64-hex, lower-case: the registry's `tokenId` for the ACTIVE deployment. */
+  color: string;
+  /** Base units per coin, from the registry. NOT 6 for every token. */
+  decimals: number;
+  /** The issuer contract this token is minted by. */
+  issuer: string;
+  /** Human name, for the UI. */
+  label: string;
+};
+const tokens: { list: TokenInfo[]; registryRevision: string | null; error: string | null } = {
+  list: [], registryRevision: null, error: null,
 };
 const tokenByName = (name: string): TokenInfo => {
   const t = tokens.list.find((x) => x.name === name);
-  if (!t) throw new Error(`unknown token '${name}' — kernel not reachable at startup? (${tokens.error ?? "no error"})`);
+  if (!t) {
+    throw new Error(
+      `unknown token '${name}' — the faucet registry lists ${tokens.list.map((x) => x.name).join(", ") || "nothing"}` +
+      ` (${tokens.error ?? "no error"}). Bring the profile up: ./up.sh --with faucet --with aa`,
+    );
+  }
   return t;
 };
+// ── DEFAULTS ARE POSITIONAL NOW, NOT NAMED ──────────────────────────────────
+// Every `?? "wBTC"` in this file used to name a token this console itself
+// invented. The six now come from the registry, and hard-coding `"twBTC"` here
+// would only move the coupling: a later registry with different symbols would
+// break every default at once, at request time, with "unknown token".
+//
+// So a default is "the Nth token of this family, in registry order". Registry
+// order is stable (upstream's `TOKEN_DEFINITIONS` is a frozen array) and today
+// gives shielded[0]=twBTC, shielded[1]=twETH, unshielded[0]=utwUSDC — the same
+// three roles wBTC / wETH / wUSD played. The API still accepts an explicit
+// `token` by name, which is what the browser sends once `/api/info` has told it
+// what exists.
+const ofFamily = (family: "shielded" | "unshielded"): TokenInfo[] =>
+  tokens.list.filter((t) => t.family === family);
+/** The Nth token of a family, or a legible error naming what IS available. */
+const defaultToken = (family: "shielded" | "unshielded", index = 0): TokenInfo => {
+  const candidates = ofFamily(family);
+  const hit = candidates[index] ?? candidates[0];
+  if (!hit) {
+    throw new Error(
+      `no ${family} token in the faucet registry (have: ${tokens.list.map((t) => t.name).join(", ") || "nothing"};` +
+      ` ${tokens.error ?? "no error"}). Bring the profile up: ./up.sh --with faucet --with aa`,
+    );
+  }
+  return hit;
+};
+const defaultTokenName = (family: "shielded" | "unshielded", index = 0): string => defaultToken(family, index).name;
+
 async function resolveTokens() {
+  const url = `${FAUCET_URL}/metadata.${NETWORK_KEY}.json`;
   try {
-    const cfg: any = await (await fetch(`${KERNEL_URL}/v1/midnight/config`, { signal: AbortSignal.timeout(5000) })).json();
-    const addr = String(cfg.contractAddress).replace(/^0x/, "");
-    tokens.offerFilesAddress = addr;
-    tokens.list = TOKEN_DEFS.map((d) => {
-      const sep = domainSepFromName(d.faucetName);
-      return {
-        name: d.name, family: d.family, sep,
-        color: rawTokenType(sep, addr).toLowerCase(),
-      };
-    });
-    tokens.error = null;
-    log(`tokens resolved against offer-files ${addr.slice(0, 12)}…: ` +
-      tokens.list.map((t) => `${t.name}=${t.color.slice(0, 8)}…`).join(" "));
-    // Best-effort name registration (needs ENABLE_TOKEN_REGISTRY on the kernel).
-    for (const t of tokens.list) {
-      try {
-        await fetch(`${KERNEL_URL}/v1/known-tokens`, {
-          method: "POST", headers: { "content-type": "application/json" },
-          // `decimals` is STATED, not left to the column default: every token
-          // this stack mints is whole coins x 10^6, and a wrong scale is off by
-          // a million in every price and sponsorship verdict (kernel 00024).
-          body: JSON.stringify({ color: t.color, name: t.name, kind: t.family, decimals: 6 }),
-          signal: AbortSignal.timeout(3000),
-        });
-      } catch { /* registry off or kernel busy — names are cosmetic */ }
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
+    const doc: any = await res.json();
+    if (doc.status !== "ready") throw new Error(`registry is '${doc.status}', not ready`);
+    const list: TokenInfo[] = [];
+    for (const token of doc.tokens ?? []) {
+      const active = (token.deployments ?? []).find(
+        (d: any) => d.deploymentId === token.activeDeploymentId && d.status === "active");
+      // A token still deploying is not an error for the console — it simply is
+      // not offered yet. A registry with NO active token is (see below).
+      if (!active) continue;
+      const color = String(active.tokenId ?? "").toLowerCase().replace(/^0x/, "");
+      if (!/^[0-9a-f]{64}$/.test(color)) throw new Error(`${token.symbol}: tokenId is not a 64-hex colour`);
+      if (token.privacy !== "shielded" && token.privacy !== "unshielded") {
+        throw new Error(`${token.symbol}: unknown privacy '${token.privacy}'`);
+      }
+      if (!Number.isInteger(token.decimals)) throw new Error(`${token.symbol}: decimals is not an integer`);
+      list.push({
+        name: String(token.symbol),
+        label: String(token.name ?? token.symbol),
+        family: token.privacy,
+        color,
+        decimals: token.decimals,
+        issuer: String(active.contractAddress ?? "").replace(/^0x/, ""),
+      });
     }
+    if (list.length === 0) throw new Error("the registry carries no ACTIVE token");
+    tokens.list = list;
+    tokens.registryRevision = doc.registryRevision ?? doc.revision ?? null;
+    tokens.error = null;
+    log(`tokens resolved from ${url}: ` +
+      list.map((t) => `${t.name}=${t.color.slice(0, 8)}…/${t.decimals}d`).join(" "));
   } catch (e) {
     tokens.error = e instanceof Error ? e.message : String(e);
-    log(`token resolution FAILED (kernel down?): ${tokens.error} — token ops will error until it succeeds`);
+    log(`token resolution FAILED (faucet profile down?): ${tokens.error} — token ops will error until it succeeds`);
   }
 }
 // The TAKER wallet (T9.4/Q14): settles book offers as "a different wallet" —
@@ -328,54 +371,73 @@ async function join(walletResult: any, name: string, address: string, witnesses:
   return { Mod, handle, providers, compiled };
 }
 
-// ── the offer-files contract: the unified token mint ────────────────────────
-// Its source is fetched at exact KERNEL_REF and compiled during this AA image's
-// build into /aa/contract-offer-files (empty witnesses; [v6] keys → PLAIN proof server).
-async function joinOfferFiles(walletResult: any) {
-  if (!tokens.offerFilesAddress) await resolveTokens();
-  if (!tokens.offerFilesAddress) throw new Error(`offer-files contract unknown: ${tokens.error}`);
-  return await join(walletResult, "contract-offer-files", tokens.offerFilesAddress, {},
-    "offerFilesPrivateState", WALLET_PROOF);
+// ── the local issuers: the token mint ───────────────────────────────────────
+// ONE CONTRACT PER TOKEN, not one faucet for all of them. Each mint-test-tokens
+// issuer holds its own `_domain` and its colour is `tokenType(_domain,
+// kernel.self())` — so the contract to join is the token's own
+// `deployments[].contractAddress`, taken from the registry.
+//
+// The generated modules are COPIED into this image from the pinned
+// mint-test-tokens tree (`contracts/v2/managed/{shielded,unshielded}`), never
+// recompiled: those exact bytes are the ones whose verifier keys the `faucet`
+// profile registered on chain. They are zkir-v2 / [v6], so they prove on the
+// PLAIN proof server — WALLET_PROOF — exactly as the offer-files artifact they
+// replace did, while the AA Manager and Minter keep the experimental [v7] one.
+//
+// Witnesses are `{}`: both issuer contracts are witness-free (upstream builds
+// them with `CompiledContract.withVacantWitnesses`).
+const MTT_MODULE = {
+  shielded: "contract-mtt-shielded",
+  unshielded: "contract-mtt-unshielded",
+} as const;
+
+async function joinIssuer(walletResult: any, token: TokenInfo) {
+  if (tokens.list.length === 0) await resolveTokens();
+  if (!token.issuer) throw new Error(`${token.name}: the registry carries no issuer address (${tokens.error ?? "?"})`);
+  return await join(walletResult, MTT_MODULE[token.family], token.issuer, {},
+    `mttPrivateState-${token.family}`, WALLET_PROOF);
 }
 
-/** Mint `amount` of a SHIELDED token to the CALLING wallet.
+/** Mint `amount` base units of a SHIELDED token to the CALLING wallet.
  *
- * THE RECIPIENT IS EXPLICIT since kernel PR #67 (KERNEL_REF 80bace3): the
- * circuit took `ownPublicKey()` before and now takes
- * `Either<ZswapCoinPublicKey, ContractAddress>`. This console always passes the
- * LEFT arm holding the CALLING wallet's own coin public key, which reproduces
- * the old behaviour exactly — every caller here (`faucetJob`,
- * `fundShieldedJob`) then deposits or spends the coins from that same wallet.
- * The RIGHT arm (a contract) is never used: a contract recipient must claim the
- * coin by running its receive circuit in the SAME transaction, which nothing in
- * this console does, and ledger-v9 rejects the transaction otherwise. */
+ * `mint(recipient: Either<ZswapCoinPublicKey, ContractAddress>, amount: Uint<64>,
+ * nonce: Bytes<32>)` — the same `Either` shape the offer-files circuit took, so
+ * `shieldedUserRecipient` is unchanged. The LEFT arm always holds the CALLING
+ * wallet's own coin public key: every caller here (`faucetJob`,
+ * `fundShieldedJob`, `sendJob`) then deposits or spends those coins from that
+ * same wallet, so no third-party encryption-key mapping is needed. The RIGHT arm
+ * (a contract) is never used — a contract recipient must claim the coin by
+ * running its receive circuit in the SAME transaction, which nothing here does,
+ * and ledger-v9 rejects the transaction otherwise.
+ *
+ * NONCE: `Bytes<32>`, and it must not repeat for one issuer — the coin's
+ * identity is derived from it. Random, not a counter: two console instances on
+ * one issuer would collide on a counter. */
 async function mintShieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint) {
-  const of = await joinOfferFiles(walletResult);
-  const nonce = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000));
+  const issuer = await joinIssuer(walletResult, token);
+  const nonce = crypto.getRandomValues(new Uint8Array(32));
   const coinPublicKey = String(walletResult.zswapSecretKeys.coinPublicKey);
-  jlog(j, `mint_shielded ${amount} ${token.name} → this wallet (${coinPublicKey.replace(/^0x/, "").slice(0, 12)}…)`);
-  const tx = await (of.handle.callTx as any).mint_shielded(
-    token.sep,
+  jlog(j, `mint ${amount} ${token.name} (${token.decimals}d) → this wallet (${coinPublicKey.replace(/^0x/, "").slice(0, 12)}…) via issuer ${token.issuer.slice(0, 12)}…`);
+  const tx = await (issuer.handle.callTx as any).mint(
+    shieldedUserRecipient(coinPublicKey),
     amount,
     nonce,
-    shieldedUserRecipient(coinPublicKey),
   );
   jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
   return tx;
 }
 
-/** Mint `amount` of the UNSHIELDED token to an arbitrary 32-byte user address.
+/** Mint `amount` base units of an UNSHIELDED token to a 32-byte user address.
  *
- * Also explicit since PR #67 — `Either<ContractAddress, UserAddress>`, RIGHT
- * arm. The bytes are the same 32 the old `UserAddress` parameter took; only the
- * wrapper is new. */
+ * `mint(recipient: Either<ContractAddress, UserAddress>, amount: Uint<64>)` —
+ * RIGHT arm, and no nonce: an unshielded balance is an account entry, not a coin.
+ * Same `Either` shape as before, so `unshieldedUserRecipient` is unchanged. */
 async function mintUnshieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint, userAddr32: Uint8Array) {
-  const of = await joinOfferFiles(walletResult);
-  jlog(j, `mint_unshielded ${amount} ${token.name} → ${toHex(userAddr32).slice(0, 12)}…`);
-  const tx = await (of.handle.callTx as any).mint_unshielded(
-    token.sep,
-    amount,
+  const issuer = await joinIssuer(walletResult, token);
+  jlog(j, `mint ${amount} ${token.name} (${token.decimals}d) → ${toHex(userAddr32).slice(0, 12)}… via issuer ${token.issuer.slice(0, 12)}…`);
+  const tx = await (issuer.handle.callTx as any).mint(
     unshieldedUserRecipient(toHex(userAddr32)),
+    amount,
   );
   jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
   return tx;
@@ -456,9 +518,9 @@ async function runPureFn(fn: string, args: string[]): Promise<unknown> {
     case "deriveAccountId":
       return { accountId: deriveAccountId(manager32, ("0x" + toHex(b20(args[0]))) as Hex20, ("0x" + toHex(b32(args[1]))) as Hex32) };
     case "shieldedKey":
-      return { key: "0x" + toHex(pc.shieldedKey(b32(args[0]), b32(args[1], tokenByName("wBTC").color))) };
+      return { key: "0x" + toHex(pc.shieldedKey(b32(args[0]), b32(args[1], defaultToken("shielded").color))) };
     case "unshieldedKey":
-      return { key: "0x" + toHex(pc.unshieldedKey(b32(args[0]), b32(args[1], tokenByName("wUSD").color))) };
+      return { key: "0x" + toHex(pc.unshieldedKey(b32(args[0]), b32(args[1], defaultToken("unshielded").color))) };
   }
   const { ledger } = await readLedger();
   switch (fn) {
@@ -475,17 +537,17 @@ async function runPureFn(fn: string, args: string[]): Promise<unknown> {
       return { nonce: String(ledger.evmNonces.member(id) ? ledger.evmNonces.lookup(id) : 0n) };
     }
     case "unshieldedBalance": {
-      const key = managerMod.pureCircuits.unshieldedKey(b32(args[0]), b32(args[1], tokenByName("wUSD").color));
+      const key = managerMod.pureCircuits.unshieldedKey(b32(args[0]), b32(args[1], defaultToken("unshielded").color));
       return { balance: String(ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n) };
     }
     case "shieldedBalance": {
-      const key = managerMod.pureCircuits.shieldedKey(b32(args[0]), b32(args[1], tokenByName("wBTC").color));
+      const key = managerMod.pureCircuits.shieldedKey(b32(args[0]), b32(args[1], defaultToken("shielded").color));
       return { balance: String(ledger.shieldedBalances.member(key) ? ledger.shieldedBalances.lookup(key) : 0n) };
     }
     case "poolHasColour":
-      return { pooled: ledger.pools.member(b32(args[0], tokenByName("wBTC").color)) };
+      return { pooled: ledger.pools.member(b32(args[0], defaultToken("shielded").color)) };
     case "poolValue": {
-      const col = b32(args[0], tokenByName("wBTC").color);
+      const col = b32(args[0], defaultToken("shielded").color);
       if (!ledger.pools.member(col)) return { pooled: false };
       const coin = ledger.pools.lookup(col);
       return { pooled: true, value: String(coin.value), nonce: "0x" + toHex(coin.nonce), mtIndex: String(coin.mt_index) };
@@ -677,8 +739,8 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
   if (kind === "transfer") {
     const toAccountId = String(body.toAccountId ?? "") as Hex32;
     if (!/^0x[0-9a-f]{64}$/i.test(toAccountId)) throw new Error("toAccountId must be 0x…32 bytes");
-    const token = tokenByName(String(body.token ?? "wUSD"));
-    if (token.family !== "unshielded") throw new Error("transfer (selector 5) moves the UNSHIELDED balance — pick wUSD");
+    const token = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
+    if (token.family !== "unshielded") throw new Error(`transfer (selector 5) moves the UNSHIELDED balance — pick one of ${ofFamily("unshielded").map((t) => t.name).join(", ")}`);
     const action = {
       primaryType: "TransferInternalUnshielded", manager: manager32, accountId, owner,
       validUntil: deadline(), nonce, toAccountId,
@@ -690,7 +752,7 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     // Selector 4 — first wired here; moves the SHIELDED in-Manager credit.
     const toAccountId = String(body.toAccountId ?? "") as Hex32;
     if (!/^0x[0-9a-f]{64}$/i.test(toAccountId)) throw new Error("toAccountId must be 0x…32 bytes");
-    const token = tokenByName(String(body.token ?? "wBTC"));
+    const token = tokenByName(String(body.token ?? defaultTokenName("shielded")));
     if (token.family !== "shielded") throw new Error("transfer-shielded (selector 4) moves a SHIELDED credit — pick a shielded token");
     const action = {
       primaryType: "TransferInternalShielded", manager: manager32, accountId, owner,
@@ -704,7 +766,7 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     // COIN PUBLIC KEY (PR #10 refuses contract recipients). The matching
     // ENCRYPTION key is resolved at build time (see withdrawShieldedJob) —
     // the action itself only carries the coin key.
-    const token = tokenByName(String(body.token ?? "wBTC"));
+    const token = tokenByName(String(body.token ?? defaultTokenName("shielded")));
     if (token.family !== "shielded") throw new Error("withdraw-shielded (selector 2) pays a SHIELDED balance — pick a shielded token");
     const action = {
       primaryType: "WithdrawShielded", manager: manager32, accountId, owner,
@@ -752,8 +814,8 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     // Friendly pre-check: the give leg spends the account's SHIELDED balance,
     // and "balance 600000, give 1000 → account colour balance too low" has
     // already confused one demo user whose 600000 was all unshielded.
-    const giveToken = tokenByName(String(body.giveToken ?? "wBTC"));
-    const wantToken = tokenByName(String(body.wantToken ?? "wETH"));
+    const giveToken = tokenByName(String(body.giveToken ?? defaultTokenName("shielded", 0)));
+    const wantToken = tokenByName(String(body.wantToken ?? defaultTokenName("shielded", 1)));
     if (giveToken.family !== "shielded" || wantToken.family !== "shielded")
       throw new Error("open swaps are SHIELDED-only by contract design — pick shielded tokens for both legs");
     if (giveToken.name === wantToken.name)
@@ -801,8 +863,8 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
       const parsed = MidnightBech32m.parse(r);
       recipient32 = toHex(Uint8Array.prototype.slice.call(parsed.data, 0, 32));
     }
-    const wdToken = tokenByName(String(body.token ?? "wUSD"));
-    if (wdToken.family !== "unshielded") throw new Error("withdraw (selector 3) pays the UNSHIELDED balance — pick wUSD");
+    const wdToken = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
+    if (wdToken.family !== "unshielded") throw new Error(`withdraw (selector 3) pays the UNSHIELDED balance — pick one of ${ofFamily("unshielded").map((t) => t.name).join(", ")}`);
     const action = {
       primaryType: "WithdrawUnshielded", manager: manager32, accountId, owner,
       validUntil: deadline(), nonce,
@@ -979,8 +1041,11 @@ function offerJob(prep: Prepared, signature: string): Job {
 /** Shielded funding runs on the FUNDER (genesis-3) wallet so the relay stays
  * shielded-free: mint the demo token's shielded colour, then deposit it into
  * the account's shielded Manager balance (what an open swap's give leg spends). */
-function fundShieldedJob(accountId: Hex32, amount: bigint, tokenName = "wBTC"): Job {
+function fundShieldedJob(accountId: Hex32, amount: bigint, tokenNameArg?: string): Job {
   return enqueue("fund-shielded", async (j) => {
+    // Resolved INSIDE the job, not at enqueue time: on a cold stack the registry
+    // may not have been read yet when the request arrives.
+    const tokenName = tokenNameArg ?? defaultTokenName("shielded");
     const token = tokenByName(tokenName);
     if (token.family !== "shielded") throw new Error(`'${tokenName}' is not a shielded token`);
     // mint_shielded now names its recipient; mintShieldedTo passes the calling
@@ -1008,8 +1073,9 @@ function fundShieldedJob(accountId: Hex32, amount: bigint, tokenName = "wBTC"): 
  * Shielded mints go to the target wallet itself (its own coin public key is
  * passed as the circuit's recipient); unshielded mints go to the target's
  * 32-byte user address. */
-function faucetJob(tokenName: string, amount: bigint, target: "relay" | "taker" | "funder"): Job {
+function faucetJob(tokenNameArg: string | undefined, amount: bigint, target: "relay" | "taker" | "funder"): Job {
   return enqueue("faucet", async (j) => {
+    const tokenName = tokenNameArg ?? defaultTokenName("shielded", 1);
     const token = tokenByName(tokenName);
     const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
     await withProveRetry(j, "faucet", () => session(`faucet-${target}`, async (walletResult) => {
@@ -1032,8 +1098,9 @@ function faucetJob(tokenName: string, amount: bigint, target: "relay" | "taker" 
  * pasted address. Shielded tokens need a mn_shield-addr… (it carries BOTH the
  * coin and encryption public keys — this is the general form of what the
  * withdraw-shielded dropdown special-cases); unshielded tokens a mn_addr…. */
-function sendJob(tokenName: string, amount: bigint, to: string): Job {
+function sendJob(tokenNameArg: string | undefined, amount: bigint, to: string): Job {
   return enqueue("send", async (j) => {
+    const tokenName = tokenNameArg ?? defaultTokenName("shielded");
     const token = tokenByName(tokenName);
     const netId = midnightNetworkConfig.id as any;
     let receiver: any;
@@ -1083,8 +1150,9 @@ function sendJob(tokenName: string, amount: bigint, to: string): Job {
   });
 }
 
-function fundJob(accountId: Hex32, amount: bigint, tokenName = "wUSD"): Job {
+function fundJob(accountId: Hex32, amount: bigint, tokenNameArg?: string): Job {
   return enqueue("fund", async (j) => {
+    const tokenName = tokenNameArg ?? defaultTokenName("unshielded");
     const token = tokenByName(tokenName);
     if (token.family !== "unshielded") throw new Error(`fund deposits the UNSHIELDED balance — '${tokenName}' is shielded (use Fund shielded)`);
     await withProveRetry(j, "fund-mint", () => session("fund-mint", async (walletResult) => {
@@ -1272,7 +1340,7 @@ async function infraStatus() {
       };
     }),
     probe(async () => {
-      const reg = (await fetchJson(`${FAUCET_URL}/metadata.undeployed.json`)) as any;
+      const reg = (await fetchJson(`${FAUCET_URL}/metadata.${NETWORK_KEY}.json`)) as any;
       const active = (reg?.tokens ?? []).filter((t: any) =>
         (t?.deployments ?? []).some((d: any) => d?.deploymentId === t?.activeDeploymentId && d?.status === "active"));
       if (reg?.status !== "ready" || active.length !== 6) {
@@ -1379,11 +1447,18 @@ Bun.serve({
           minterTag: artifact.minter.tag ?? null,
           relay,
           taker,
-          tokens: tokens.list.map((t) => ({ name: t.name, family: t.family, color: t.color })),
+          // DECIMALS ARE PART OF THE ANSWER NOW. The page formats amounts and
+          // the six are 8/18/6/6/6/8 — it used to be told nothing and assumed 6.
+          tokens: tokens.list.map((t) => ({
+            name: t.name, label: t.label, family: t.family, color: t.color,
+            decimals: t.decimals, issuer: t.issuer,
+          })),
           tokensError: tokens.error,
+          tokensSource: "mint-test-tokens",
+          tokensRegistryRevision: tokens.registryRevision,
           kernelUrl: KERNEL_URL,
           solverFrontendUrl: SOLVER_FRONTEND_PUBLIC_URL,
-          faucetUrl: `${FAUCET_PUBLIC_URL.replace(/\/+$/, "")}/?network=undeployed`,
+          faucetUrl: `${FAUCET_PUBLIC_URL.replace(/\/+$/, "")}/?network=${NETWORK_KEY}`,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
           // Withdraw's node-rejection (Custom error 214, recipient Either arm
           // inversion) was FIXED upstream in AA PR #10 (713a2021…) and this
@@ -1458,7 +1533,7 @@ Bun.serve({
         if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
-        const job = fundShieldedJob(accountId, amount, String(body.token ?? "wBTC"));
+        const job = fundShieldedJob(accountId, amount, body.token === undefined ? undefined : String(body.token));
         return json({ jobId: job.id });
       }
       if (path === "/api/offers") {
@@ -1477,7 +1552,7 @@ Bun.serve({
         if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
-        const job = fundJob(accountId, amount, String(body.token ?? "wUSD"));
+        const job = fundJob(accountId, amount, body.token === undefined ? undefined : String(body.token));
         return json({ jobId: job.id });
       }
       if (path === "/api/deposit" && req.method === "POST") {
@@ -1490,7 +1565,7 @@ Bun.serve({
         if (amount <= 0n) return bad("amount must be a positive integer");
         const from = String(body.from ?? "taker");
         if (!["taker", "relay", "funder"].includes(from)) return bad("from must be taker|relay|funder");
-        const token = tokenByName(String(body.token ?? "wUSD"));
+        const token = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
         const seed = from === "taker" ? TAKER_SEED : from === "funder" ? FUNDER_SEED : RELAY_SEED;
         const job = enqueue(`deposit-from-${from}`, async (j) => {
           await withProveRetry(j, "deposit", () => session(`deposit-${from}`, async (walletResult) => {
@@ -1515,7 +1590,7 @@ Bun.serve({
         if (amount <= 0n) return bad("amount must be a positive integer");
         const target = String(body.target ?? "taker");
         if (!["relay", "taker", "funder"].includes(target)) return bad("target must be relay|taker|funder");
-        const job = faucetJob(String(body.token ?? "wETH"), amount, target as any);
+        const job = faucetJob(body.token === undefined ? undefined : String(body.token), amount, target as any);
         return json({ jobId: job.id });
       }
       if (path === "/api/send" && req.method === "POST") {
@@ -1524,7 +1599,7 @@ Bun.serve({
         if (amount <= 0n) return bad("amount must be a positive integer");
         const to = String(body.to ?? "").trim();
         if (!to) return bad("to must be a bech32m Midnight address (mn_addr… or mn_shield-addr…)");
-        const job = sendJob(String(body.token ?? "wBTC"), amount, to);
+        const job = sendJob(body.token === undefined ? undefined : String(body.token), amount, to);
         return json({ jobId: job.id });
       }
       if (path === "/api/dev-sign" && req.method === "POST") {
@@ -1559,6 +1634,47 @@ Bun.serve({
 setNetworkId(midnightNetworkConfig.id as any);
 log(`serving on :${PORT} — manager=${MANAGER.slice(0, 16)}… minter=${MINTER.slice(0, 16)}…`);
 if (DEV_SIGNER) log(`dev signer ENABLED — address ${DEV_ADDR} (testing only)`);
-await resolveTokens();
+// ── the token set, retried in the BACKGROUND ────────────────────────────────
+//
+// The registry is served by `faucet-site`, and this container does not (and must
+// not) wait for it: `compose/aa.yml` declares no dependency on the `faucet`
+// fragment, because `./up.sh --with aa` alone has to keep working and a profile
+// here IS a fragment filename — naming a service from another fragment would
+// break every stack that leaves it out. So on a cold `--all` bring-up this
+// process starts while the six issuers are still being deployed, and the first
+// read fails. It must not fail PERMANENTLY: every token action calls
+// `resolveTokens()` again on an empty list, but `/api/info` is read by the page
+// and by `verify-aa.sh` without touching a token action, and a console that
+// reported `tokens: []` for the rest of its life because of a 20-second race
+// would look exactly like a broken build.
+//
+// Bounded and jittered, and it STOPS on success — this is a race, not a poll.
+// The budget is generous because the thing it waits for is six real contract
+// deployments on a cold devnet.
+const resolveTokensWithRetry = async (): Promise<void> => {
+  const tries = Number(process.env["AA_TOKENS_RESOLVE_TRIES"] ?? 60);
+  const everyMs = Number(process.env["AA_TOKENS_RESOLVE_INTERVAL_MS"] ?? 10_000);
+  for (let attempt = 1; attempt <= tries; attempt += 1) {
+    await resolveTokens();
+    if (tokens.list.length > 0) {
+      if (attempt > 1) log(`tokens resolved on attempt ${attempt}/${tries}`);
+      return;
+    }
+    if (attempt === 1) {
+      log(`the faucet registry is not readable yet — retrying every ${everyMs}ms for up to ${tries} attempts`);
+      log(`  (this is expected on a cold --all bring-up: the six issuers are still deploying)`);
+    }
+    if (attempt === tries) {
+      log(`GIVING UP after ${tries} attempts: ${tokens.error ?? "no error"}`);
+      log(`  every token action will report it. Is the faucet profile up? ./up.sh --with faucet`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, everyMs + Math.floor(Math.random() * 1000)));
+  }
+};
+// NOT awaited: the server is already listening, and every other panel of the
+// console works without a token. Blocking here would make a slow faucet look
+// like a console that never starts.
+void resolveTokensWithRetry();
 await checkRelayWallet();
 await checkTakerWallet();

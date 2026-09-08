@@ -90,13 +90,13 @@ const INFRA_NODES = [
   { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static, backend = kernel", x: 265, y: 122, w: 210, h: 56 },
   { id: "solverSink",    label: "solver-sink (relay stand-in)", sub: "internal · relay-WS receive half", x: 500, y: 122, w: 205, h: 56 },
   { id: "solverMonitor", label: "solver-frontend (monitor)", sub: ":10802 · read-only, no wallet", x: 730, y: 122, w: 205, h: 56 },
-  { id: "faucet",        label: "faucet-site",                  sub: ":10950 · six test tokens", x: 950, y: 122, w: 160, h: 56 },
+  { id: "faucet",        label: "faucet-site",                  sub: ":10950 · six issuers · the token source", x: 950, y: 122, w: 160, h: 56 },
   // Infrastructure
   { id: "indexer",       label: "indexer",                   sub: ":8088 · GraphQL v4", x: 30,  y: 240, w: 150, h: 52 },
   { id: "evmRpc",        label: "umbra (eth JSON-RPC)",      sub: ":8545 · read-only",  x: 195, y: 240, w: 175, h: 52 },
-  { id: "kernel",        label: "offer-files kernel",        sub: ":9999 · contract deployed once", x: 385, y: 240, w: 190, h: 52 },
+  { id: "kernel",        label: "offer-files kernel",        sub: ":9999 · contract-free · external tokens", x: 385, y: 240, w: 190, h: 52 },
   { id: "batcher",       label: "batcher",                   sub: ":3334 · own container", x: 590, y: 240, w: 140, h: 52 },
-  { id: "offerPoster",   label: "offer-poster",              sub: ":9977 · mints + posts, profile `poster`", x: 745, y: 240, w: 175, h: 52 },
+  { id: "offerPoster",   label: "offer-poster",              sub: ":9977 · posts PREFUNDED coins, profile `poster`", x: 745, y: 240, w: 175, h: 52 },
   { id: "solver",        label: "cow (solver)",              sub: "observation · status :9100", x: 935, y: 240, w: 155, h: 52 },
   { id: "proofServer",   label: "proof-server 9.0.0-rc.5",   sub: "plain · zkir-v2 / [v6] + wallet lane", x: 240, y: 356, w: 250, h: 52 },
   { id: "aaProofServer", label: "proof-server 9.0.0-rc.5 experimental", sub: "zkir-v3 / [v7] — the AA circuits", x: 530, y: 356, w: 290, h: 52 },
@@ -136,10 +136,15 @@ const INFRA_EDGES = [
   ["priceFeed", "postgres"], ["priceFeed", "kernel"],
   // The faucet's SITE talks to nothing: it serves a static page and a registry file. The work
   // is done by one-shots that are gone by the time this canvas is drawn — a deploy against the
-  // node/indexer/prover, and a bridge that names the six colours in the kernel. The dashed
-  // browser edge and this one to the kernel are what a reader needs; drawing three exited
-  // containers would be drawing history.
-  ["faucet", "kernel"],
+  // node/indexer/prover, a bridge that names the six colours in the kernel, a renderer that
+  // writes their ids onto the shared volume, and a mint that prefunds the poster. Drawing five
+  // exited containers would be drawing history; these three edges are what a reader needs.
+  //
+  // They are also, since the contract removal, the edges that make the rest of the stack work
+  // at all: the kernel knows no token this chain can hold until the bridge runs, the poster
+  // cannot resolve a token id until the renderer has, and it has nothing to offer until the
+  // mint has.
+  ["faucet", "kernel"], ["faucet", "offerPoster"], ["faucet", "console"],
 ];
 // Short names for the table (long text hover-only — it was forcing a scroll).
 const INFRA_LABELS = {
@@ -289,7 +294,7 @@ const REPOS = [
     ref: "main @ 41de69de (sha-pinned)",
     notes: [
       ["PR #12", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12", "manager.compact split into a preset plus nine modules — BREAKING: the ledger slot order changed, so this pin needed a redeploy"],
-      ["", "", "compiled in-image with the kernel's compactc 0.34.0 / compact-runtime 0.19.0 — the SAME toolchain this AA pin uses, so the AA contracts and the kernel's offer-files contract share one compiler and one runtime"],
+      ["", "", "compiled in-image with compactc 0.34.0 / compact-runtime 0.19.0 — the pin still travels with the kernel tree, and the RUNTIME expectation now comes from mint-test-tokens contracts/v2, whose committed artifacts this image also ships and the console imports"],
     ],
   },
   {
@@ -303,37 +308,40 @@ const REPOS = [
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel", url: "https://github.com/effectstream/zswap-offerfiles-kernel",
-    role: "offer-files kernel + batcher + the token price service (profile offerfiles) — ONE commit for the whole kernel line",
-    ref: "80bace37bc2412542452e1c597761b2ebce5c677 (branch ledger-v9)",
+    role: "offer-files kernel + batcher + the token price service (profile offerfiles) — ONE commit for the whole kernel line, and NO CONTRACT: the kernel line is contract-free at this pin",
+    ref: "5d794f9a27f6d65529bf176650405f740531d430 (branch ledger-v9)",
     notes: [
       ["PR #65", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/65", "the unified ledger-v9 line — DRAFT when pinned; the SHA is the identity, not the branch or the PR"],
-      ["PR #67", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/67", "Compact 0.34.0 / compact-runtime 0.19.0, and typed mint recipients — BREAKING: mint_shielded/mint_unshielded take an explicit Either recipient, so the contract's keys and address are new and this pin needed ./down.sh -v"],
+      ["PR #69 / #70", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/70", "THE OFFER-FILES CONTRACT IS GONE — no deploy, no mint circuits, no packages/contracts-midnight, no compactc in the kernel image, and /v1/midnight/config no longer answers a contractAddress. BREAKING: tokens are external now, so ./down.sh -v and bring the faucet profile up"],
+      ["PR #71", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/71", "main merged into ledger-v9 — this pin. Poster, solver-provision, maker and E2E all take EXPLICIT 64-hex token ids"],
       ["PR #68", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/68", "price-feed treats blank env as unset, and the mint registers token names through the live API"],
       ["", "", "brings /v1/prices + /v1/quote and the batcher sponsorship gate (#54–#56) — BREAKING: it moves 000-init.sql, so an older postgres volume needs ./down.sh -v"],
-      ["", "", "and 6 decimals on every token (#61, #63): the book's amounts are whole coins × 10⁶"],
+      ["", "", "DECIMALS ARE PER TOKEN, not 6 everywhere: a fresh database seeds TWBTC 8, TWETH 18, TWUSDC/TWUSDM/UTWUSDC 6, UTWBTC 8 — with their asset ids — and registry-bridge re-points those rows at THIS chain's colours, which is what prices them"],
     ],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel (solver)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
     role: "COW solver, observation mode, + its status listener :9100 and the solver-frontend monitor site (profile solver)",
-    ref: "pinned 80bace3… — the SAME commit as the kernel (SOLVER_REF is a separate knob)",
+    ref: "pinned 5d794f9… — the SAME commit as the kernel (SOLVER_REF is a separate knob)",
     notes: [
       ["PR #58 / #59", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/59", "the read-only status listener and the monitor page it feeds"],
       ["", "", "runs start.solver.ts behind this repo's undeployed-only gate: solver.dev.ts never passes the status option, so the listener could not come up on it"],
+      ["", "", "its published ladders derive from the KERNEL BOOK, not from packages/solver/config/ladders.dev.json — that file names Preprod colours and is inert here. The solver needs NIGHT/DUST only; it holds no swap-token inventory by design"],
     ],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel (offer poster)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
-    role: "the offer poster (profile poster) — mints one exact coin and posts one takeable offer per interval, from its own dedicated wallet",
-    ref: "pinned 80bace3… — deploy/scripts/offer-poster.ts from the same commit",
+    role: "the offer poster (profile poster) — adopts one PREFUNDED coin and posts one takeable offer per interval, from its own dedicated wallet",
+    ref: "pinned 5d794f9… — deploy/scripts/offer-poster.ts from the same commit",
     notes: [
-      ["PR #57 / #60 / #66", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/66", "the poster, its journal, and the randomised give size (GIVE_MIN/GIVE_MAX)"],
+      ["PR #57 / #60 / #66", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/66", "the poster, its journal, and the give-size range"],
+      ["", "", "IT NO LONGER MINTS (#69/#70): it selects an existing coin of exactly OFFER_POSTER_GIVE_AMOUNT and never creates one, so its inventory comes from the faucet profile's faucet-mint one-shot. Both token ids are required and explicit"],
     ],
   },
   {
     repo: "effectstream/zswap-offerfiles-kernel (price feed)", url: "https://github.com/effectstream/zswap-offerfiles-kernel/tree/ledger-v9",
     role: "the CoinGecko reference-price feed (profile prices, OPT-IN) — refreshes asset_prices, which /v1/prices, /v1/quote and the batcher's sponsorship gate all read",
-    ref: "pinned 80bace3… — packages/price-feed from the same commit",
+    ref: "pinned 5d794f9… — packages/price-feed from the same commit",
     notes: [
       ["PR #54 / #55 / #56", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/56", "the token price service and the feed that keeps it fresh"],
       ["", "", "OPT-IN: 000-init.sql seeds real prices, so every quote works without it — the profile buys FRESH prices, not working ones"],
@@ -348,6 +356,8 @@ const REPOS = [
       ["PR #4", "https://github.com/effectstream/mint-test-tokens/pull/4", "the v2 (Midnight 2.x) issuer set and the verified Preprod registry"],
       ["", "", "NO COMPILER IN THE IMAGE: contracts/v2/managed/ is tracked upstream, and the deploy runner refuses to touch the chain unless those bytes equal the bytes at this commit — so a recompile would make the tool this image runs refuse to deploy"],
       ["", "", "these tokens are NOT 6 decimals: BTC is 8 and ETH is 18, the canonical scales. On `undeployed` the kernel skips its canonical registry import by design, so registry-bridge names the six colours in known_tokens itself"],
+      ["", "", "THIS CONSOLE MINTS THROUGH THESE ISSUERS: the six committed managed artifacts are copied into the AA image and its faucet/fund buttons call their `mint` circuit directly, then deposit into the Manager as before. The registry is also where the console reads symbols, colours, decimals and issuer addresses"],
+      ["", "", "registry-env renders the six token ids onto the shared volume, and faucet-mint prefunds the offer poster with spendable coins — the two one-shots that replace what the deleted contract used to do"],
     ],
   },
   {

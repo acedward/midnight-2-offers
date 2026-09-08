@@ -11,10 +11,13 @@
 // WHAT THAT TEST CANNOT SEE is an upstream change: it hashes the local files
 // against the local manifest, so both moving together would still pass. The
 // manifest is therefore checked BY HAND against the kernel pin whenever the pin
-// moves. Last compared 2026-09-03 at
-// `80bace37bc2412542452e1c597761b2ebce5c677` (branch `ledger-v9`, PR #65):
-// all seven hashes IDENTICAL to the copy here, so the wire contract did not move
-// across the whole PR #50 → PR #65 range.
+// moves. Last compared 2026-09-08 at
+// `5d794f9a27f6d65529bf176650405f740531d430` (branch `ledger-v9`, the head after
+// `main` was merged in by PR #71): `packages/solver-core/fixtures/relay-ws/v1/
+// MANIFEST.sha256` is BYTE-IDENTICAL to the copy here, so the relay wire
+// contract did not move across PR #50 → PR #65 → the contract removal
+// (#69/#70) → this merge. That is the expected result — the contract that went
+// away was an APPLICATION contract, and the relay wire is about offers.
 
 import { expect, test, describe } from "bun:test";
 import { createHash } from "node:crypto";

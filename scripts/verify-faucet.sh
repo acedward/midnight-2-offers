@@ -303,7 +303,7 @@ fi
 # ── the deploy one-shot completed, and the site is not serving a corpse ──────
 echo
 log "faucet: the one-shots"
-for svc in faucet-fund faucet-deploy faucet-verify; do
+for svc in faucet-fund faucet-deploy faucet-verify registry-env faucet-mint; do
   CID="$(docker ps -aq \
     --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
     --filter "label=com.docker.compose.service=${svc}" 2>/dev/null | head -1)"
@@ -318,6 +318,54 @@ for svc in faucet-fund faucet-deploy faucet-verify; do
     fail "${svc} exited ${RC}"
   fi
 done
+
+# ── the rendered env file, and the coins it points at ────────────────────────
+#
+# `registry-env` and `faucet-mint` are what the rest of the stack CONSUMES from this
+# profile since the contract removal: without the first, the offer poster cannot resolve a
+# token id and exits 78; without the second, it has nothing to offer and sits at
+# `degraded: insufficient_inventory` forever. Both failures surface far from here — in
+# `verify.sh --poster`, minutes later — so they are asserted at the source.
+#
+# The file is read out of the VOLUME through a throwaway container, not off the host: it is
+# a named volume, and reading it any other way would be reading something else.
+echo
+log "faucet: the rendered token env"
+STACK_ENV="$(dc run --rm --no-deps --entrypoint sh registry-env \
+  -c 'cat /registry/stack-tokens.env 2>/dev/null' 2>/dev/null || true)"
+if [[ -z "$STACK_ENV" ]]; then
+  fail "/registry/stack-tokens.env is missing or empty — registry-env did not publish"
+else
+  MISSING_ENV=""
+  for sym in ${EXPECTED_SYMBOLS}; do
+    key="$(printf '%s' "$sym" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')_TOKEN_ID"
+    if ! printf '%s' "$STACK_ENV" | grep -qE "^${key}=[0-9a-f]{64}$"; then
+      MISSING_ENV="${MISSING_ENV} ${key}"
+    fi
+  done
+  if [[ -z "$MISSING_ENV" ]]; then
+    ok "stack-tokens.env carries a 64-hex id for all six symbols"
+  else
+    fail "stack-tokens.env is missing:${MISSING_ENV}"
+  fi
+  # The two names the poster's entrypoint and upstream's own .env.example use.
+  for key in OFFER_POSTER_GIVE_TOKEN OFFER_POSTER_WANT_TOKEN; do
+    if printf '%s' "$STACK_ENV" | grep -qE "^${key}=[0-9a-f]{64}$"; then
+      ok "stack-tokens.env carries ${key}"
+    else
+      fail "stack-tokens.env carries no ${key}"
+    fi
+  done
+  # THE TWO LEGS MUST DIFFER. `poster-config.ts` exits 78 naming WANT_TOKEN when they
+  # are equal, which would only be discovered when the poster restart-loops.
+  G="$(printf '%s' "$STACK_ENV" | sed -nE 's/^OFFER_POSTER_GIVE_TOKEN=([0-9a-f]{64})$/\1/p' | head -1)"
+  W="$(printf '%s' "$STACK_ENV" | sed -nE 's/^OFFER_POSTER_WANT_TOKEN=([0-9a-f]{64})$/\1/p' | head -1)"
+  if [[ -n "$G" && "$G" == "$W" ]]; then
+    fail "the poster's give and want legs are the same token id — poster-config.ts refuses that"
+  elif [[ -n "$G" && -n "$W" ]]; then
+    ok "the poster's two legs are distinct token ids"
+  fi
+fi
 
 # ── upstream's own read-only verification, run FRESH ─────────────────────────
 #

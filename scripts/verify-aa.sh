@@ -128,12 +128,79 @@ if [[ -n "$console_cid" ]]; then
     FAILURES=$(( FAILURES + 1 ))
   fi
   # The console and the deploy artifact must agree on the Manager address.
+  INFO="$(curl -fsS --max-time 10 "$CONSOLE_URL/api/info" 2>/dev/null || true)"
   mgr=$(printf '%s' "$artifact" | grep -oE '"address": *"[0-9a-fx]+"' | head -1 | grep -oE '[0-9a-f]{32,}' | head -1) || mgr=""
-  if [[ -n "$mgr" ]] && curl -fsS --max-time 10 "$CONSOLE_URL/api/info" 2>/dev/null | grep -q "$mgr"; then
+  if [[ -n "$mgr" ]] && printf '%s' "$INFO" | grep -q "$mgr"; then
     ok "aa-console reports the deployed Manager (${mgr:0:16}…)"
   else
     err "aa-console /api/info does not match the deployed Manager address"
     FAILURES=$(( FAILURES + 1 ))
+  fi
+
+  # ── the console's TOKEN SET comes from the local faucet registry ───────────
+  #
+  # This is the US4 assertion, and it is worth making from the outside because
+  # every way it can break is silent. The console used to DERIVE three colours
+  # from the offer-files contract address it read out of the kernel; that
+  # contract is gone at KERNEL_REF 5d794f9 and `/v1/midnight/config` no longer
+  # carries an address, so a console still on the old path would come up
+  # perfectly healthy, serve its page, and answer `tokens: []` with a
+  # `tokensError` nobody reads until a mint button fails.
+  #
+  # Three things are checked, and the third is the one that used to be wrong:
+  #   * the tokens resolved at all, and say where from (`mint-test-tokens`);
+  #   * they are the local issuers' six, not three invented names;
+  #   * their DECIMALS are the registry's. The console registered every token
+  #     with a hardcoded `decimals: 6` before this change, which was wrong for
+  #     four of the six and is exactly the class of error that only shows up as
+  #     a price off by a factor of 10^n.
+  #
+  # CONDITIONAL on the faucet profile: `./up.sh --with aa` alone is legal, and
+  # then there is no registry to read and the console says so.
+  if docker ps -aq \
+       --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+       --filter "label=com.docker.compose.service=faucet-deploy" 2>/dev/null | grep -q .; then
+    if printf '%s' "$INFO" | grep -q '"tokensSource":"mint-test-tokens"'; then
+      ok "aa-console takes its token set from the local mint-test-tokens registry"
+    else
+      err "aa-console /api/info does not report tokensSource=mint-test-tokens"
+      info "  a console still deriving colours from the deleted offer-files contract answers"
+      info "  tokens:[] with a tokensError — it will serve every page and mint nothing."
+      info "  answer was: $(printf '%s' "$INFO" | head -c 300)"
+      FAILURES=$(( FAILURES + 1 ))
+    fi
+    # PARSED, NOT GREPPED, and for a measured reason: the first version of this
+    # split `/api/info` with `tr '}' '}\n'` and matched name and decimals on the
+    # result. `tr` cannot expand one character into two — SET2 is truncated to
+    # SET1's length, so it replaced `}` with `}` — the JSON stayed on one line,
+    # and the regex matched across object boundaries. It passed while asserting
+    # nothing: any `twBTC` anywhere followed by any `"decimals":8` anywhere.
+    AA_TOKENS_MISSING="$(printf '%s' "$INFO" | python3 -c '
+import json, sys
+want = {"twBTC": 8, "twETH": 18, "twUSDC": 6, "twUSDM": 6, "utwUSDC": 6, "utwBTC": 8}
+try:
+    doc = json.load(sys.stdin)
+except Exception as exc:
+    print("unparsable /api/info: " + str(exc))
+    raise SystemExit(0)
+by_name = {str(t.get("name")): t for t in (doc.get("tokens") or [])}
+missing = []
+for name in sorted(want):
+    row = by_name.get(name)
+    if row is None:
+        missing.append(name + "/absent")
+    elif row.get("decimals") != want[name]:
+        missing.append("{}/decimals={} (want {})".format(name, row.get("decimals"), want[name]))
+print(", ".join(missing))
+' 2>/dev/null)"
+    if [[ -z "$AA_TOKENS_MISSING" ]]; then
+      ok "aa-console lists all six local tokens with their real decimals (8/18/6/6/6/8)"
+    else
+      err "aa-console token list is missing or misreporting: ${AA_TOKENS_MISSING}"
+      FAILURES=$(( FAILURES + 1 ))
+    fi
+  else
+    info "faucet profile not in this stack — skipping the aa-console token-set assertions"
   fi
 fi
 

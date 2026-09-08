@@ -63,8 +63,34 @@
 
 ARG AA_REPO=https://github.com/acedward/AA-midnight-evm-experiment-v3.git
 ARG AA_REF=41de69ded41ff933fe0db8697b264dc46fc6e0cb
+# THE KERNEL IS STILL CLONED, AND NOW FOR EXACTLY ONE REASON: it is where this
+# repository keeps the compactc pin and the SHA-256 of every release asset
+# (`infra/compact-version.txt` = 0.34.0, `infra/compact-checksums.sha256`). The
+# offer-files CONTRACT that used to be fetched with them is gone (kernel PRs
+# #69/#70) and so is the kernel image's own compactc stage — those two files are
+# orphaned upstream, but they are still the single place this repo's contract
+# builds read a compiler pin from, and reading them beats restating a version and
+# two hashes here. `/aa/.kernel-commit` remains the label
+# `scripts/verify-source-pins.sh` asserts.
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
-ARG KERNEL_REF=80bace37bc2412542452e1c597761b2ebce5c677
+ARG KERNEL_REF=5d794f9a27f6d65529bf176650405f740531d430
+# ── the local test-token issuers (NEW: the console's mint path) ──────────────
+# The AA console used to mint its wBTC/wETH/wUSD through the offer-files
+# contract's permissionless dev circuits. That contract no longer exists, so the
+# console now mints through the SAME six issuers the `faucet` profile deploys —
+# `effectstream/mint-test-tokens` `contracts/v2/{shielded,unshielded}-token.compact`.
+#
+# THEIR ARTIFACTS ARE COPIED, NEVER RECOMPILED. `contracts/v2/managed/` is
+# COMMITTED upstream (compactc 0.34.0 / language 0.26.0 / runtime 0.19.0), and the
+# deploy runner's own provenance gate requires the artifact bytes to equal the
+# committed ones — the verifier keys registered on chain are those bytes. A
+# recompile here, even with the identical compiler, would be a different set of
+# files to verify against and is exactly what upstream tells integrators not to
+# do. So this image ships the committed artifacts, and the console proves against
+# them on the PLAIN proof server (they are zkir-v2 / [v6], like the offer-files
+# artifact they replace).
+ARG MINT_TEST_TOKENS_REPO=https://github.com/effectstream/mint-test-tokens.git
+ARG MINT_TEST_TOKENS_REF=7ecad008b07acb2a491d8291e05455cbd638910f
 # EMPTY ON PURPOSE — see the TOOLCHAIN FIDELITY note above.
 ARG COMPACT_VERSION=
 
@@ -106,6 +132,8 @@ ARG AA_REPO
 ARG AA_REF
 ARG KERNEL_REPO
 ARG KERNEL_REF
+ARG MINT_TEST_TOKENS_REPO
+ARG MINT_TEST_TOKENS_REF
 
 WORKDIR /src
 RUN git init -q . \
@@ -115,9 +143,8 @@ RUN git init -q . \
  && git rev-parse HEAD > /aa-commit \
  && rm -rf .git
 
-# The AA console also exposes offer-file mint/offer actions. Fetch only the
-# pinned kernel source needed to compile that matching contract; this keeps the
-# documented core+aa profile standalone on a clean clone.
+# The kernel tree, for the compactc pin and its checksums ONLY (see the ARG note
+# above). Nothing is compiled from it any more.
 WORKDIR /kernel-src
 RUN git init -q . \
  && git remote add origin "$KERNEL_REPO" \
@@ -125,6 +152,35 @@ RUN git init -q . \
  && git checkout -q FETCH_HEAD \
  && git rev-parse HEAD > /kernel-commit \
  && rm -rf .git
+
+# The local test-token issuers. Only the two committed artifact trees and the
+# manifest that pins their runtime are kept; the frontend, the metadata and the
+# v1 protocol tree are not needed here and are dropped in the same layer so they
+# never reach an image.
+WORKDIR /mtt-src
+RUN set -eux; \
+    git init -q .; \
+    git remote add origin "$MINT_TEST_TOKENS_REPO"; \
+    git fetch -q --depth 1 origin "$MINT_TEST_TOKENS_REF"; \
+    git checkout -q FETCH_HEAD; \
+    git rev-parse HEAD > /mint-test-tokens-commit; \
+    # A live branch is not an identity: refuse anything but a full 40-hex commit,
+    # the same rule images/mint-test-tokens enforces.
+    case "$MINT_TEST_TOKENS_REF" in \
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;; \
+      *) echo "MINT_TEST_TOKENS_REF must be a full 40-hex commit, got '$MINT_TEST_TOKENS_REF'" >&2; exit 1 ;; \
+    esac; \
+    test "$(cat /mint-test-tokens-commit)" = "$MINT_TEST_TOKENS_REF"; \
+    mkdir -p /mtt/shielded /mtt/unshielded; \
+    cp -a contracts/v2/managed/shielded/.   /mtt/shielded/; \
+    cp -a contracts/v2/managed/unshielded/. /mtt/unshielded/; \
+    cp contracts/v2/package.json /mtt/contracts-v2-package.json; \
+    # The generated module the console imports, and the compiler receipt the
+    # runtime assertion below reads. Absent means the upstream layout moved.
+    test -s /mtt/shielded/contract/index.js; \
+    test -s /mtt/unshielded/contract/index.js; \
+    test -s /mtt/shielded/compiler/contract-info.json; \
+    rm -rf /mtt-src/.git
 
 # ── stage 2: compile + keygen with the pinned compactc ───────────────────────
 FROM debian:stable-slim AS compact
@@ -136,15 +192,23 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates unzip bash \
  && rm -rf /var/lib/apt/lists/*
 
-# The compactc pin, its SHA-256 and the runtime the offer-files half expects all
-# travel with the pinned kernel source — see the ARG note. The OTHER half of the
+# The compactc pin and its SHA-256 travel with the pinned kernel source; the
+# RUNTIME the generated modules will demand travels with mint-test-tokens, whose
+# committed artifacts this image ships — see the ARG note. The OTHER half of the
 # same invariant (the runner's INSTALLED compact-runtime) is checked in stage 3,
 # where `bun install` has actually resolved it; doing it here would mean copying
 # runner/package.json into this stage and making every runner dependency edit
 # invalidate ~20 minutes of keygen.
 COPY --from=source /kernel-src/infra/compact-version.txt    /opt/compact-version.txt
 COPY --from=source /kernel-src/infra/compact-checksums.sha256 /opt/compact-checksums.sha256
-COPY --from=source /kernel-src/packages/contracts-midnight/contract-offer-files/package.json /opt/contract-package.json
+# THE RUNTIME EXPECTATION MOVED REPOS. It used to come from the kernel's
+# `contract-offer-files/package.json`, which is deleted at this KERNEL_REF along
+# with the contract. It now comes from mint-test-tokens' `contracts/v2` manifest —
+# which is the right source anyway: that is the package whose COMMITTED generated
+# modules this image ships and the console imports, so its
+# `@midnight-ntwrk/compact-runtime` is the version `checkRuntimeVersion()` will
+# demand at import time.
+COPY --from=source /mtt/contracts-v2-package.json /opt/contract-package.json
 
 RUN set -eux; \
     COMPACT_VERSION="${COMPACT_VERSION:-$(tr -d ' \t\n\r' < /opt/compact-version.txt)}"; \
@@ -169,14 +233,17 @@ RUN set -eux; \
     test "$(/opt/compactc/compactc --version)" = "${COMPACT_VERSION}"; \
     got_runtime="$(/opt/compactc/compactc --runtime-version)"; \
     want_runtime="$(sed -n 's/.*"@midnight-ntwrk\/compact-runtime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /opt/contract-package.json | head -n 1)"; \
-    test -n "$want_runtime" || { echo "the pinned kernel's contract package declares no @midnight-ntwrk/compact-runtime" >&2; exit 1; }; \
-    test "$got_runtime" = "$want_runtime" || { echo "FAIL: compactc ${COMPACT_VERSION} emits code for compact-runtime ${got_runtime}, but the pinned kernel's contract package depends on ${want_runtime}" >&2; exit 1; }; \
+    test -n "$want_runtime" || { echo "mint-test-tokens contracts/v2 declares no @midnight-ntwrk/compact-runtime" >&2; exit 1; }; \
+    test "$got_runtime" = "$want_runtime" || { echo "FAIL: compactc ${COMPACT_VERSION} emits code for compact-runtime ${got_runtime}, but mint-test-tokens contracts/v2 depends on ${want_runtime}" >&2; exit 1; }; \
     echo "compactc ${COMPACT_VERSION} / language $(/opt/compactc/compactc --language-version) / runtime ${got_runtime}"; \
     printf '%s\n' "${COMPACT_VERSION}" > /opt/compactc-version; \
     printf '%s\n' "${got_runtime}"     > /opt/compact-runtime-version
 
 COPY --from=source /src/contracts /contracts
-COPY --from=source /kernel-src/packages/contracts-midnight/contract-offer-files/src/offer-files.compact /contracts/offer-files.compact
+# The issuers' COMMITTED artifacts, in the layout deployMidnightContract expects
+# (<contract-name>/src/managed/). Nothing compiles them; see the ARG note.
+COPY --from=source /mtt/shielded   /aa/contract-mtt-shielded/src/managed
+COPY --from=source /mtt/unshielded /aa/contract-mtt-unshielded/src/managed
 
 # Keys need the universal SRS from srs.midnight.network (a build-time network
 # fetch, like the git clone). Layout matches what deployMidnightContract expects:
@@ -197,10 +264,9 @@ RUN set -eux; \
       *) echo "AA_ZKIR_SOURCE must be one of minocrab | minocrab-all | compactc, got '${AA_ZKIR_SOURCE}'" >&2; exit 1 ;; \
     esac; \
     export HOME=/tmp XDG_CACHE_HOME=/tmp/zk-cache; \
-    mkdir -p /aa/contract-manager/src /aa/contract-minter/src /aa/contract-offer-files/src; \
+    mkdir -p /aa/contract-manager/src /aa/contract-minter/src; \
     /opt/compactc/compactc --feature-zkir-v3 /contracts/manager.compact /aa/contract-manager/src/managed/; \
     /opt/compactc/compactc --feature-zkir-v3 /contracts/test-support/minter.compact /aa/contract-minter/src/managed/; \
-    /opt/compactc/compactc /contracts/offer-files.compact /aa/contract-offer-files/src/managed/; \
     M=/aa/contract-manager/src/managed; \
     case "${AA_ZKIR_SOURCE:-minocrab}" in \
       minocrab)     swapped="execute" ;; \
@@ -320,12 +386,14 @@ RUN set -eux; \
     du -sh /delta/managed; \
     rm -rf /local /fetch
 
-# The offer-files artifact was compiled in stage 2 with the AA contracts.
-# The console mints the demo's UNIFIED token set (wBTC/wETH shielded, wUSD
-# unshielded) through the offer-files contract's permissionless dev mint
-# circuits — the same tokens the kernel's own dev mint creates — instead of a
-# console-private minter. Its managed contract + [v6] keys are compiled from
-# the pinned public kernel source and proven on the PLAIN proof server.
+# The console's token set is now the LOCAL FAUCET's six (twBTC/twETH/twUSDC/
+# twUSDM shielded, utwUSDC/utwBTC unshielded), and it mints them by calling the
+# same issuer contracts the `faucet` profile deployed. Their managed contracts +
+# [v6] keys were COPIED into stage 2 from the pinned mint-test-tokens tree — the
+# committed artifacts, byte for byte, because those are the bytes whose verifier
+# keys are registered on chain — and they prove on the PLAIN proof server, exactly
+# as the offer-files artifact they replace did. The AA Manager and Minter still
+# prove on the experimental server (zkir-v3 / [v7]); `join()` picks per contract.
 
 # ── stage 3: the deploy+mint runner ──────────────────────────────────────────
 # Same bun pin as the kernel image, same reason (1.3.14 breaks on graphql-17 ESM).
@@ -343,6 +411,7 @@ RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
 WORKDIR /aa
 COPY --from=source /aa-commit /aa/.aa-commit
 COPY --from=source /kernel-commit /aa/.kernel-commit
+COPY --from=source /mint-test-tokens-commit /aa/.mint-test-tokens-commit
 # The AA repo's OWN test library — EIP-712 codec, MetaMask V4 signing, execute
 # payload builders. Imported verbatim by the E2E so the digest scheme is never
 # reimplemented (golden vectors and frozen hashes included).
@@ -359,13 +428,16 @@ COPY console/ /aa/console/
 RUN cp /aa/runner/package.json /aa/package.json && cd /aa && bun install
 
 # ── ONE compactc, ONE compact-runtime (issues/00011) ─────────────────────────
-# This process imports BOTH generated contract modules — the AA Manager/Minter
-# and the kernel's offer-files contract — and each one opens with
-# `checkRuntimeVersion("<the runtime compactc emitted code for>")`. The compact
-# stage already proved the compiler agrees with the KERNEL's contract package;
-# this proves the same number against what `bun install` actually RESOLVED here,
-# and that exactly one copy is installed. A mismatch used to surface as a
-# contract that refuses to load the first time the console touched it.
+# This process imports generated contract modules from TWO different repositories
+# — the AA Manager/Minter it compiled here, and mint-test-tokens' two issuers it
+# copied — and every one of them opens with
+# `checkRuntimeVersion("<the runtime its compiler emitted code for>")`. The compact
+# stage already proved this image's compactc agrees with mint-test-tokens'
+# manifest; the three assertions below prove the same number against what
+# `bun install` actually RESOLVED here, that exactly one copy is installed, and
+# that the COPIED artifacts' own compiler receipt agrees too. A mismatch used to
+# surface as a contract that refuses to load the first time the console touched
+# it — now it is a build failure naming the repository that moved.
 RUN set -eux; \
     want="$(cat /opt/compact-runtime-version)"; \
     copies="$(find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' | wc -l | tr -d ' ')"; \
@@ -373,6 +445,18 @@ RUN set -eux; \
     got="$(bun -e 'const p = (await import("/aa/node_modules/@midnight-ntwrk/compact-runtime/package.json", { with: { type: "json" } })).default; console.log(p.version)')"; \
     test "$got" = "$want" || { echo "FAIL: compactc $(cat /opt/compactc-version) emits code for compact-runtime ${want}, but the runner installed ${got}" >&2; exit 1; }; \
     echo "runner compact-runtime ${got} == compactc $(cat /opt/compactc-version) runtime target"; \
+    # AND THE THIRD PARTY IN THE ROOM: the issuers' artifacts were compiled
+    # elsewhere, at another commit, in another repository — this image only
+    # COPIED them. `compiler/contract-info.json` is compactc's own receipt for
+    # those bytes, so comparing it here is what proves the generated module the
+    # console is about to import will not throw `checkRuntimeVersion()` the first
+    # time somebody presses a faucet button. It is the cross-repo half of
+    # issues/00011, and it is the only assertion that could catch a
+    # MINT_TEST_TOKENS_REF bump onto a different compiler line.
+    mtt="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["runtime-version"]);')"; \
+    test "$mtt" = "$want" || { echo "FAIL: the mint-test-tokens artifacts at $(cat /aa/.mint-test-tokens-commit) were built for compact-runtime ${mtt}, but this image installs ${want}" >&2; exit 1; }; \
+    mttc="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["compiler-version"]);')"; \
+    echo "mint-test-tokens artifacts: compiler ${mttc} / runtime ${mtt} (copied, never recompiled)"; \
     cp /opt/compactc-version         /aa/.compactc-version; \
     cp /opt/compact-runtime-version  /aa/.compact-runtime-version
 
