@@ -328,7 +328,14 @@ done
 echo
 log "faucet: upstream verification against the chain (read-only, no wallet)"
 info "expect ~1-2 minutes: it re-queries six deploy actions and re-hashes the artifact trees"
-if dc run --rm -T faucet-verify; then
+# `--no-deps` is LOAD-BEARING, not tidiness. `faucet-verify` declares
+# `depends_on: faucet-deploy: service_completed_successfully` so that compose orders it
+# correctly at bring-up — but `docker compose run` starts what a service depends on, and
+# without this flag a verify would re-run the DEPLOY one-shot. That is idempotent (it would
+# take the resume path) and would still cost minutes and a wallet facade for nothing.
+# compose/shielded-night.yml solves the same problem by giving its verify service no
+# depends_on at all; this profile cannot, because its verify IS part of the bring-up chain.
+if dc run --rm --no-deps -T faucet-verify; then
   ok "six issuers verified: on-chain verifier keys, immutable metadata, derived token IDs,"
   info "  artifact digests, pinned source revision, deploy action and block evidence"
 else
@@ -407,7 +414,7 @@ if (( WITH_MINT )); then
   echo
   log "faucet: a real mint, discovered by a second wallet"
   info "expect several minutes: this is a proof cycle on a cold 2.x devnet"
-  if dc --profile faucet-mint-test run --rm -T -e MN_TOKEN_SYMBOL=twUSDC faucet-mint-test; then
+  if dc --profile faucet-mint-test run --rm --no-deps -T -e MN_TOKEN_SYMBOL=twUSDC faucet-mint-test; then
     ok "twUSDC minted and discovered by the recipient wallet"
   else
     fail "the mint test failed (see the output above)"

@@ -250,31 +250,53 @@ post_token() { # <name> <colour> <kind> <decimals>
 
 # update_token — the one case the API cannot express: one row, one colour, BY NAME.
 #
-# psql with `-v` bindings and `:'name'` quoting, so nothing is spliced into SQL by string
-# concatenation. ON_ERROR_STOP makes a failed statement a non-zero exit rather than a warning.
+# THE SQL ARRIVES ON STDIN, NOT VIA `--command`, and that is not a style choice: psql's
+# `-c/--command` sends a string the server must parse whole and DOES NOT expand `:'var'`
+# bindings — a `--command` here fails with `syntax error at or near ":"` on every attempt.
+# Variables are interpolated only for input read as normal psql input, i.e. stdin or `-f`.
+# (Measured 2026-09-08 against postgres 17 while building the fixture below.) Using the
+# bindings rather than string concatenation is what keeps the six registry values out of the
+# SQL text, so this had to be the stdin form.
+#
+# ON_ERROR_STOP makes a failed statement a non-zero exit rather than a warning, and psql's
+# exit code is then read for what it MEANS:
+#   2  the connection went bad / could not connect         -> not ready yet
+#   3  a statement failed under ON_ERROR_STOP              -> definitive, UNLESS it is the
+#      `relation "known_tokens" does not exist` race the kernel's schema init opens (infra
+#      issue 00016), which is the one transient form a statement error takes here
+#   1  psql's own fatal error (bad option, out of memory)  -> definitive
+# Retrying a definitive SQL error eight times only delays the report by a minute and buries
+# the message under seven repetitions of itself.
 update_token() { # <name> <colour> <kind> <decimals>
   local name="$1" colour="$2" kind="$3" dec="$4" out rc=0
-  out="$(PGPASSWORD="${DB_PW}" psql \
+  out="$(printf '%s\n' \
+      "UPDATE known_tokens
+          SET token_color = :'tk_colour',
+              kind        = :'tk_kind',
+              decimals    = :'tk_decimals'::integer
+        WHERE name = :'tk_name'
+    RETURNING token_color;" \
+    | PGPASSWORD="${DB_PW}" psql \
       --host "${DB_HOST}" --port "${DB_PORT}" --username "${DB_USER}" --dbname "${DB_NAME}" \
       --no-password --quiet --tuples-only --no-align \
       --set=ON_ERROR_STOP=1 \
       --set=tk_name="${name}" --set=tk_colour="${colour}" \
-      --set=tk_kind="${kind}" --set=tk_decimals="${dec}" \
-      --command "UPDATE known_tokens
-                    SET token_color = :'tk_colour',
-                        kind        = :'tk_kind',
-                        decimals    = :'tk_decimals'::integer
-                  WHERE name = :'tk_name'
-              RETURNING token_color;" 2>&1)" || rc=$?
+      --set=tk_kind="${kind}" --set=tk_decimals="${dec}" 2>&1)" || rc=$?
   if [ "${rc}" -ne 0 ]; then
-    # A missing relation or a refused connection is the same schema-init race the retry covers.
-    printf '%s\n' "UPDATE known_tokens (${name}) -> ${out}" >&2
-    return "${EX_TEMPFAIL}"
+    printf '%s\n' "UPDATE known_tokens (${name}) -> psql exit ${rc}: ${out}" >&2
+    case "${rc}" in
+      2) return "${EX_TEMPFAIL}" ;;
+      3) case "${out}" in
+           *"does not exist"*) return "${EX_TEMPFAIL}" ;;
+           *) return 1 ;;
+         esac ;;
+      *) return 1 ;;
+    esac
   fi
   out="$(printf '%s' "${out}" | tr -d '[:space:]')"
   if [ "${out}" != "${colour}" ]; then
     # No row with that name yet: the POST path should have handled it, so this is a wait, not
-    # a defect — the seed insert or a concurrent writer may not have landed.
+    # a defect — a concurrent writer may not have landed.
     printf '%s\n' "UPDATE known_tokens (${name}) returned '${out}', expected ${colour}" >&2
     return "${EX_TEMPFAIL}"
   fi
