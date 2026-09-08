@@ -59,7 +59,8 @@ genuinely up are protected. To take a profile down, use ./down.sh (everything) o
 without it (that profile only).
 
 Every shipped profile is complete: offerfiles includes Celestia, the kernel and batcher;
-frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA; aa deploys and serves its console; solver is
+frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA (branch midnight-1, contract-free:
+its Faucet link needs the faucet profile); aa deploys and serves its console; solver is
 the observation-mode solver, its authenticated sink and the read-only monitor site; poster funds a dedicated
 wallet and keeps the book non-empty by minting one coin and posting one offer per interval (it needs
 offerfiles); prices runs the CoinGecko feed that refreshes the kernel's reference prices (it needs
@@ -686,6 +687,22 @@ fi
 if [[ " $PROFILES " == *" faucet "* ]]; then
   info "test-token faucet  http://${HOST_ADDR}:${FAUCET_PORT:-10950}/?network=undeployed   ${FAUCET_TOKENS:-unknown}"
   info "                   the page needs an injected DApp-connector wallet to MINT; it has none of its own"
+fi
+if [[ " $PROFILES " == *" frontend "* ]]; then
+  info "zswap-da SPA       http://${HOST_ADDR}:${FRONTEND_HOST_PORT:-10600}   (make/take swaps; network ${FRONTEND_NETWORK_ID:-undeployed})"
+  # The SPA has no mint of its own since upstream #922: the Faucet link is how a
+  # user gets test tokens. It is rendered from FAUCET_PORT whether or not the
+  # faucet profile is up, because the frontend fragment deliberately does not
+  # depend on it — so say which of the two states this stack is in, rather than
+  # letting the operator discover it as a connection refused in the browser.
+  if [[ " $PROFILES " == *" faucet "* ]]; then
+    info "                   its Faucet link opens http://${HOST_ADDR}:${FAUCET_PORT:-10950}/?network=${FRONTEND_NETWORK_ID:-undeployed}"
+  else
+    warn "the SPA's Faucet link points at ${HOST_ADDR}:${FAUCET_PORT:-10950}, and nothing is serving it"
+    info "  the SPA mints nothing itself (upstream #922 removed the template's faucet contract)."
+    info "  Add the profile — no rebuild needed, the link is rendered at container start:"
+    info "      ./up.sh --with faucet --with offerfiles --with frontend"
+  fi
 fi
 if [[ " $PROFILES " == *" solver "* ]]; then
   info "solver monitor     http://${HOST_ADDR}:${SOLVER_FRONTEND_PORT:-10802}   (read-only: is it quoting, and if not why)"

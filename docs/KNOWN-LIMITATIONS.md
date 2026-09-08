@@ -145,10 +145,11 @@ control is worse than one that is gone.
   base units at each token's own scale: twBTC 8, twETH 18, twUSDC 6, twUSDM 6, utwUSDC 6, utwBTC 8.
   The kernel's `known_tokens.decimals` still carries `DEFAULT 6` with a comment claiming that is
   universal; `registry-bridge` sends each real value explicitly, so the registry is right and the
-  comment is stale. The `frontend` profile's zswap-da SPA is pinned to a template that reads and
-  writes WHOLE COINS against a 6-decimal assumption, which predates these six tokens — a display
-  concern, and re-pinning it is a separate change. Any external client that predates the re-pin —
-  a saved curl, a script holding base units — is the thing that needs updating.
+  comment is stale. The `frontend` profile's zswap-da SPA reads each token's `decimals` off
+  `GET /v1/known-tokens` and normalises it once for every screen, so it displays the real scales;
+  its `DEFAULT_DECIMALS = 6` now applies only to a colour the wallet holds that is in NO registry.
+  Any external client that predates the change — a saved curl, a script holding base units — is
+  the thing that needs updating.
 - **The SPA's in-page wallet now works on any port block — but only through the page's own
   `/config.js`.** `GET /v1/midnight/config` reports the URIs the KERNEL dials: compose
   hostnames on CONTAINER ports, and no node URI at all. The image injects
@@ -160,6 +161,29 @@ control is worse than one that is gone.
   `proof-server`): renaming a service in `compose/core.yml` without updating
   `images/zswap-da/docker-entrypoint-frontend.sh` silently stops the mapping.
   `./verify.sh --frontend` asserts the served map matches the stack's ports.
+- **The SPA cannot mint, and its Faucet link is dead without `--with faucet`.** Upstream removed
+  the template's local faucet contract ([#922](https://github.com/effectstream/effectstream/pull/922))
+  the same week the kernel removed its own, so the SPA has no mint of any kind: the top-nav
+  **Faucet** link to this stack's `faucet-site` is the only way to get test tokens into the wallet
+  it trades with. The `frontend` fragment deliberately does NOT depend on the `faucet` profile — it
+  mounts nothing of it and compose renders fine without it — so `./up.sh --with frontend` alone
+  still works, and the Faucet link then points at `http://<page host>:${FAUCET_PORT}`, a port
+  nothing on this host is listening on. That is the honest state of such a stack, and `up.sh` says
+  so at the end of a bring-up; adding `--with faucet` fixes it with no rebuild. And the faucet site
+  itself has no in-page wallet (it discovers DApp Connector API 4.x wallets only), so minting there
+  needs a browser extension — without one, use `./scripts/verify-faucet.sh --mint` or the
+  `faucet-mint` one-shot's `FAUCET_MINT_GRANTS` list to put coins in a wallet.
+- **The SPA's in-page wallet has a FIXED seed on this stack, and that is deliberate.** Upstream's
+  `connectLocal()` generates a random 32-byte seed per page load, which made the demo wallet a
+  brand-new empty wallet every time — survivable while the template could mint, and not now.
+  `compose/frontend.yml` injects `DEMO_WALLET_SEED` (wallet `demo-spa` in `wallets/wallets.json`)
+  and `faucet-mint`'s default `spa` grant puts one million twUSDC in it, so the demo can take a
+  poster offer straight after a cold bring-up. Consequences: **the seed is public**, like every
+  other seed here, so this is a demo wallet and nothing else; **one facade per seed** means do not
+  import it into Lace while the SPA holds it (`lace-test` is kept free for that); and
+  `FRONTEND_WALLET_SEED=` (empty) restores upstream's random wallet, which is what serving this
+  `dist/` outside the demo wants. The wallet holds **no NIGHT** and needs none — the maker half of
+  a swap is an unbalanced offer file and the taker half is sponsored by the batcher.
 - **The AA console's token set moved, and it no longer derives a colour at all.** It used to
   compute `rawTokenType(domainSepFromName(name), offerFilesContractAddress)` with the address read
   from `GET /v1/midnight/config`; both halves are gone. It now reads

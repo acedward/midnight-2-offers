@@ -165,6 +165,42 @@ test tokens and proves it **discovers** them through its own chain scan. It need
 DUST, and the deployer pays. `funding: "none"` is a real state in `wallets/wallets.json`, not a
 gap: neither `fund-in-container.sh` nor `verify-wallets.sh` selects it.
 
+### The swap SPA's in-page wallet — `demo-spa`, new with the contract-free SPA
+
+| Wallet | Seed (64 hex = 32 bytes) | `funding` | Role |
+|---|---|---|---|
+| `demo-spa` | `5eedcafe…cafe` | `none` | the zswap-da SPA's in-page JS wallet — prefunded with **one million twUSDC** by `faucet-mint`'s `spa` grant |
+
+**Why it has a seed at all.** Upstream's `connectLocal()` **generates a random 32-byte seed**
+when it is not given one, so the in-page wallet was a brand-new empty wallet on every page load.
+That was survivable while the template shipped a faucet contract it could mint with. Since
+effectstream PR #922 removed that contract, an empty wallet is a wallet that can never acquire
+anything: the SPA has no mint, and the mint-test-tokens **site** drives an injected
+DApp-connector extension wallet, which an in-page wallet is not. `compose/frontend.yml` therefore
+injects `DEMO_WALLET_SEED`, the image writes it into `/config.js` as `window.DEMO_WALLET_SEED`,
+and `browser-network-urls.patch` passes it to `connectLocal`. Set `FRONTEND_WALLET_SEED=` (empty)
+to get upstream's random wallet back — which is the right setting for anyone serving this
+`dist/` outside the demo.
+
+**Why it needs no NIGHT.** Both halves of a swap go through the batcher: the maker half is an
+unbalanced offer file, and the taker half is balanced and **sponsored** by the batcher whenever
+the pair is priced (which the six local tokens are — see `PRICE_FEED_MAP` and the seeded
+`asset_id`s). So `funding: "none"` here is the same real state as the mint recipient's, for a
+different reason.
+
+**Why it is prefunded with the poster's WANT token.** `faucet-mint`'s `spa` grant mints one coin
+of `OFFER_POSTER_WANT_SYMBOL` — `twUSDC`, the same default `compose/poster.yml` carries — so the
+SPA can **take** a poster offer the moment the book has one, which is the shortest path from a cold
+`./up.sh` to a settled swap in a browser. The symbol is deliberately not separately settable: a
+grant of anything the poster does not ask for is inventory the SPA cannot spend. One coin of
+1 000 000 twUSDC (6 decimals) is roughly a dozen takes of a one-twBTC offer at the seeded BTC
+price, and it costs one proof cycle (~26 s cold); `FAUCET_MINT_GRANTS=` (explicitly empty) removes
+it.
+
+**Do not import this seed into Lace** while the SPA has it connected: one facade per seed, and
+this one is held by a browser. `lace-test` (`a51c86de…`) is the seed deliberately kept free for
+Lace imports.
+
 **Why the recipient must differ from the deployer.** The claim being proved is that a mint is
 discoverable *by another wallet*, which is exactly what a shielded transfer's
 `additionalCoinEncPublicKeyMappings` exists for — and a wallet cannot make that claim about

@@ -399,6 +399,52 @@ The kernel API and the batcher were already covered a different way and still ar
 `pick-ports.sh` emits `FRONTEND_API_BASE` / `FRONTEND_BATCHER_URL`, which the same `/config.js`
 turns into `window.API_BASE` / `window.BATCHER_URL`.
 
+At the template pin `400880ce` upstream has adopted a rewrite of its own in `getMidnightConfig` —
+a `window.<SCREAMING_SNAKE>` full-URI override pass, then a hostname-only rewrite that keeps the
+container port. The patch no longer inserts a rewrite; it *completes* upstream's, mapping the port
+through the table above and synthesizing the missing `nodeUri` from it. An unmapped hostname keeps
+its port, so upstream's behaviour is the fallback rather than something the patch overrides.
+
+### The Faucet link, and the network id
+
+Two more values move with the stack, for the same reason and by the same mechanism. Since upstream
+[#922](https://github.com/effectstream/effectstream/pull/922) the SPA has no mint of its own, so
+its top-nav **Faucet** link is the only way to get test tokens into the wallet it trades with. The
+image renders it at container start:
+
+```js
+window.MIDNIGHT_NETWORK_ID = "undeployed";
+window.FAUCET_HOST_PORT = "31765";
+```
+
+and `src/config.ts` composes `http://<page host>:31765/`, which the template's own `buildFaucetUrl`
+turns into `…/?network=undeployed`. Both must be right or the link is useless in a way that looks
+fine: upstream resolves the network id at BUILD time and defaults to **`preprod`**, and the faucet
+site serves a *different registry per network* — a `preprod` link would open a page that knows
+nothing about this chain's six issuers. `compose/frontend.yml` passes `FRONTEND_NETWORK_ID`
+(default `undeployed`) and `FAUCET_PORT`; `FRONTEND_FAUCET_URL` overrides the whole origin with a
+complete URL for a faucet behind a proxy or on another host.
+
+### The in-page wallet's seed
+
+`window.DEMO_WALLET_SEED` is the third value the entrypoint renders, and it is not a URL. Upstream's
+`connectLocal()` generates a random 32-byte seed when it is not given one, so the demo wallet was a
+brand-new EMPTY wallet on every page load. Since #922 removed the SPA's mint, an empty wallet is one
+that can never acquire anything — the faucet site drives an injected extension wallet, and an
+in-page wallet is not one. The stack therefore fixes it (`FRONTEND_WALLET_SEED`, wallet `demo-spa`),
+the entrypoint refuses anything that is not 64 lowercase hex with **exit 78** (a truncated seed is a
+DIFFERENT wallet, which looks exactly like "the mint did not work"), and `faucet-mint`'s default
+`spa` grant prefunds it with one whole twETH — the token the poster WANTS, so the SPA can take a
+poster offer immediately. `FRONTEND_WALLET_SEED=` restores the random wallet and
+`FAUCET_MINT_GRANTS=` removes the grant.
+
+`FAUCET_PORT` is injected whether or not the `faucet` profile is up, because the `frontend`
+fragment deliberately does not depend on it — it mounts nothing of that profile's and compose
+renders without it. On a stack brought up without `--with faucet` the link therefore points at a
+reserved port nothing is serving; `up.sh` prints a WARN saying exactly that, and adding the profile
+fixes it with no rebuild. `./verify.sh --frontend` asserts the injected network id and faucet port,
+and when the faucet site answers it follows the composed link and requires a 200.
+
 An extension wallet (Lace, Moth) is still limited to the default block — its `undeployed` preset
 hardcodes `9944`/`8088`/`6300` and no page can change that. See
 [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md).

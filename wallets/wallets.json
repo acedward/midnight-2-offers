@@ -378,6 +378,41 @@
         "dust": "mn_dust_undeployed1wv7eppt9xetu4k95x854p0sht0rekw4sx4pst4s0jjhh6mrzl2d9ctxq70u",
         "userAddress": "88b925d97b4372233f9a1f3688b8e6e7d70f1a536d67af0c451204be9049cde6"
       }
+    },
+    {
+      "name": "demo-spa",
+      "role": "the swap SPA's in-page JS wallet (profile `frontend`) \u2014 prefunded with local twETH so the demo UI can take an offer",
+      "$comment": [
+        "NEW IN PR-C of project 00017, and it exists because the SPA lost its mint. Upstream",
+        "effectstream/effectstream PR #922 removed the template's local faucet contract, and the",
+        "template's connectLocal() GENERATES a random 32-byte seed when it is not given one \u2014 so",
+        "the in-page wallet was a brand-new EMPTY wallet on every page load, with no way to ever",
+        "acquire anything: the SPA has no mint of its own, and the mint-test-tokens SITE drives an",
+        "injected DApp-connector extension wallet, which an in-page wallet is not.",
+        "",
+        "Fixing the seed makes it THE STACK's demo wallet: compose/frontend.yml injects it as",
+        "window.DEMO_WALLET_SEED, the faucet-mint one-shot's `spa` grant prefunds it with one whole",
+        "twETH (the token the offer poster WANTS, so the SPA can take a poster offer), and the",
+        "wallet survives a page reload instead of being replaced by an empty one.",
+        "",
+        "IT NEEDS NO NIGHT AND NO DUST, which is why funding is 'none'. Both halves of a swap go",
+        "through the batcher: the maker half is an unbalanced offer file, and the taker half is",
+        "balanced and SPONSORED by the batcher when the pair is priced. Giving this wallet NIGHT",
+        "would also make it a second facade on a funded seed, for no benefit.",
+        "",
+        "ONE FACADE PER SEED still applies, and this one is held by a BROWSER. Do not import it",
+        "into Lace while the SPA has it connected; `lace-test` (a51c86de\u2026) is the seed kept free",
+        "for exactly that."
+      ],
+      "seed": "5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe",
+      "seedBytes": 32,
+      "funding": "none",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed10f557rtylr4gvxxylsygf9nknztzclc9vcjx8l59u7xrswqle26q66wgtd",
+        "shielded": "mn_shield-addr_undeployed1k0z4xefyg9k8madnrg6vmshm0f33lhj4rue60x680jpn6yev64zylac2xrrhayng7k4q0l9yl4ptc9js8xj6gmw03z2n8zj6uhqkghgtcqqd0",
+        "dust": "mn_dust_undeployed1wv42f7za6qqy8yqrrg2gf74cqmn5x43w5duqlawkgdsce6n6evw35w493jy",
+        "userAddress": "7a694f0d64f8ea8618c4fc0884967698962c7f05662463fe85e78c38381fcab4"
+      }
     }
   ]
 }

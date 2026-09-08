@@ -367,12 +367,27 @@ services:
       FAUCET_MINT_POSTER_COINS: '${FAUCET_MINT_POSTER_COINS:-4}'
       POSTER_SEED: '${POSTER_SEED:-0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe0ffe}'
       # ANYTHING ELSE: `label:seedhex:symbol:amount:coins`, semicolon-separated.
-      # EMPTY BY DEFAULT and that is measured, not forgotten (Q10): the AA console
-      # MINTS ITS OWN tokens through these very issuers, and upstream states that
-      # the solver "needs NO SWAP-TOKEN INVENTORY to quote or settle whole-maker
-      # rungs. It needs NIGHT/DUST, and that is all." Nothing is minted on the
-      # chance it might be wanted; every entry costs a proof cycle.
-      FAUCET_MINT_GRANTS: '${FAUCET_MINT_GRANTS:-}'
+      #
+      # The AA console and the solver are still deliberately absent (Q10): the
+      # console MINTS ITS OWN tokens through these very issuers — that is the
+      # feature — and upstream states that the solver "needs NO SWAP-TOKEN
+      # INVENTORY to quote or settle whole-maker rungs. It needs NIGHT/DUST, and
+      # that is all." Nothing is minted on the chance it might be wanted.
+      #
+      # THE `spa` GRANT IS THE ONE EXCEPTION, and it is new in PR-C (Q14). The
+      # swap SPA's in-page wallet has no mint of its own since upstream #922, and
+      # the faucet SITE cannot help it — that page drives an injected extension
+      # wallet, which an in-page wallet is not. So the only route by which the
+      # demo's own UI can hold a local token is this one-shot. It mints ONE coin
+      # of the token the offer poster WANTS — `twUSDC`, the SAME default
+      # compose/poster.yml and .env.example carry for OFFER_POSTER_WANT_SYMBOL,
+      # because a grant of anything else is inventory the poster's offers do not
+      # ask for and the SPA therefore cannot spend. One million twUSDC (6
+      # decimals) is roughly a dozen takes of a one-twBTC offer at the seeded BTC
+      # price, and it costs ONE proof cycle, ~26 s on a cold devnet.
+      # `${FAUCET_MINT_GRANTS-}` (no colon) means an explicitly EMPTY
+      # FAUCET_MINT_GRANTS in the env file removes it and pays nothing.
+      FAUCET_MINT_GRANTS: '${FAUCET_MINT_GRANTS-spa:${FRONTEND_WALLET_SEED:-5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe}:${OFFER_POSTER_WANT_SYMBOL:-twUSDC}:${FAUCET_MINT_SPA_AMOUNT:-1000000000000}:${FAUCET_MINT_SPA_COINS:-1}}'
     depends_on:
       # The ids AND the confirmation: a mint against an unverified registry could
       # target a contract this chain does not have.

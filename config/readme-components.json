@@ -58,7 +58,7 @@
     },
     {
       "component": "zswap-da SPA",
-      "source": "[`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/{full:FRONTEND_REF}/templates/zswap-da), fetched at build time and adapted by `images/zswap-da/ledger-v9.patch`",
+      "source": "[`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/{full:FRONTEND_REF}/templates/zswap-da) branch **`midnight-1`** ([PR #922](https://github.com/effectstream/effectstream/pull/922) — the local faucet contract removed), fetched at build time and ported from the 1.x line to this stack's 2.x set by `images/zswap-da/ledger-v9.patch`; **no compiler and no contract in the image**",
       "pin": "{commit:FRONTEND_REF@effectstream/effectstream}",
       "pinnedIn": "{files:FRONTEND_REF}"
     },

@@ -123,35 +123,60 @@ for its generated Compact artifacts. The image runs `start.solver.ts` behind thi
 `status` option — and the status listener is inert unless that option is present, so the monitor
 site would have had nothing to read.
 
-**Frontend source pin.** The zswap-da template's ledger-v9 migration is not published upstream
-(`effectstream/effectstream@templates/zswap-da` remains on ledger-v8). The image therefore fetches
-[`effectstream/effectstream@ea04ff7c`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da)
-directly, verifies the resolved full commit and its `templates/zswap-da` subtree
-(`ea22913c345da3dae36e113fdbced2bb1897de63`), and applies the fail-closed 13-file
-`images/zswap-da/ledger-v9.patch`. The patch carries dependency/lockfile, the compiler manifest,
-the KERNEL's `offer-files.compact`, and eight TypeScript/API modules; the other 87 upstream files
-are taken verbatim and none is copied into this repository.
+**Frontend source pin — branch `midnight-1`.** The image fetches
+[`effectstream/effectstream@400880ce`](https://github.com/effectstream/effectstream/tree/400880ceb6814738d1ae193dae18ad5128922edc/templates/zswap-da)
+directly — the merge commit of [PR #922](https://github.com/effectstream/effectstream/pull/922) on
+branch **`midnight-1`** — verifies the resolved full commit and its `templates/zswap-da` subtree
+(`a750cccd653f33306d3ff7249fe8d5853fbfafa6`), and applies two fail-closed patches. `midnight-1` is
+the owner's choice of line (spec 00017, answer 3); it is upstream's preprod / Node 1 branch, still
+on `@effectstream/*@0.104.x`, ledger-v8, midnight-js 4 and wallet-sdk-address-format 3, so
+`images/zswap-da/ledger-v9.patch` carries that whole port to the 2.x set this stack runs —
+`0.200.2` / `mip-zswap-offer@0.4.0-v9.0` / `@midnightntwrk/ledger-v9@1.0.0-rc.3` / midnight-js
+`5.0.0-beta.6` / wallet-sdk-address-format `4.0.0-beta.2`, the versions the pinned KERNEL's own
+root manifest resolves. Eight files, 31 hunks; the rest of the template is taken verbatim and none
+of it is copied into this repository. `/.zswap-da-commit` and `/.zswap-da-branch` make both halves
+of the identity part of CI provenance verification, and `scripts/verify-source-pins.sh` asserts
+both against the running image.
 
-**Why the contract source is in the patch, and what that means now the kernel has none.** The SPA
-proved calls against the contract the pinned KERNEL deployed, so its compiled artifacts had to be
-the bytes the kernel image produced — same source, same compiler, same runtime. At the `b1420c4…`
-pin the template's copy of `offer-files.compact` was already byte-identical to the kernel's, so the
-patch could stay silent and the identity held by luck; kernel PR #67 changed both mint circuits in
-place and the template did not follow, so the patch took the kernel's file and a manifest
-regenerated with compactc 0.34.0.
+**The SPA has no contract, and the image has no compiler.** Both ends of the old arrangement are
+gone in the same week: upstream #922 deleted the template's local faucet contract
+(`src/contract/offer-files.compact`, the 17-artifact manifest, `scripts/build-contract.ts`,
+`useContract.ts`, `browserContract.ts`, `contractWallet.ts`, the Faucet screen), and kernel
+#69/#70 deleted the kernel's. So the image's whole SHA-256-pinned compactc 0.34.0 stage and its
+`build-contract.ts --verify-only` step are deleted too: compiling here would be compiling a
+contract nothing deploys. Test tokens come from the `faucet` profile's six mint-test-tokens
+issuers, which own their own artifacts, and the SPA reaches them the way a user does — the Faucet
+link in the top nav, pointed at this stack's `faucet-site` (see below). The absence is asserted,
+not assumed: stage 0 fails the build naming the file if a future `FRONTEND_REF` brings any of the
+contract lane back, stage 1 asserts no ZK artifacts were emitted and no `compactc` is on `PATH`,
+and `verify-source-pins.sh` re-checks the same two properties on the running image. The make→take
+swap path is unaffected — it trades whatever colours the book carries, which on this stack are the
+six the `faucet` profile issues.
 
-At `5d794f9…` that file no longer exists in the kernel tree at all, which makes the patch's copy
-the last one in this repository — and leaves the SPA's own faucet lane without a contract on this
-chain. Nothing deploys offer-files any more, and `GET /v1/midnight/config` carries no address to
-find one with, so the SPA's `mint_shielded` button has nothing to call. The make→take swap path
-itself is unaffected: it trades whatever colours the book carries, which on this stack are the
-six the `faucet` profile issues. Re-pinning the template so its faucet mints through those issuers
-instead is a separate change, deliberately not folded into this one. The image's `compact` stage
-still verifies the compiler archive against the SHA-256 the kernel records and still refuses to
-build if `compactc --runtime-version` disagrees with the `@midnight-ntwrk/compact-runtime` the
-patch installs. The pin is a full SHA and stays the identity even if `v-next` moves.
+**Everything URL-shaped is resolved at container start, not baked.** One image is built once and
+run on any port block against any chain, so `docker-entrypoint-frontend.sh` writes `/config.js`
+before the bundle loads: `window.API_BASE`/`BATCHER_URL`, `window.MIDNIGHT_HOST_PORTS` (the
+compose-hostname → PUBLISHED-host-port table that makes the kernel's compose-internal URIs
+browser-reachable), `window.MIDNIGHT_NETWORK_ID` and `window.FAUCET_HOST_PORT`. The last two are
+what `images/zswap-da/browser-network-urls.patch` adds to `src/config.ts`: upstream resolves the
+network id at BUILD time defaulting to `preprod`, and the faucet base likewise to the public
+site — on this stack the network id is both the wallet's and the `?network=` the Faucet link
+carries, and the faucet's origin is a host only the page knows on a port only Docker knows. The
+faucet link therefore resolves to `http://<page host>:${FAUCET_PORT}/?network=undeployed` and
+`./verify.sh --frontend` follows it when the `faucet` profile is up.
+
+**The in-page wallet has a fixed seed.** Upstream's `connectLocal()` generates a random 32-byte
+seed when it is not given one, so the demo wallet used to be a brand-new empty wallet on every page
+load. That mattered little while the template could mint; with no mint it means a wallet that can
+never acquire anything, because the faucet SITE drives an injected extension wallet and an in-page
+wallet is not one. `compose/frontend.yml` therefore injects `DEMO_WALLET_SEED` — the `demo-spa`
+wallet in `wallets/wallets.json` — and the `faucet` profile's `faucet-mint` one-shot carries a
+default `spa` grant that puts one million twUSDC (the token the offer poster WANTS) into it, so the
+demo can take a poster offer straight after a cold bring-up. `FRONTEND_WALLET_SEED=` restores
+upstream's random wallet. See [WALLETS](WALLETS.md) for why it needs no NIGHT.
+
 Cold builds need GitHub and npm network access. The fetched upstream licenses are preserved in the
-runtime image, and `/.zswap-da-commit` makes the source pin part of CI provenance verification.
+runtime image.
 
 **The `aa` profile deploys the AA contracts and mints a token.** `--with aa` deploys
 [`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3)'s
@@ -1271,7 +1296,7 @@ prose is kept because it explains *why* each row is what it is.
 | COW solver (observation mode) + sink | `solver` | **nothing published** — see the monitor row below | same repo/commit at `SOLVER_REF`; **not vendored**; generated contract artifacts reuse the service-built kernel image. Runs `start.solver.ts` behind an `undeployed`-only gate. `solver-sink` is the relay's receive half and is internal: it holds the observation-safety counters that `./verify.sh --solver` reads over the compose network |
 | — solver monitor site | `solver` | **`http://127.0.0.1:10802`** | `solver-frontend` from the kernel image — the read-only "is it quoting, and if not why" page. Reads the solver's status listener on the unpublished `:9100`, the kernel API and the sink's `GET /tokens`; holds no wallet, mutates nothing |
 | Offer poster (the book fills itself) | `poster` — **needs `faucet` too** | health `http://127.0.0.1:10803/health` | same repo/commit — **selects** an existing coin of exactly `OFFER_POSTER_GIVE_AMOUNT` and posts one takeable offer per interval, paying fees with its own DUST. It does not mint: inventory is finite and comes from `faucet-mint`, and both token ids are resolved by symbol out of `registry-env`'s file. Dedicated seed (`0ffe…`), NIGHT from a `poster-fund` one-shot; durable journal on its own volume |
-| zswap-da frontend (swap SPA) | `frontend` | `http://127.0.0.1:10600` | [`effectstream/effectstream@ea04ff7c`](https://github.com/effectstream/effectstream/tree/ea04ff7c16dab5118d4bdfeec6e7455c89981827/templates/zswap-da) — fetched directly at build time and adapted by the checked-in 13-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed. The patch carries a copy of the kernel's `offer-files.compact` and a manifest regenerated with compactc `0.34.0` — taken when the SPA still proved calls against the contract the kernel deployed. At `KERNEL_REF 5d794f9` that file exists nowhere else and nothing deploys it, so the patch's copy is the last one and the SPA's own faucet lane is inert; the swap path itself trades whatever colours the book carries. Whole-coin display against a kernel that no longer assumes 6 decimals anywhere — this template predates the six local tokens' real scales (8/18/6/6/6/8) and its own faucet lane has no contract on this chain — and **usable in a browser on ANY port block**: the image injects `window.MIDNIGHT_HOST_PORTS` at container start and `browser-network-urls.patch` maps the kernel's compose-internal URIs through it |
+| zswap-da frontend (swap SPA) | `frontend` — the Faucet link needs `faucet` | `http://127.0.0.1:10600` | [`effectstream/effectstream@400880ce`](https://github.com/effectstream/effectstream/tree/400880ceb6814738d1ae193dae18ad5128922edc/templates/zswap-da), branch **`midnight-1`** — fetched directly at build time and adapted by the checked-in 8-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed. **No contract and no compactc in this image**: upstream [PR #922](https://github.com/effectstream/effectstream/pull/922) removed the template's local faucet contract, as kernel #69/#70 removed the kernel's, so the patch is now purely the 1.x → 2.x dependency port plus six ledger-v8 → v9 modules. Test tokens come from the `faucet` profile and the SPA's top-nav **Faucet** link opens this stack's `faucet-site` at `?network=undeployed`. Whole-coin display reads each token's real `decimals` off `GET /v1/known-tokens` (8/18/6/6/6/8 for the six local tokens), and the page is **usable in a browser on ANY port block**: the image injects `window.MIDNIGHT_HOST_PORTS`, `window.MIDNIGHT_NETWORK_ID` and `window.FAUCET_HOST_PORT` at container start and `browser-network-urls.patch` resolves the kernel's compose-internal URIs and the faucet origin through them |
 | Shielded NIGHT dApp (NIGHT ⇄ sNight) | `shielded-night` | `http://127.0.0.1:10900` | [effectstream/shielded-night](https://github.com/effectstream/shielded-night) — branch **`ledger-v9`** @ `30af63f3…` ([PR #10](https://github.com/effectstream/shielded-night/pull/10), the 2.x port; `main` is the 1.x line). Contract, harness and page from ONE commit, no patch of any kind; the contract is **recompiled in-image** with SHA-256-pinned compactc `0.34.0` and the build fails unless the output is byte-identical to the committed `src/managed/`. Deploys ONCE per stack (`shielded-night-deploy` one-shot, address persisted on a volume and injected into the page as `/config.js`). With `--with offerfiles` a second one-shot names **this stack's** sNight colour in the kernel's token registry — the schema seeds *preview's*, and the colour follows the contract address |
 | AA Manager + Minter | `aa` | deploy receipt in the `aa-out` volume | [acedward/AA-midnight-evm-experiment-v3](https://github.com/acedward/AA-midnight-evm-experiment-v3) — `main @ 41de69de` (sha-pinned; key-breaking merges need a redeploy) · [PR #12](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12) split `manager.compact` into a preset + nine modules. Compiled in-image with the compactc `0.34.0` / compact-runtime `0.19.0` the kernel tree still pins — ONE toolchain, which is what closed the old two-toolchain hazard, and which must now also match the runtime the COPIED mint-test-tokens artifacts were built for, since the console loads those beside the Manager's — **except `execute`**, which comes from [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release **`v0.2.0`** by default (`AA_ZKIR_SOURCE=minocrab`): the same contract transcribed into MinoCrab, a third-party Rust compiler, landing `execute` at **k = 18 / 211,047 rows** instead of compactc's k = 19 / 382,780 — half the proving key (544 MiB vs 1.14 GB), roughly half the proving time. The image downloads the release's files and takes them by SHA-256; the identity is `sha256(SHA256SUMS)` = `4a8c0183…`, **never the tag**. **Unaudited compiler; equivalence TESTED, NOT PROVEN** (59 differential tests, 5,128 tamper probes, 0 acceptance disagreements) — dev chains only, see [KNOWN-LIMITATIONS](docs/KNOWN-LIMITATIONS.md). `AA_ZKIR_SOURCE=compactc` opts out; `minocrab-all` takes all nine circuits |
 | **AA web console** (this stack's UI) | `aa` | **`http://127.0.0.1:10700`** | this repo (`images/aa-contracts/console/`) — tabs: AA+EVM, AA+Midnight (preview), COW solver feed, infrastructure canvas, Memos, Repos |

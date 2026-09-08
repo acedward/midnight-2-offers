@@ -87,7 +87,7 @@ const INFRA_NODES = [
   { id: "browser",       label: "Your browser",              sub: "MetaMask + these pages", x: 460, y: 28,  w: 200, h: 46, fixed: "up" },
   // dApps
   { id: "console",       label: "aa-relay (console backend)", sub: "serves this page + API · :10700", x: 30,  y: 122, w: 210, h: 56 },
-  { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static, backend = kernel", x: 265, y: 122, w: 210, h: 56 },
+  { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static · no contract · Faucet link → faucet-site", x: 265, y: 122, w: 210, h: 56 },
   { id: "solverSink",    label: "solver-sink (relay stand-in)", sub: "internal · relay-WS receive half", x: 500, y: 122, w: 205, h: 56 },
   { id: "solverMonitor", label: "solver-frontend (monitor)", sub: ":10802 · read-only, no wallet", x: 730, y: 122, w: 205, h: 56 },
   { id: "faucet",        label: "faucet-site",                  sub: ":10950 · six issuers · the token source", x: 950, y: 122, w: 160, h: 56 },
@@ -114,6 +114,10 @@ const INFRA_EDGES = [
   ["console", "kernel"], ["console", "proofServer"], ["console", "aaProofServer"],
   ["console", "node"], ["console", "indexer"],
   ["frontend", "kernel"], ["frontend", "batcher"],
+  // Not a network call the SPA makes: a LINK the operator follows. Since the
+  // template's own faucet contract was removed (#922) this is the only way to
+  // get test tokens into the wallet the SPA trades with, so the canvas draws it.
+  ["frontend", "faucet"],
   ["solver", "solverSink"], ["solver", "kernel"],
   // The monitor reads three sources and writes to none of them. `solver` is the
   // UNPUBLISHED :9100 status listener — this edge exists entirely inside the
@@ -381,8 +385,8 @@ const REPOS = [
   {
     repo: "effectstream templates/zswap-da", url: "https://github.com/effectstream/effectstream",
     role: "the swap frontend (profile frontend)",
-    ref: "effectstream/effectstream @ ea04ff7c + local ledger-v9 patch",
-    notes: [["", "", "upstream templates/zswap-da is fetched at the immutable commit (subtree ea22913c verified too); images/zswap-da/ledger-v9.patch carries the 11 required v9 adaptations, with no copied SPA tree"]],
+    ref: "effectstream/effectstream branch midnight-1 @ 400880ce + local ledger-v9 patch",
+    notes: [["", "", "upstream templates/zswap-da is fetched at the immutable commit on branch midnight-1 (subtree a750cccd verified too); PR #922 removed the template's local faucet contract, so the image compiles NO Compact and ships no compactc — test tokens come from the faucet profile. images/zswap-da/ledger-v9.patch is the 8-file port of the 1.x line (@effectstream/*@0.104.x, ledger-v8, midnight-js 4) to this stack's 2.x set, with no copied SPA tree"]],
   },
   {
     repo: "acedward/web-memo", url: "https://github.com/acedward/web-memo",

@@ -199,7 +199,7 @@ MINOCRAB_SUMS_EXPECTED="${MINOCRAB_SUMS_SHA256:-4a8c0183cd887e3ca2d3446f196fab11
 MINOCRAB_RELEASE_EXPECTED="${MINOCRAB_RELEASE:-v0.2.0}"
 AA_ZKIR_SOURCE_EXPECTED="${AA_ZKIR_SOURCE:-minocrab}"
 UMBRA_EXPECTED="${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}"
-FRONTEND_EXPECTED="${FRONTEND_REF:-ea04ff7c16dab5118d4bdfeec6e7455c89981827}"
+FRONTEND_EXPECTED="${FRONTEND_REF:-400880ceb6814738d1ae193dae18ad5128922edc}"
 # effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port. The default here and
 # the Dockerfile ARG default and compose/shielded-night.yml all state the same SHA; this
 # assertion is what proves the RUNNING images were actually built from it.
@@ -333,6 +333,24 @@ if present evm-rpc; then
 fi
 if present frontend; then
   assert_pin zswap-da "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" /.zswap-da-commit "$FRONTEND_EXPECTED"
+  # The BRANCH, beside the commit. A commit alone cannot say which line of the
+  # template an image came from, and the two lines are not interchangeable:
+  # `midnight-1` is upstream's 1.x/preprod line (@effectstream/*@0.104.x, wallet
+  # SDK 1.x) that ledger-v9.patch ports to the 2.x set, while `v-next` is
+  # already on 0.200.x. An image silently built from the other branch would
+  # still carry a valid-looking 40-hex label.
+  assert_label zswap-da-branch "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" \
+    /.zswap-da-branch "${FRONTEND_BRANCH:-midnight-1}"
+  # …and it must ship no compiler, for the same reason the kernel image must not:
+  # since upstream PR #922 the template has no Compact source, so an image that
+  # can compile one was built from a tree that still had the contract lane.
+  if docker run --rm --entrypoint sh "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" \
+       -c 'command -v compactc >/dev/null 2>&1 || test -e /usr/share/nginx/html/keys' >/dev/null 2>&1; then
+    err "the frontend image carries a Compact compiler or ZK artifacts — it compiles no contract since FRONTEND_REF ${FRONTEND_EXPECTED:0:8} (#922)"
+    FAILURES=$(( FAILURES + 1 ))
+  else
+    ok "the frontend image ships no compactc and no ZK artifacts (contract-free SPA)"
+  fi
 fi
 # BOTH shielded-night runtime targets carry the commit, and both are asserted. They are two
 # images from one build — the nginx page server and the bun deploy/verify one-shot — and only
