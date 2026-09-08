@@ -130,6 +130,16 @@ services:
       # entrypoint writes it with umask 077 from FAUCET_DEPLOYER_SEED and removes it on exit.
       - '/run/faucet:mode=0700,size=64k'
     environment: &faucet_env
+      # THE DEPLOYER, and the ONLY service in this fragment that gets a seed besides the
+      # funding one-shot and the opt-in mint test. `faucet-verify` and `registry-bridge`
+      # declare their environments in full rather than merging this anchor, precisely so they
+      # cannot inherit it: a container holding a seed it does not need is a container that can
+      # leak one, and verify provably needs no wallet at all.
+      #
+      # The entrypoint renders it into a tmpfs FILE (upstream accepts a master seed only
+      # through a private file) and REFUSES all three genesis seeds outright rather than
+      # trusting this value.
+      FAUCET_DEPLOYER_SEED: '${FAUCET_DEPLOYER_SEED:-fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7}'
       # `undeployed` only, and the entrypoints refuse anything else. Pointing this at stagenet
       # would deploy six issuers with a public dev seed onto a network where mint-test-tokens'
       # own registry is already published.
@@ -326,7 +336,7 @@ services:
       # the recipient never builds a transaction, so it needs no NIGHT and no DUST; the
       # deployer pays every fee, exactly as it did for the deployment.
       FAUCET_MINT_RECIPIENT_SEED: '${FAUCET_MINT_RECIPIENT_SEED:-f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe}'
-      FAUCET_DEPLOYER_SEED: '${FAUCET_DEPLOYER_SEED:-fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7}'
+      # The DEPLOYER comes from the merged anchor above — it pays every fee here too.
       MN_SKIP_RECIPIENT_SPEND: '${MN_SKIP_RECIPIENT_SPEND:-1}'
       # Unset mints all six. verify-faucet.sh --mint sets one.
       MN_TOKEN_SYMBOL: '${MN_TOKEN_SYMBOL:-}'
