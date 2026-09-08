@@ -859,6 +859,149 @@ is legal and complete, and `scripts/verify-compose-pins.sh` renders `core shield
 alone as one of its combinations so that a dependency added later fails a gate instead of a
 demo.
 
+## The external test-token faucet — six local issuers + their mint site (profile `faucet`)
+
+`./up.sh --with faucet` deploys [`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens)
+onto **this** chain and serves its mint site on `:10950`. It is in `--all` (spec answer 6): a
+local faucet is key functionality, not an extra.
+
+### Why the faucet is EXTERNAL now
+
+Until this profile, the offer-files kernel carried its own faucet *contract* and minted its own
+WBTC/WETH/TESTTOKEN colours. Kernel PR #69/#70 removed that entirely and replaced it with a
+**canonical token registry** imported from mint-test-tokens
+(`TOKEN_REGISTRY_BASE_URL` / `TOKEN_REGISTRY_NETWORK` ∈ preview|preprod|stagenet|undeployed).
+The tokens a demo hands out are now a published artifact of one repository rather than a side
+effect of whichever contract a given stack happened to deploy — which is the right shape, and
+is what makes a local stack's tokens comparable with Preprod's by symbol and decimals.
+
+**On `undeployed` that import is skipped by design**, because a local chain has no public
+canonical registry to import from. So this profile deploys the issuers itself and bridges the
+result into the kernel; see `registry-bridge` below.
+
+### The six tokens, and the end of "6 decimals everywhere"
+
+| Symbol | Name | Decimals | Privacy | Faucet amount |
+|---|---|---|---|---|
+| `twBTC` | Test-wrapped BTC | **8** | shielded | 1 |
+| `twETH` | Test-wrapped ETH | **18** | shielded | 5 |
+| `twUSDC` | Test-wrapped USDC | 6 | shielded | 10 000 |
+| `twUSDM` | Test-wrapped USDM | 6 | shielded | 10 000 |
+| `utwUSDC` | Unshielded-test-wrapped USDC | 6 | unshielded | 10 000 |
+| `utwBTC` | Unshielded-test-wrapped BTC | **8** | unshielded | 1 |
+
+Every earlier faucet in this repository minted 6-decimal tokens and whole coins × 10⁶; the
+kernel's `known_tokens.decimals` even carries `DEFAULT 6` with a comment saying every token
+this stack registers has 6. **That is no longer true.** These are the canonical scales of the
+assets they stand in for, the column accepts 0–38, and `registry-bridge` sends each token's
+real value explicitly. Any assertion that assumed 6 has to be re-read against the registry.
+
+Their **colours are not constants** either: each is the `tokenId` derived from its issuer's
+contract address, so all six change on every fresh chain — the same property that forces
+`SNIGHT`'s seeded row to be corrected per stack.
+
+### No compiler in the image, and that is the stronger position
+
+`images/mint-test-tokens` is the only from-source image here that downloads no `compactc` and
+runs none. `contracts/v2/managed/` is **tracked** upstream (91 files, 62 MB, stamped compiler
+0.34.0 / language 0.26.0 / runtime 0.19.0), and upstream's deploy and verify runners both call
+`resolveReproducibleSourceRevision()` before they touch the chain: it refuses to run when any
+file under `contracts/v2/{shielded-token.compact,unshielded-token.compact,managed/shielded,managed/unshielded}`
+is modified, untracked or ignored. A recompile into that tree would therefore make the very
+tool this image exists to run **refuse to deploy**.
+
+That check is *stricter* than this repository's usual rebuild-and-diff, because it proves the
+artifacts are the ones a third party can fetch from a named commit — not merely that they can
+be reproduced. The image asserts the artifacts are tracked, that they declare the 2.x toolchain,
+and that their zkir is **v2** (so `MN_PROOF_SERVER_URL` correctly points at core's plain
+proof-server rather than the `aa` profile's experimental zkir-v3 one), and then runs that same
+provenance gate itself at build time — so a bad tree fails in seconds rather than after a chain,
+an indexer and a prover have come up. See `images/mint-test-tokens/PROVENANCE.md`.
+
+### Six services, two runtime targets of one image
+
+1. **`faucet-fund`** (toolkit one-shot) waits for finality to move off genesis, gives
+   `faucet-deployer` 10,000,000 NIGHT, registers its DUST address and waits for a *spendable*
+   DUST UTXO. It **skips** a wallet that already has both.
+
+   This step is not optional, and the upstream code reads as though it were. `deploy.ts` calls
+   `wallet.start(true)` on `undeployed`, which upstream's docs describe as "request local
+   faucet funding". In testkit `5.0.0-beta.7` `waitForFunds()` only contacts a faucet when
+   `env.faucet` is **configured** — and `deploy.ts` passes `faucet: undefined`, so no request is
+   ever made. What the flag actually buys is registering the wallet's NIGHT UTXOs for DUST
+   generation. The runner then refuses to write a deployment intent until the wallet exposes
+   positive DUST.
+2. **`faucet-deploy`** (one-shot, `restart: "no"`) renders the seed into a **tmpfs** file
+   (`/run/faucet`, mode 0600, removed on exit — RAM only, in no layer and no volume; upstream
+   accepts a master seed only through a private file), then deploys or resumes the six issuers
+   and publishes `metadata.undeployed.json` onto the `faucet-registry` volume by atomic rename.
+3. **`faucet-verify`** (one-shot, **no seed at all**) runs upstream's read-only verification:
+   every local verifier key compared with chain state, no missing or extra circuits, immutable
+   metadata, each token ID re-derived from its contract address, the artifact tree hashed, the
+   pinned source revision proved, the current maintenance authority matched, and the original
+   `ContractDeploy` action re-queried at its recorded height for its canonical transaction
+   hash, block height and block hash.
+4. **`registry-bridge`** (one-shot) upserts the six rows into the kernel's `known_tokens` —
+   conditional; see below.
+5. **`faucet-site`** serves `frontend/dist` on container `:14119`, published as
+   `${FAUCET_PORT:-10950}`. It uses upstream's own static server rather than nginx because the
+   registry is **not** a file in the document root: `/metadata.undeployed.json` is answered out
+   of the mounted directory, re-opened by path on every request, which is what makes the
+   deploy's atomic rename visible without restarting anything.
+6. **`faucet-mint-test`** carries a compose `profiles:` key, so `up.sh` never starts it. It is
+   the opt-in mint evidence: `./scripts/verify-faucet.sh --mint`.
+
+### Naming the six tokens in the kernel's token registry
+
+`registry-bridge` is `shielded-night-register` for six rows instead of one, and it is built the
+same way for the same reasons.
+
+* It reads `/registry/metadata.undeployed.json` **by path** (the directory is mounted, never
+  the file), validates the registry is `ready`, and maps each token to
+  `{name: symbol, color: activeDeployment.tokenId, kind: privacy, decimals}`.
+* It sends **no `asset_id`**. `known_tokens.asset_id` REFERENCES `asset_prices(asset_id)`, and
+  these six have no asset behind them: a value that is not already a priced asset fails the
+  foreign key, and a wrong one would price `twBTC` as something it is not. `NULL` is the state
+  the kernel's resolver handles explicitly — priced **by name** through `price-map.ts` — which
+  is what a test token registered at runtime is meant to be.
+* `POST /v1/known-tokens` registers a missing row. The kernel serves no `PUT`/`PATCH`, its
+  insert is `ON CONFLICT (token_color) DO NOTHING`, and `name` is `UNIQUE` — so the one case the
+  API cannot express is a row whose NAME exists carrying a DIFFERENT colour, which answers 409.
+  That is exactly one `UPDATE known_tokens … WHERE name`, which the kernel's own `000-init.sql`
+  names as the remedy. Everything else goes through the API, and the end state is always re-read
+  **through** `GET /v1/known-tokens`, never trusted from the write.
+* It is **conditional**, and the discriminator is DNS rather than `depends_on`: a profile here
+  IS a compose fragment filename, so the `kernel` service does not exist when
+  `compose/offerfiles.yml` is out of the file set, and naming it would break every
+  `--with faucet` stack. An unresolvable name is **waited out** (`FAUCET_KERNEL_DNS_WAIT_S`,
+  300 s) before it is taken to mean "absent" — project 00015 P7 measured the silent form of this
+  race, where a one-shot declared the profile absent 79 s before the kernel container started
+  and `up.sh` then reported an all-clear over a registry it had never touched.
+* Every kernel/database step runs through a bounded, **jittered** retry that treats a 5xx or a
+  refused connection as "not ready yet" and any 4xx as a definitive answer (infra issue 00016).
+
+Record as a follow-up: a kernel that could import from `TOKEN_REGISTRY_BASE_URL` on
+`undeployed` would make this one-shot unnecessary.
+
+### The site has no wallet of its own
+
+It discovers DApp Connector API 4.x wallets, compares the wallet's reported network to the
+selected registry, **delegates proving to the wallet**, submits the exact bytes wallet balancing
+returned, and then watches the wallet-selected indexer for finalization. There is no in-page
+wallet and no proof-server URL in the page at all — which is why `compose/faucet.yml` publishes
+one port and injects no endpoints, and why a headless browser can read the registry and see six
+ready tokens but cannot mint. The automated mint evidence is `faucet-mint-test`; see
+[KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md#the-faucet-profile).
+
+### It depends on nothing but core
+
+No kernel, no Celestia, no Postgres, no evm, no aa. `./up.sh --with faucet` on its own is legal
+and complete, and `scripts/verify-compose-pins.sh` renders `core faucet` alone as one of its
+combinations so that a dependency added later fails a gate instead of a demo. That constraint is
+also why `registry-bridge` runs on **this profile's own image** rather than the kernel's: a
+kernel-image service would make a faucet-only bring-up build the entire offer-files kernel,
+Compact toolchain and all.
+
 ## Appendix — the per-component notes that used to sit in the README's stack table
 
 Moved here on 2026-09-07 when the README table split into a per-profile table and a

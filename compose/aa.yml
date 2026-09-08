@@ -184,6 +184,14 @@ services:
       # page used to be framed next to it; it was removed, and the sink is now
       # internal-only.)
       AA_SOLVER_FRONTEND_PUBLIC_URL: '${AA_SOLVER_FRONTEND_PUBLIC_URL:-http://127.0.0.1:${SOLVER_FRONTEND_PORT:-10802}}'
+      # The local test-token faucet (profile `faucet`). TWO variables, because they are
+      # different things: the relay PROBES the site over the compose network on its container
+      # port, and the browser is told to OPEN the published host port — a container hostname is
+      # not reachable from a browser, and a host port is not reachable from this container.
+      # Both are harmless when the faucet profile is not up: the probe reports `absent` for a
+      # name that does not resolve, and the Faucet tab's frame simply fails to load.
+      AA_FAUCET_URL: '${AA_FAUCET_URL:-http://faucet-site:14119}'
+      AA_FAUCET_PUBLIC_URL: '${AA_FAUCET_PUBLIC_URL:-http://127.0.0.1:${FAUCET_PORT:-10950}}'
       # The three the CONSOLE PROCESS reaches over the compose network, for the
       # infrastructure tab's probes. `solver:9100` is the solver's status
       # listener: the console asks only its OPEN GET /health (no internal data,

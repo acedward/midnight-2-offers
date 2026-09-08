@@ -11,9 +11,29 @@ const HEAD_NOTES = {
   infra: "Every component of the compose stack, probed over the internal network by the console's relay service.",
   aamid: "UI preview: the same AA account flows, authorized by a Midnight wallet instead of an EVM one. Not wired yet.",
   memos: "The Web Memo app, embedded as-is from its own deployment.",
+  faucet: "The local test-token faucet: six issuers deployed onto THIS chain, and the site that mints from them. It needs an injected DApp-connector wallet — it has none of its own.",
   repos: "The exact branches, commits and pull requests every piece of this stack is built from.",
 };
-const VIEW_NAMES = ["aa", "aainfra", "aamid", "solver", "infra", "memos", "repos"];
+const VIEW_NAMES = ["aa", "aainfra", "aamid", "solver", "faucet", "infra", "memos", "repos"];
+
+// One lazy iframe, shared by the two tabs that embed another site of this stack. The src is
+// set on FIRST activation only, and it comes from /api/info rather than from a constant: both
+// sites are reached by a PUBLISHED host port, which scripts/pick-ports.sh moves, and the relay
+// is the only party here that knows which one this stack published.
+function lazyFrame(frameId, linkId, infoKey, fallback) {
+  const frame = document.getElementById(frameId);
+  if (!frame || frame.src) return;
+  const setSrc = (url) => {
+    frame.src = url;
+    const link = document.getElementById(linkId);
+    if (link) link.href = url;
+  };
+  const known = (window.state && state.info && state.info[infoKey]) || null;
+  if (known) setSrc(known);
+  else fetch("/api/info").then((r) => r.json())
+    .then((i) => setSrc(i[infoKey] || fallback))
+    .catch(() => setSrc(fallback));
+}
 
 function showView(name) {
   for (const b of document.querySelectorAll("#seg button")) b.classList.toggle("active", b.dataset.view === name);
@@ -24,21 +44,16 @@ function showView(name) {
     // One lazy frame: the solver's own monitor site. The sink's feed page was
     // removed — the sink is internal now and proves the safety counters to
     // scripts/verify-solver.sh, not to a browser.
-    const lazyFrame = (frameId, linkId, infoKey, fallback) => {
-      const frame = document.getElementById(frameId);
-      if (!frame || frame.src) return;
-      const setSrc = (url) => {
-        frame.src = url;
-        const link = document.getElementById(linkId);
-        if (link) link.href = url;
-      };
-      const known = (window.state && state.info && state.info[infoKey]) || null;
-      if (known) setSrc(known);
-      else fetch("/api/info").then((r) => r.json())
-        .then((i) => setSrc(i[infoKey] || fallback))
-        .catch(() => setSrc(fallback));
-    };
     lazyFrame("solver-monitor-frame", "solver-monitor-frame-link", "solverFrontendUrl", "http://127.0.0.1:10802");
+  }
+  if (name === "faucet") {
+    // The local mint-test-tokens site, framed the same way. Its URL comes from
+    // /api/info because a PUBLISHED host port is the only form a browser can
+    // use, and pick-ports.sh moves it — the relay knows which one this stack
+    // published, this page does not. `?network=undeployed` is already on the
+    // URL the relay hands out: the site defaults to a public network otherwise,
+    // and would show a registry that has nothing to do with this chain.
+    lazyFrame("faucet-frame", "faucet-frame-link", "faucetUrl", "http://127.0.0.1:10950/?network=undeployed");
   }
   if (name === "infra") startInfraPoll(); else stopInfraPoll();
   if (name === "memos") {
@@ -75,6 +90,7 @@ const INFRA_NODES = [
   { id: "frontend",      label: "aa-frontend (zswap-da)",    sub: ":10600 · static, backend = kernel", x: 265, y: 122, w: 210, h: 56 },
   { id: "solverSink",    label: "solver-sink (relay stand-in)", sub: "internal · relay-WS receive half", x: 500, y: 122, w: 205, h: 56 },
   { id: "solverMonitor", label: "solver-frontend (monitor)", sub: ":10802 · read-only, no wallet", x: 730, y: 122, w: 205, h: 56 },
+  { id: "faucet",        label: "faucet-site",                  sub: ":10950 · six test tokens", x: 950, y: 122, w: 160, h: 56 },
   // Infrastructure
   { id: "indexer",       label: "indexer",                   sub: ":8088 · GraphQL v4", x: 30,  y: 240, w: 150, h: 52 },
   { id: "evmRpc",        label: "umbra (eth JSON-RPC)",      sub: ":8545 · read-only",  x: 195, y: 240, w: 175, h: 52 },
@@ -118,6 +134,12 @@ const INFRA_EDGES = [
   // edge on the canvas is the compose dependency (the kernel applies the schema)
   // and the path the console probes it by; the data edge is the postgres one.
   ["priceFeed", "postgres"], ["priceFeed", "kernel"],
+  // The faucet's SITE talks to nothing: it serves a static page and a registry file. The work
+  // is done by one-shots that are gone by the time this canvas is drawn — a deploy against the
+  // node/indexer/prover, and a bridge that names the six colours in the kernel. The dashed
+  // browser edge and this one to the kernel are what a reader needs; drawing three exited
+  // containers would be drawing history.
+  ["faucet", "kernel"],
 ];
 // Short names for the table (long text hover-only — it was forcing a scroll).
 const INFRA_LABELS = {
@@ -128,6 +150,7 @@ const INFRA_LABELS = {
   solverSink: "solver sink (internal)", solver: "cow-solver", postgres: "postgres (shared)",
   solverFrontend: "solver monitor", offerPoster: "offer-poster",
   priceFeed: "price-feed",
+  faucet: "test-token faucet",
 };
 const INFRA_TITLES = {
   console: "the relay: serves this page, runs wallet sessions/proving/submission, proxies the kernel + solver sink, probes this table",
@@ -139,6 +162,7 @@ const INFRA_TITLES = {
   solver: "observation mode. Probed on its OWN status listener :9100 (open GET /health, no internal data); /status/* is bearer-gated and unpublished, and the monitor site is its only intended reader. Falls back to the sink's view of the relay socket",
   solverFrontend: "the read-only monitor site :10802 — is the solver quoting, and if not why. Holds no wallet, opens no relay socket, mutates nothing; depends on the KERNEL only, so it stays up (and says SOLVER UNREACHABLE) exactly when the solver is down",
   offerPoster: "profile `poster`: every interval it re-offers a released coin or mints one fresh coin from the faucet circuit and posts a single takeable offer, paying with its own dust. /health carries state, mints and lastOfferId",
+  faucet: "profile `faucet`: the six mint-test-tokens issuers deployed onto THIS chain, and the site that mints from them. Probed on its REGISTRY route, not on `/` — the page shell is baked into the image while metadata.undeployed.json comes from the volume this stack's own deploy one-shot published, so a probe of `/` would report `up` for a container serving six unavailable tokens. UP means: status ready, six active deployments. The page has NO in-page wallet; it needs an injected DApp-connector 4.x wallet to mint",
   priceFeed: "profile `prices` (opt-in, needs COINGECKO_API_KEY): refreshes asset_prices from CoinGecko once a day. It has no endpoint — it is probed through the kernel's /v1/prices feed block, which is the row it upserts. ABSENT means the profile never ran here (the schema's seeded prices still serve every quote); DOWN means a cycle recorded an error",
 };
 const DOT = { up: "#6fd18b", down: "#e57373", absent: "#4a5563" };
@@ -314,6 +338,16 @@ const REPOS = [
       ["PR #54 / #55 / #56", "https://github.com/effectstream/zswap-offerfiles-kernel/pull/56", "the token price service and the feed that keeps it fresh"],
       ["", "", "OPT-IN: 000-init.sql seeds real prices, so every quote works without it — the profile buys FRESH prices, not working ones"],
       ["", "", "the ONLY real secret in this stack: COINGECKO_API_KEY, .env only, no default anywhere, sent as the x-cg-demo-api-key header (never a query string). ./up.sh --all skips this profile when it is unset"],
+    ],
+  },
+  {
+    repo: "effectstream/mint-test-tokens", url: "https://github.com/effectstream/mint-test-tokens",
+    role: "the six local test-token issuers, their canonical registry and the mint site (profile faucet) — twBTC 8, twETH 18, twUSDC 6, twUSDM 6, utwUSDC 6, utwBTC 8",
+    ref: "main @ 7ecad008 (sha-pinned)",
+    notes: [
+      ["PR #4", "https://github.com/effectstream/mint-test-tokens/pull/4", "the v2 (Midnight 2.x) issuer set and the verified Preprod registry"],
+      ["", "", "NO COMPILER IN THE IMAGE: contracts/v2/managed/ is tracked upstream, and the deploy runner refuses to touch the chain unless those bytes equal the bytes at this commit — so a recompile would make the tool this image runs refuse to deploy"],
+      ["", "", "these tokens are NOT 6 decimals: BTC is 8 and ETH is 18, the canonical scales. On `undeployed` the kernel skips its canonical registry import by design, so registry-bridge names the six colours in known_tokens itself"],
     ],
   },
   {

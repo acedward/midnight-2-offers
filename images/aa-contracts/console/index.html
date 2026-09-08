@@ -145,6 +145,7 @@
     <button data-view="aainfra">AA infra</button>
     <button data-view="aamid">AA + Midnight</button>
     <button data-view="solver">Offers + Solver</button>
+    <button data-view="faucet">Faucet</button>
     <button data-view="infra">Infrastructure</button>
     <button data-view="memos">Memos</button>
     <button data-view="repos">Repos</button>
@@ -486,6 +487,34 @@
       SOLVER UNREACHABLE the page is fine and the solver is not — that is the state it
       exists to show. Or
       <a id="solver-monitor-frame-link" href="#" target="_blank" rel="noopener">open the monitor in its own tab</a>.</p>
+  </section>
+</main>
+
+<main id="view-faucet" class="view">
+  <section class="wide">
+    <h2>Test-token faucet <span class="pill dim">mint-test-tokens</span></h2>
+    <!-- The LOCAL faucet: six mint-test-tokens issuers deployed onto THIS chain by the
+         `faucet` profile, and upstream's own static site reading their registry from the
+         volume the deploy one-shot published. src is set lazily from /api/info's faucetUrl on
+         first tab activation, because the site is reached by a PUBLISHED host port and
+         scripts/pick-ports.sh moves it — the relay knows which one this stack published, this
+         page does not. `?network=undeployed` is already on that URL: the site defaults to a
+         public network otherwise, and would show a registry with nothing to do with this
+         chain. -->
+    <iframe id="faucet-frame" title="Local test-token faucet" style="width:100%;height:70vh;border:1px solid var(--edge);border-radius:8px;background:#0d1117;display:block"></iframe>
+    <p class="note"><strong>The mint buttons need a wallet this page cannot supply.</strong> The site
+      discovers DApp Connector API 4.x wallets, delegates proving to whichever one is connected and
+      submits the exact bytes that wallet balanced — it has no in-page wallet and names no proof
+      server. Without an injected <code>window.midnight</code> extension it will show six ready
+      tokens and keep every mint control disabled, which is correct rather than broken. The
+      automated mint evidence is <code>./scripts/verify-faucet.sh --mint</code>. Or
+      <a id="faucet-frame-link" href="#" target="_blank" rel="noopener">open the faucet in its own tab</a>.</p>
+    <p class="note">The six are <code>twBTC</code> (8), <code>twETH</code> (18), <code>twUSDC</code> (6),
+      <code>twUSDM</code> (6), <code>utwUSDC</code> (6) and <code>utwBTC</code> (8) — <em>not</em> six
+      decimals across the board, which every earlier faucet in this stack was. Their colours derive
+      from their issuers' contract addresses, so all six change on every <code>./down.sh -v</code>;
+      the <code>registry-bridge</code> one-shot is what keeps the kernel's names pointing at the
+      colours this chain can actually hold.</p>
   </section>
 </main>
 

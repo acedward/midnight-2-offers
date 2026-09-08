@@ -31,6 +31,7 @@ healthy":
 | evm-rpc (`--with evm`) | `eth_chainId` answers over HTTP, **and** the WS port completes a `101 Switching Protocols` handshake | A TCP probe of a *published* port proves nothing: docker's port proxy accepts the connection before it dials the container, so `nc -z` reports a working endpoint that refuses every client |
 | solver-frontend (`--with solver`) | the container healthcheck (`/health` on the monitor itself) | Deliberately says nothing about the solver: a monitor whose health followed the thing it monitors would be reported down exactly when it is needed. The solver's own wait, one line above it in `up.sh`, is what proves the solver is quoting |
 | price-feed (`--with prices`) | nothing container-side — the KERNEL's `GET /v1/prices` is polled until `feed.last_ok_at` is non-null (bounded by `PRICES_WAIT_TIMEOUT`, default 180 s); a timeout is a WARN | The feed publishes no port and has no healthcheck: it is a *writer*, and its liveness signal is a row. `price_feed_status` is deliberately NOT seeded by `000-init.sql`, so a non-null `last_ok_at` means exactly "a cycle completed against THIS database" and nothing weaker. A timeout is a warning because a feed that cannot reach CoinGecko still leaves every quote working from the seeded prices; `./verify.sh --prices` is the gate |
+| faucet-site (`--with faucet`) | the container healthcheck, then the SITE's own `/metadata.undeployed.json` is READ over HTTP and required to be `ready` with six active deployments | `service_completed_successfully` on `faucet-deploy` is not enough: it is equally satisfied by a deploy that took the RESUME path against a registry from a previous chain, and by a site container still blocking on an empty volume. It is read through HTTP rather than off the volume because that is where a browser reads it — a page still serving a previous inode would pass a filesystem check and fail a user. `up.sh` then waits on `registry-bridge`'s exit code, but only when `offerfiles` is also up (with no kernel that one-shot exits 0 by design) |
 | offer-poster (`--with poster`) | the container healthcheck (`/health` binds), then `/health` is READ: `degraded` is a WARN, `failed` is a failure | `/health` answers 200 while the poster is `starting` and while it is `degraded` (no DUST yet) — 503-ing on `degraded` would make Compose restart a container that is correctly waiting for NIGHT. So healthy proves only that the server bound, which happens after wallet sync + dust registration + the dust wait + the contract join (hence `POSTER_WAIT_TIMEOUT=900`). `./verify.sh --poster` is the gate that requires a real mint and a posted offer |
 
 ## Verifying and tearing down
@@ -108,6 +109,8 @@ What it removes, and what each piece of state is keyed to:
 | eth balances/logs/cursors (db `umbra`) **and** the offer book (db `offerfiles`) | volume `<project>_postgres-data` | that same genesis |
 | the deployed offer-files contract address | volume `<project>_offerfiles-deploy` | that same genesis |
 | the batcher's accepted-but-unsubmitted inputs | volume `<project>_offerfiles-batcher` | that same genesis |
+| the six local test-token identities (`metadata.undeployed.json`) | volume `<project>_faucet-registry` | that same genesis — the runner records the chain name, runtime version and genesis hash in the file, and refuses to reuse it against a different one |
+| the faucet deploy journal + its private state store | volume `<project>_faucet-journal` | the same, and the registry beside it |
 | Celestia chain + validator keyring + bridge store | volume `<project>_celestia-data` | its own Celestia genesis |
 | the DA auth token + handoff file | volume `<project>_celestia-auth` | the bridge store above |
 | toolkit fetch/ledger cache | host directory `.cache/<project>/` | that same Midnight genesis |
@@ -121,7 +124,10 @@ only cost is one ~223 MB re-download (~60 s) the next time the stack comes up �
 servers will not start until that download verifies, by design.
 
 Everything else must go together. A fresh node genesis beside a surviving indexer database gives you an
-indexer serving a chain that no longer exists; a surviving toolkit cache makes the next funding
+indexer serving a chain that no longer exists; a surviving `faucet-registry` names six contract
+addresses the new chain has never heard of, and every token colour derived from those addresses
+would be wrong (the deploy runner catches exactly this and STOPS, marking the registry stale
+rather than silently replacing it — see [the faucet profile](#redeploy-and-resume-semantics)); a surviving toolkit cache makes the next funding
 run fail in a way that looks nothing like "stale cache"; and an offer spans **both** chains, so a
 Celestia history describing offers against a Midnight genesis that no longer exists is worse than
 no history at all. The cache is the one piece compose cannot remove for you (it is a host
@@ -135,6 +141,96 @@ reset costs you a `fund-wallet.sh --all-demo`, nothing more.
 If a teardown ever reports leftovers, `./down.sh -v` printed the exact filter to inspect them
 with; the same assertion (plus a name-prefix sweep for unlabelled volumes) is what
 `scripts/ci-check.sh` fails on.
+
+## The `faucet` profile
+
+```bash
+./up.sh --with faucet          # core + this profile; nothing else is needed
+./verify.sh --faucet           # REQUIRE the section (fail if the profile is not up)
+./verify.sh --no-faucet        # skip it even when the profile is up
+./scripts/verify-faucet.sh --static   # the offline seed-distinctness check alone
+./scripts/verify-faucet.sh --mint     # …plus one real mint, proved by a second wallet
+```
+
+Open **http://127.0.0.1:10950/?network=undeployed**.
+
+### What bring-up actually does, in order
+
+1. **`faucet-fund`** (toolkit one-shot) waits for finality to move off genesis, gives
+   `faucet-deployer` 10,000,000 NIGHT, registers its DUST address and waits until a *spendable*
+   DUST UTXO exists. It **skips** a wallet that already has both, so the second and later
+   `./up.sh` runs cost seconds. On the ledger-9 line this is not optional — see
+   [COMPONENTS.md](COMPONENTS.md#six-services-two-runtime-targets-of-one-image) for why the
+   upstream code reads as though it were.
+2. **`faucet-deploy`** (one-shot, `restart: "no"`) renders `FAUCET_DEPLOYER_SEED` into a
+   **tmpfs** file at `/run/faucet/deployer-seed.hex` (mode 0600, removed on exit), waits for
+   node block #1, the indexer and the proof server, then runs upstream's deploy — six issuers,
+   journalled, resumable — and publishes `metadata.undeployed.json` onto the `faucet-registry`
+   volume by atomic rename.
+3. **`faucet-verify`** (one-shot, **no seed**) re-verifies all six against the chain.
+4. **`registry-bridge`** (one-shot) names the six colours in the kernel's `known_tokens`, or
+   logs one line and exits 0 when the `offerfiles` profile is not in this stack.
+5. **`faucet-site`** starts on `faucet-verify`'s `service_completed_successfully`, blocks until
+   it can read the registry, and serves it.
+6. `up.sh` waits for the healthcheck, then **reads the registry back over HTTP** and names the
+   six symbols in its summary line.
+
+The first bring-up is the slow one — funding plus six real deploys proved on a cold chain —
+which is why `FAUCET_WAIT_TIMEOUT` defaults to 1500 s rather than the core services' 120–420 s.
+
+### Redeploy and resume semantics
+
+The six issuers are deployed **once per stack**, and that is a correctness property rather than
+an optimisation: each token's colour is derived from its issuer's contract address, so a silent
+redeploy turns every test coin already minted into a different, unspendable token.
+
+Resume is **upstream's** behaviour, not something this repository bolts on. The runner derives a
+stack identity from the node's chain name, runtime version and genesis hash; journals every
+deployment intent before submitting; and re-verifies a recorded contract — complete on-chain
+verifier-key set, immutable metadata, derived token ID — rather than deploying a replacement.
+
+* `./up.sh` again, `--force-recreate`, a restarted deploy container → **the same six
+  contracts**, verified, nothing republished.
+* `./down.sh` (chain kept) → same. The `faucet-registry` and `faucet-journal` volumes survive
+  and the chain identity is unchanged.
+* `./down.sh -v` → both volumes go with the chain volumes, and the next bring-up deploys afresh.
+  That is the ONLY supported way to get new issuers.
+* A registry left beside a **different** chain (a wiped `node-data` with a surviving
+  `faucet-registry`, say) is marked **stale** and the deploy STOPS. Replacing a recorded
+  deployment silently is how a token somebody already holds becomes unspendable. The remedy is
+  an explicit `MN_REDEPLOY_STALE=1` rerun after confirming the reset — and because `./down.sh -v`
+  removes the volume, the normal reset path never needs it.
+
+### Stale locks
+
+The runner takes an exclusive writer lock beside the registry and beside its journal, and
+**deliberately does not steal locks** — two writers could otherwise publish conflicting state.
+A container killed mid-deploy can leave a `.lock` file behind:
+
+```bash
+# read the PID the lock records, confirm no such process is running, then:
+docker compose … run --rm --entrypoint sh faucet-deploy -c 'cat /registry/*.lock; rm -f /registry/*.lock'
+```
+
+The journal's lock lives on the `faucet-journal` volume under `/app/.local/deployments/`. If a
+deploy call timed out before returning an address, the journal keeps an **uncertain in-flight
+marker** and the next run refuses to submit again: reconcile the node and indexer first, and set
+`MN_CONFIRM_NO_DEPLOYMENT=1` only after proving that no contract finalized.
+
+### What the verify section asserts
+
+`./verify.sh --faucet` runs `scripts/verify-faucet.sh`, which checks, in order: the seeds are
+dedicated (offline); the page and the v2 receiver ZK artifacts serve as bytes and a missing
+artifact answers 404 rather than the app shell; the registry served **over HTTP** is `ready`
+with six active deployments and the expected symbols, colours and *real* decimals (8/18/6, not
+6 everywhere); the three one-shots exited 0; upstream's read-only verification passes **freshly**
+against the chain; and — only when `offerfiles` is up — the kernel's `GET /v1/known-tokens` names
+all six with exactly those colours and decimals.
+
+The mint is **opt-in** (`--mint`), because it is a proof cycle on a cold devnet. It mints
+`twUSDC` — a *shielded* token, because the shielded path is the one that needs
+`additionalCoinEncPublicKeyMappings` to be right for a third-party recipient, and an unshielded
+mint would pass even if that were broken.
 
 ## Running two stacks at once
 
@@ -163,6 +259,7 @@ new service means a new offset rather than a new fixed number. The current layou
 | +12 | `SHIELDED_NIGHT_HOST_PORT` | 10900 |
 | +13 | `SOLVER_FRONTEND_PORT` — the COW solver's monitor site | 10802 |
 | +14 | `POSTER_HEALTH_PORT` — the offer poster's health/metrics/journal | 10803 |
+| +15 | `FAUCET_PORT` — the local test-token faucet site | 10950 |
 
 The `prices` profile adds **no offset**: `price-feed` publishes nothing at all. It is a writer —
 CoinGecko in, `asset_prices` out — and what it wrote is read back through the kernel's already

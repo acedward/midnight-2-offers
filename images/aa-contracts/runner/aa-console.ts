@@ -95,6 +95,13 @@ const SOLVER_FRONTEND_URL = process.env["AA_SOLVER_FRONTEND_URL"] ?? "http://sol
 const SOLVER_STATUS_URL = process.env["AA_SOLVER_STATUS_URL"] ?? "http://solver:9100";
 // The offer poster's own read-only surface.
 const OFFER_POSTER_URL = process.env["AA_OFFER_POSTER_URL"] ?? "http://offer-poster:9977";
+// The local test-token faucet (profile `faucet`). TWO variables, and they are different
+// things: the first is what the RELAY dials over the compose network to probe it, the second
+// is what the BROWSER is told to open — a container hostname is not reachable from a browser,
+// and a published host port is not reachable from this container. Same split as the solver
+// monitor's two variables above.
+const FAUCET_URL = process.env["AA_FAUCET_URL"] ?? "http://faucet-site:14119";
+const FAUCET_PUBLIC_URL = process.env["AA_FAUCET_PUBLIC_URL"] ?? "http://127.0.0.1:10950";
 // Shielded funding runs on the aa-deploy wallet (genesis-3): prefunded, and it
 // already holds the shielded colour minted at bring-up. The RELAY wallet stays
 // shielded-free (T7.5 rule) — that is the entire reason for the second seed.
@@ -1247,7 +1254,12 @@ async function infraStatus() {
   // The monitor site and the offer poster. Both are opt-in profiles, so `absent`
   // (which `probe` reports for a name that does not resolve) is the normal
   // answer on a stack that did not bring them up — not an error.
-  const [solverFrontend, offerPoster] = await Promise.all([
+  //
+  // The faucet is probed on its REGISTRY route rather than on `/`: the page shell is served by
+  // the image, while metadata.undeployed.json comes from the volume this stack's own deploy
+  // one-shot published. A probe of `/` would report `up` for a container that is serving six
+  // unavailable tokens, which is exactly the state an operator needs to see.
+  const [solverFrontend, offerPoster, faucet] = await Promise.all([
     probe(async () => (await fetchJson(`${SOLVER_FRONTEND_URL}/health`)) as any),
     probe(async () => {
       const h = (await fetchJson(`${OFFER_POSTER_URL}/health`)) as any;
@@ -1257,6 +1269,19 @@ async function infraStatus() {
         liveOffers: h.liveOffers,
         lastOfferId: typeof h.lastOfferId === "string" ? h.lastOfferId.slice(0, 12) : null,
         lastFailure: h.lastFailure ?? null,
+      };
+    }),
+    probe(async () => {
+      const reg = (await fetchJson(`${FAUCET_URL}/metadata.undeployed.json`)) as any;
+      const active = (reg?.tokens ?? []).filter((t: any) =>
+        (t?.deployments ?? []).some((d: any) => d?.deploymentId === t?.activeDeploymentId && d?.status === "active"));
+      if (reg?.status !== "ready" || active.length !== 6) {
+        throw new Error(`registry is ${reg?.status ?? "unreadable"} with ${active.length} active deployments`);
+      }
+      return {
+        status: reg.status,
+        tokens: active.map((t: any) => t.symbol),
+        registryRevision: typeof reg.registryRevision === "string" ? reg.registryRevision.slice(0, 12) : null,
       };
     }),
   ]);
@@ -1307,7 +1332,7 @@ async function infraStatus() {
       console: { status: "up", info: { relayFunded: relay.funded, takerFunded: taker.funded, jobsQueued: queue.length } },
       node, indexer, proofServer, aaProofServer,
       kernel, kernelSync, batcher, celestia,
-      evmRpc, frontend, solverSink: sink, solver, solverFrontend, offerPoster,
+      evmRpc, frontend, solverSink: sink, solver, solverFrontend, offerPoster, faucet,
       priceFeed: priceFeedComponent,
       // The one store for the whole stack (T11.4): the kernel's offer book
       // (`offerfiles`) and umbra-evm's index (`umbra`) both live here.
@@ -1358,6 +1383,7 @@ Bun.serve({
           tokensError: tokens.error,
           kernelUrl: KERNEL_URL,
           solverFrontendUrl: SOLVER_FRONTEND_PUBLIC_URL,
+          faucetUrl: `${FAUCET_PUBLIC_URL.replace(/\/+$/, "")}/?network=undeployed`,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
           // Withdraw's node-rejection (Custom error 214, recipient Either arm
           // inversion) was FIXED upstream in AA PR #10 (713a2021…) and this

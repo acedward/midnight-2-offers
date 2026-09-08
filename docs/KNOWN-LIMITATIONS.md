@@ -241,6 +241,59 @@ stated here rather than left to a build flag nobody reads.
 - **Changing it is KEY-BREAKING.** A contract is deployed with one verifier key; proofs made
   against another are rejected. Switching `AA_ZKIR_SOURCE` needs `./down.sh -v` and a redeploy.
 
+## The `faucet` profile
+
+These are properties of the upstream site, of the kernel's registry API and of the 2.x line —
+not defects introduced here. Everything the automated gates *can* prove, they prove; this is the
+honest list of what they cannot.
+
+- **The browser cannot mint on a stack this repository drives, and that is upstream's design.**
+  The faucet site discovers DApp Connector API 4.x wallets: it has **no in-page wallet**, it
+  delegates proving to whichever wallet is connected, and it submits the exact bytes wallet
+  balancing returned. A headless browser with no injected `window.midnight` extension can load
+  the page, select `undeployed`, read the registry and see six ready tokens — and every mint
+  control stays unavailable, correctly. The automated mint evidence is therefore
+  `faucet-mint-test` (`./scripts/verify-faucet.sh --mint`), which runs upstream's own
+  `contracts/v2/mint-wallet-test.ts`: it mints to a **second** wallet and waits for that wallet
+  to discover the balance through its regular chain scan, so it proves the encrypted-output path
+  a real wallet depends on rather than merely that a transaction was accepted.
+- **An EXTENSION wallet only reaches the stack on the DEFAULT port block.** Same limitation the
+  `shielded-night` profile has, for the same reason: an extension's `undeployed` preset
+  hardcodes node `9944`, indexer `8088`, proof-server `6300`, and nothing this stack serves can
+  change what a browser extension dials. A stack from `scripts/pick-ports.sh` is unreachable
+  from it. The runner-based mint test passes on any port block, so this affects the hand test
+  only.
+- **The six tokens are NOT 6 decimals.** `twBTC`/`utwBTC` are 8 and `twETH` is 18. Every earlier
+  faucet in this repository minted 6-decimal tokens and whole coins × 10⁶, and the kernel's
+  `known_tokens.decimals` still carries `DEFAULT 6` with a comment asserting that is universal.
+  `registry-bridge` sends each token's real value explicitly, so the *registry* is right — but
+  any demo amount, quote assertion or UI display that assumed 6 has to be re-read against the
+  registry. `scripts/verify-faucet.sh` asserts the real values, so a regression to 6 fails a gate.
+- **The six local symbols are not the kernel's price-map names.** `price-map.ts`'s default map is
+  keyed by NAME (`WBTC` → bitcoin, `WETH` → ethereum), and these are `twBTC`/`twETH`/…, so the
+  six bridge in **unpriced**: `registry-bridge` deliberately sends no `asset_id`, because
+  `known_tokens.asset_id` REFERENCES `asset_prices(asset_id)` and a fabricated value would either
+  fail the foreign key or price a test token as something it is not. Quotes over these tokens are
+  therefore unpriced until a later change teaches the kernel the mapping — recorded as a
+  follow-up, and out of scope for the profile that merely names them.
+- **`registry-bridge` writes one `UPDATE` directly to postgres.** The kernel serves only
+  `GET`/`POST` for `known_tokens`, its insert is `ON CONFLICT (token_color) DO NOTHING`, and
+  `name` is `UNIQUE` — so a row whose NAME exists carrying a different colour answers 409 and
+  cannot be corrected through the API at all. That is the case the kernel's own `000-init.sql`
+  names `UPDATE known_tokens … WHERE name` as the remedy for, and it is the only SQL this profile
+  writes. The end state is always re-read through the API. A kernel with an update route would
+  remove this; so, more fundamentally, would a kernel that could import from
+  `TOKEN_REGISTRY_BASE_URL` on `undeployed`, which is the follow-up worth having.
+- **A killed deploy can leave a lock behind, and the tooling will not steal it.** Two writers
+  could otherwise publish conflicting registries. Read the PID out of the `.lock`, confirm no
+  such process is running, and remove it by hand — see
+  [OPERATIONS.md](OPERATIONS.md#stale-locks). Likewise, a deploy call that timed out before
+  returning an address leaves an **uncertain in-flight marker** and the next run refuses to
+  submit again; that is a deliberate stop, not a bug.
+- **The `runner` image ships `.git`, and it must.** Upstream's provenance gate shells out to
+  `git rev-parse`, `git diff`, `git ls-files`, `git ls-tree` and `git show` on every deploy and
+  every verify. Stripping it to save ~33 MB would break the property this profile is built on.
+
 ## The `shielded-night` profile
 
 These are properties of the upstream dApp and of the 2.x line, not defects introduced here.

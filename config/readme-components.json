@@ -63,6 +63,12 @@
       "pinnedIn": "{files:FRONTEND_REF}"
     },
     {
+      "component": "**mint-test-tokens** \u2014 six local test-token issuers + the faucet site",
+      "source": "[`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` ([PR #4](https://github.com/effectstream/mint-test-tokens/pull/4)); **NO compiler in the image** \u2014 `contracts/v2/managed/` is tracked upstream and the deploy runner re-proves those bytes against the pinned commit on every run",
+      "pin": "{commit:MINT_TEST_TOKENS_REF@effectstream/mint-test-tokens}",
+      "pinnedIn": "{files:MINT_TEST_TOKENS_REF}"
+    },
+    {
       "component": "Shielded NIGHT dApp",
       "source": "[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) branch `ledger-v9` ([PR #10](https://github.com/effectstream/shielded-night/pull/10)); contract recompiled in-image with compactc 0.34.0, byte-identical to the committed artifacts",
       "pin": "{commit:SHIELDED_NIGHT_REF@effectstream/shielded-night}",

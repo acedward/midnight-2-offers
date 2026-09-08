@@ -34,8 +34,8 @@ Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
                      A profile is a compose fragment in compose/, named after the profile. An
                      unknown name is an error, not a no-op.
-                     Available now: aa, evm, frontend, offerfiles, poster, prices,
-                     shielded-night, solver.
+                     Available now: aa, evm, faucet, frontend, offerfiles, poster,
+                     prices, shielded-night, solver.
   --all              bring up every shipped profile in compose/, EXCEPT `prices` unless
                      COINGECKO_API_KEY is set — that profile is the only one that needs a
                      third-party secret, and a host without one must still be able to run
@@ -66,7 +66,9 @@ offerfiles); prices runs the CoinGecko feed that refreshes the kernel's referenc
 offerfiles AND a COINGECKO_API_KEY in the env file — the stack quotes from seeded prices without
 it); shielded-night funds its own wallets,
 deploys the NIGHT <-> sNight wrapper contract ONCE per stack and serves its dApp, depending on
-nothing but core. `--all` selects all of them.
+nothing but core; faucet funds its own deployer, deploys the six mint-test-tokens issuers ONCE
+per stack, serves their mint site and — when offerfiles is also up — names all six in the
+kernel's token registry, also depending on nothing but core. `--all` selects all of them.
 
 Environment:
   ENV_FILE=<path>    use a different env file than ./.env — this is how two stacks run
@@ -79,6 +81,7 @@ Examples:
   ./up.sh --with offerfiles     # …and Celestia + kernel + batcher, without stopping evm
   ./up.sh --with frontend       # …and the zswap-da SPA
   ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
+  ./up.sh --with faucet         # …and the six local test tokens + their mint site
   ./up.sh --with offerfiles --with prices   # …and live CoinGecko reference prices (needs a key)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
@@ -387,6 +390,55 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
   fi
 fi
 
+# The faucet profile. Compose gates the site on `faucet-verify`, which is gated on
+# `faucet-deploy` — and that chain is NOT enough on its own: it is equally satisfied by a
+# deploy that took the RESUME path against a registry from a previous chain, and by a site
+# container that is still blocking on an empty volume. So the two things that actually matter
+# are asserted here — the registry really is on the volume with six ready tokens, and the page
+# really is serving it — and the six colours are summarised so an operator can see at a glance
+# whether a `./down.sh -v` gave them new issuers.
+FAUCET_TOKENS=""
+if (( ! FAILED )) && [[ " $PROFILES " == *" faucet "* ]]; then
+  wait_compose_healthy faucet-site "${FAUCET_WAIT_TIMEOUT:-1500}" || FAILED=1
+  if (( ! FAILED )); then
+    # Read through the SITE's own HTTP surface rather than off the volume: that is where a
+    # browser reads it, and a page still serving a previous inode would pass a filesystem check
+    # and fail a user. `|| true` keeps a failed read reportable by the assertion below.
+    FAUCET_TOKENS="$(dc exec -T faucet-site \
+      node -e 'const r = await fetch("http://127.0.0.1:14119/metadata.undeployed.json"); const d = await r.json(); if (d.status !== "ready") process.exit(1); const a = (d.tokens ?? []).filter((t) => (t.deployments ?? []).some((x) => x.deploymentId === t.activeDeploymentId && x.status === "active")); if (a.length !== 6) process.exit(1); process.stdout.write(a.map((t) => t.symbol).join(" "));' \
+      2>/dev/null || true)"
+    if [[ -z "$FAUCET_TOKENS" ]]; then
+      err "the faucet site is not serving a ready registry with six active deployments"
+      FAILED=1
+    else
+      log "faucet: six issuers ready — ${FAUCET_TOKENS}"
+    fi
+  fi
+  # `registry-bridge` teaches the kernel this stack's six local colours. It cannot be expressed
+  # as a compose dependency of anything (a profile here IS a fragment filename, so it may not
+  # name a service from offerfiles.yml, and nothing in offerfiles.yml may name it), so its
+  # completion is waited for HERE — and only when the kernel is actually in this stack, because
+  # with no kernel the one-shot exits 0 by design after waiting its DNS budget out.
+  if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
+    bridge_cid="$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=registry-bridge" 2>/dev/null | head -1)"
+    if [[ -z "$bridge_cid" ]]; then
+      warn "no registry-bridge container — the six local tokens will show as short hex everywhere"
+    else
+      bridge_code="$(docker wait "$bridge_cid" 2>/dev/null || echo "")"
+      if [[ "$bridge_code" == "0" ]]; then
+        log "registry-bridge: the six local tokens are named in the kernel's token registry"
+      else
+        err "registry-bridge exited ${bridge_code:-<unknown>} — the six local tokens have no names"
+        info "  logs: docker logs ${bridge_cid}"
+        info "  the swap page, the monitor and /v1/quote will show short hex until this succeeds"
+        FAILED=1
+      fi
+    fi
+  fi
+fi
+
 # The shielded-night profile. `service_completed_successfully` on the deploy one-shot is what
 # compose gates the web container on, and it is NOT enough on its own: it is equally satisfied
 # by a one-shot that took the JOIN path against a volume from a previous chain. So the two
@@ -571,6 +623,10 @@ if [[ " $PROFILES " == *" offerfiles "* ]]; then
 fi
 if [[ " $PROFILES " == *" shielded-night "* ]]; then
   info "Shielded NIGHT     http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT:-10900}   contract ${SHIELDED_NIGHT_CONTRACT:-unknown}"
+fi
+if [[ " $PROFILES " == *" faucet "* ]]; then
+  info "test-token faucet  http://${HOST_ADDR}:${FAUCET_PORT:-10950}/?network=undeployed   ${FAUCET_TOKENS:-unknown}"
+  info "                   the page needs an injected DApp-connector wallet to MINT; it has none of its own"
 fi
 if [[ " $PROFILES " == *" solver "* ]]; then
   info "solver monitor     http://${HOST_ADDR}:${SOLVER_FRONTEND_PORT:-10802}   (read-only: is it quoting, and if not why)"

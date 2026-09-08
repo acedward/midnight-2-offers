@@ -204,6 +204,12 @@ FRONTEND_EXPECTED="${FRONTEND_REF:-ea04ff7c16dab5118d4bdfeec6e7455c89981827}"
 # the Dockerfile ARG default and compose/shielded-night.yml all state the same SHA; this
 # assertion is what proves the RUNNING images were actually built from it.
 SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-30af63f3865d0bc5d5331ae32a7891ad48818303}"
+# effectstream/mint-test-tokens branch `main` — the six local test-token issuers and their mint
+# site. ONE pin for both runtime targets, and it is the one identity in this profile that
+# matters: the image runs no compiler, so "the right commit" is not a proxy for "the right
+# artifacts" here — it IS them. Upstream's deploy/verify runners re-prove the artifact bytes
+# against that commit on every run, and the image proves it once at build time.
+MINT_TEST_TOKENS_EXPECTED="${MINT_TEST_TOKENS_REF:-7ecad008b07acb2a491d8291e05455cbd638910f}"
 
 if present indexer; then
   assert_pin indexer "${INDEXER_IMAGE:-midnight-2-offers/indexer:local}" /opt/indexer-standalone/.indexer-commit "$INDEXER_EXPECTED"
@@ -298,6 +304,20 @@ fi
 if present shielded-night-deploy; then
   assert_pin shielded-night-deploy "${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-2-offers/shielded-night-deploy:local}" \
     /.shielded-night-commit "$SHIELDED_NIGHT_EXPECTED"
+fi
+# BOTH mint-test-tokens runtime targets carry the commit, for the same reason: the static site a
+# browser mints from and the runner that deployed the issuers are two images from one build, and
+# an operator answering "which revision are these tokens?" from the wrong one is answering about
+# the wrong artifact. The SITE is the sentinel service of the profile, so it is checked whenever
+# the profile is up at all; the runner's containers are one-shots that may already be gone,
+# which is why `present` is asked about each separately.
+if present faucet-site; then
+  assert_pin mint-test-tokens-site "${FAUCET_SITE_IMAGE:-midnight-2-offers/mint-test-tokens-site:local}" \
+    /.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
+fi
+if present faucet-deploy; then
+  assert_pin mint-test-tokens "${FAUCET_RUNNER_IMAGE:-midnight-2-offers/mint-test-tokens:local}" \
+    /.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
 fi
 
 if (( FAILURES == 0 )); then

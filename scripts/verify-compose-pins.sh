@@ -55,6 +55,12 @@ COMBOS=(
   # dependency on any other fragment fail to render here.
   "core shielded-night"
   "core offerfiles shielded-night"
+  # `core faucet` ALONE is rendered for the same reason as `core shielded-night` alone: the
+  # faucet profile depends on nothing but core (its registry bridge discriminates by DNS
+  # precisely so it need not name the kernel), and the cheapest way to keep that true is to make
+  # a dependency on any other fragment fail to render here.
+  "core faucet"
+  "core offerfiles faucet"
   "core offerfiles solver"
   # `core offerfiles prices` is rendered with an EMPTY env file ON PURPOSE, and that is
   # the point of listing it: the price feed is the one service that needs a real secret,
@@ -62,7 +68,7 @@ COMBOS=(
   # would fail right here — which is exactly what it would do inside `./down.sh` for
   # every operator who has no key, since down.sh passes every fragment (00010 Q23).
   "core offerfiles prices"
-  "core offerfiles aa evm frontend shielded-night solver"
+  "core offerfiles aa evm faucet frontend shielded-night solver"
 )
 
 FAILURES=0
@@ -73,13 +79,14 @@ for combo in "${COMBOS[@]}"; do
   for frag in $combo; do files+=(-f "$REPO_ROOT/compose/${frag}.yml"); done
 
   render="$(mktemp)"
-  # `--profile fund --profile shielded-night-verify` so the two profile-gated one-shots are
-  # rendered too; they are otherwise filtered out and their image pins would never be checked.
+  # The THREE profile-gated one-shots are rendered too (`fund`, `shielded-night-verify` and
+  # `faucet-mint-test`); they are otherwise filtered out and their image pins would never be
+  # checked.
   # A `profiles:` key is how this repository declares a service `up -d` must not start, so
   # without this the checks would silently skip exactly those services.
   # ${files[@]+…} guards the empty case: macOS bash 3.2 errors on "${files[@]}" under
   # `set -u` when the array has no elements. Same note as lib/common.sh's dc().
-  if ! docker compose --env-file "$EMPTY_ENV" --profile fund --profile shielded-night-verify ${files[@]+"${files[@]}"} config --format json \
+  if ! docker compose --env-file "$EMPTY_ENV" --profile fund --profile shielded-night-verify --profile faucet-mint-test ${files[@]+"${files[@]}"} config --format json \
        >"$render" 2>"$render.err"; then
     err "compose could not render: ${combo}"
     sed 's/^/      /' "$render.err" >&2

@@ -125,6 +125,9 @@ CI_IMAGE_TAGS=(
   # BOTH shielded-night tags: one build context, two runtime targets, two image names. Listing
   # only one would leave the other behind and the teardown assertion would still say "clean".
   "${SHIELDED_NIGHT_IMAGE:-}" "${SHIELDED_NIGHT_DEPLOY_IMAGE:-}"
+  # And BOTH mint-test-tokens tags, for exactly the same reason: one build context, a runner
+  # target and a site target.
+  "${FAUCET_RUNNER_IMAGE:-}" "${FAUCET_SITE_IMAGE:-}"
 )
 
 # ── teardown, asserted ───────────────────────────────────────────────────────

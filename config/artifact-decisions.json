@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v1",
-  "pinsDigest": "8ae49e39f09d038aaeea0d9c97ec284b910d9c598be8fc8f209cca1fa227c986",
+  "pinsDigest": "001ae1b2295026ecc25e48d6940b0398b7d1bdfc8feb3c12e40f4f449932dc92",
   "frozenOn": "2026-08-31",
   "note": "Frozen artifact-selection contract for the external runtime dependencies of this demo. Every field here was re-derived from live sources on the freeze date. scripts/verify-artifact-decisions.sh enforces it. Do not edit a digest to make a build pass: re-verify the source first.",
   "selectionOrder": [
@@ -625,6 +625,12 @@
       "decision": "source-build",
       "inArtifactNormalizationScope": false,
       "reason": "pg_ivm is compiled in; no reusable warehouse runtime artifact exists."
+    },
+    {
+      "id": "mint-test-tokens",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "The six native test-token issuers, their canonical registry and the static mint site (effectstream/mint-test-tokens), built from an immutable full commit on the long-lived main branch, with the commit baked into both runtime images as /.mint-test-tokens-commit and asserted by scripts/verify-source-pins.sh. UNIQUELY AMONG THIS REPOSITORY'S SOURCE BUILDS IT DOWNLOADS AND RUNS NO COMPILER, and that is a stronger position rather than a weaker one: contracts/v2/managed/ is TRACKED upstream (91 files, stamped compiler 0.34.0 / language 0.26.0 / runtime 0.19.0), and upstream's own deploy and verify runners refuse to touch the chain unless the artifact bytes on disk equal the bytes at the resolved commit exactly - so a recompile into that tree would make the very tool this image exists to run REFUSE to deploy. Rule 2's principle (an exact published artifact is taken by hash, never recompiled) applies here with the immutable commit as the artifact, the same reasoning sources[minocrab-release] records for the AA Manager's ZK keys. The build asserts the artifacts are tracked, that they declare the 2.x toolchain, and that their zkir is v2 - the PLAIN proof-server lane, not the aa profile's experimental v3 - and then runs upstream's own provenance gate at build time so a bad tree fails in seconds rather than mid-bring-up."
     },
     {
       "id": "shielded-night",

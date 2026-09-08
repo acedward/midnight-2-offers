@@ -12,6 +12,10 @@
 #   prices   the CoinGecko feed has refreshed the kernel's reference prices: a cycle
 #            completed against THIS database, the rows it wrote are recent, and the
 #            quote path uses them (skipped unless the profile is up)
+#   faucet   the six local mint-test-tokens issuers: the published registry is ready with six
+#            active deployments, the site serves it and the v2 ZK artifacts as bytes, upstream's
+#            own read-only verifier passes FRESH against the chain, and — when `offerfiles` is
+#            also up — the kernel names all six by symbol, colour and real decimals
 #   shielded-night  the dApp serves, /config.js carries THIS stack's contract address, the 11
 #            circuits' ZK artifacts and the integrity manifest answer with bytes, the on-chain
 #            verifier keys equal the served ones, and a funded wallet distinct from the
@@ -32,6 +36,7 @@ KERNEL_MODE=auto
 AA_MODE=auto
 FRONTEND_MODE=auto
 SHIELDED_NIGHT_MODE=auto
+FAUCET_MODE=auto
 SOLVER_MODE=auto
 POSTER_MODE=auto
 PRICES_MODE=auto
@@ -56,6 +61,8 @@ Options:
   --no-frontend  skip the frontend section even if the profile is up
   --shielded-night     require the shielded-night section (fail if the profile is not up)
   --no-shielded-night  skip the shielded-night section even if the profile is up
+  --faucet       require the faucet section (fail if the profile is not up)
+  --no-faucet    skip the faucet section even if the profile is up
   --solver       require the solver runtime section (fail if the profile is not up)
   --no-solver    skip the solver section even if the profile is up
   --poster       require the offer-poster section (fail if the profile is not up)
@@ -75,7 +82,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
+    --core-only) SKIP_WALLETS=1; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; FAUCET_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
     --evm)       EVM_MODE=on; shift ;;
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
@@ -88,6 +95,8 @@ while [[ $# -gt 0 ]]; do
     --no-frontend) FRONTEND_MODE=off; shift ;;
     --shielded-night)    SHIELDED_NIGHT_MODE=on; shift ;;
     --no-shielded-night) SHIELDED_NIGHT_MODE=off; shift ;;
+    --faucet)      FAUCET_MODE=on; shift ;;
+    --no-faucet)   FAUCET_MODE=off; shift ;;
     --solver)      SOLVER_MODE=on; shift ;;
     --no-solver)   SOLVER_MODE=off; shift ;;
     --poster)      POSTER_MODE=on; shift ;;
@@ -441,6 +450,41 @@ case "$PRICES_MODE" in
     else
       echo
       dim "prices profile not up — skipping (./up.sh --with offerfiles --with prices to include it; quotes use the seeded prices meanwhile)"
+    fi
+    ;;
+esac
+
+# ── faucet (the six local test-token issuers + the mint site) ────────────────
+# The sentinel is the SITE service, not a one-shot: three of this profile's services exit by
+# design, and a stack whose page is gone but whose exited one-shots linger must not report a
+# passing section.
+FAUCET_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=faucet-site" 2>/dev/null)" ]]; then
+  FAUCET_PRESENT=1
+fi
+
+case "$FAUCET_MODE" in
+  off) ;;
+  on|auto)
+    if (( FAUCET_PRESENT )); then
+      echo
+      log "faucet"
+      if "$REPO_ROOT/scripts/verify-faucet.sh"; then
+        ok "faucet assertions passed"
+      else
+        err "faucet assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$FAUCET_MODE" == "on" ]]; then
+      echo
+      err "--faucet was requested but no faucet-site container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with faucet"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "faucet profile not up — skipping (./up.sh --with faucet to include it)"
     fi
     ;;
 esac
