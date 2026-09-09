@@ -93,6 +93,8 @@ ENV_FILE=.env.test ./up.sh --all      # …for a second stack beside the first
 
 What `up.sh` actually waits on (and why the container healthchecks are not enough), verify
 flags, teardown semantics and the CI harness details: [docs/OPERATIONS.md](docs/OPERATIONS.md).
+Which gate step exercises which of the 35 compose services — and the offline check that fails
+when one of them stops being covered: [docs/E2E-COVERAGE.md](docs/E2E-COVERAGE.md).
 
 ## The stack
 

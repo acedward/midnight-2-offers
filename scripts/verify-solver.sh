@@ -255,6 +255,97 @@ else
   FAILURES=$(( FAILURES + 1 ))
 fi
 
+# ── what the page RENDERS, not just which sources it reached ─────────────────
+#
+# The block above proves the monitor fetched its three sources without error. That is a weaker
+# claim than it reads: `section_ok` is satisfied by `{"offers": [], "count": 0}` and by a ladder
+# section whose state is `never-derived`. In other words, a stack whose book is empty and whose
+# solver has never quoted passed every monitor assertion this file used to make — which is
+# exactly the state the page exists to distinguish from a healthy one.
+#
+# So this asserts the two NUMBERS the page puts in front of a human:
+#
+#   book.count >= 1    the kernel really has an open offer, read through the monitor's own
+#                      projection of it (not through the kernel API, which verify-kernel.sh and
+#                      verify-poster.sh already do — the claim here is that the MONITOR sees it).
+#   ladder.state       the solver's own view of what it last put on the wire: `quoting` when it
+#                      derived a ladder with at least one pair. `not-started`, `never-derived`,
+#                      `empty` and every `withheld:*` are the states the page renders in red.
+#
+# BOUNDED WAIT, and conditional on the poster: the poster is what makes the book non-empty, and
+# on a cold devnet its first tick follows a wallet sync and a proving round. Without the poster
+# profile there is legitimately nothing to quote, and this section says so instead of failing.
+POSTER_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=offer-poster" 2>/dev/null)" ]]; then
+  POSTER_PRESENT=1
+fi
+
+if (( ! POSTER_PRESENT )); then
+  dim "poster profile not up — the book is legitimately empty, so the book/ladder assertions are skipped"
+  dim "  (./up.sh --with offerfiles --with poster --with solver is the combination they apply to)"
+else
+  SOLVER_BOOK_TIMEOUT="${SOLVER_BOOK_TIMEOUT:-300}"
+  info "waiting up to ${SOLVER_BOOK_TIMEOUT}s for the monitor to render a non-empty book and a live ladder"
+  BOOK_COUNT=""; LADDER_STATE=""; LADDER_PAIRS=""
+  SOLVER_DEADLINE=$(( SECONDS + SOLVER_BOOK_TIMEOUT ))
+  while :; do
+    RENDERED="$(curl -fsS --max-time 10 "$MBASE/api/snapshot" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    j = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+kernel = j.get("kernel") or {}
+book = kernel.get("book")
+count = ""
+if isinstance(book, dict) and "error" not in book:
+    count = str(book.get("count", ""))
+solver = j.get("solver") or {}
+status = solver.get("snapshot") or {}
+ladder = status.get("ladder")
+state = pairs = ""
+if isinstance(ladder, dict) and "error" not in ladder:
+    state = str(ladder.get("state") or "")
+    last = ladder.get("last")
+    if isinstance(last, dict):
+        pairs = str(last.get("pairs", ""))
+print("\x1f".join([count, state, pairs]))
+' 2>/dev/null || true)"
+    IFS=$'\x1f' read -r BOOK_COUNT LADDER_STATE LADDER_PAIRS <<< "${RENDERED:-}"
+    if [[ "${BOOK_COUNT:-0}" =~ ^[0-9]+$ ]] && (( BOOK_COUNT >= 1 )) \
+       && [[ "${LADDER_PAIRS:-0}" =~ ^[0-9]+$ ]] && (( LADDER_PAIRS >= 1 )); then
+      break
+    fi
+    (( SECONDS < SOLVER_DEADLINE )) || break
+    sleep 10
+  done
+
+  info "monitor renders book.count=${BOOK_COUNT:-?} ladder.state=${LADDER_STATE:-?} ladder.last.pairs=${LADDER_PAIRS:-?}"
+  if [[ "${BOOK_COUNT:-}" =~ ^[0-9]+$ ]] && (( BOOK_COUNT >= 1 )); then
+    ok "the monitor's rendered kernel book carries ${BOOK_COUNT} open offer(s)"
+  else
+    err "the monitor's rendered kernel book carries no offers (count=${BOOK_COUNT:-unreadable})"
+    info "  the poster profile is up, so the book should not be empty — ./verify.sh --poster names the reason"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+
+  case "${LADDER_STATE:-}" in
+    quoting)
+      ok "the monitor renders the solver's ladder state = quoting (${LADDER_PAIRS} pair(s) on the wire)" ;;
+    "")
+      err "the monitor renders the solver's ladder state as unreadable — the ladder section errored or is absent"
+      FAILURES=$(( FAILURES + 1 )) ;;
+    *)
+      err "the monitor renders the solver's ladder state = ${LADDER_STATE} (pairs=${LADDER_PAIRS:-none}), not 'quoting'"
+      info "  not-started  = no relay client yet;    never-derived = no push derived yet"
+      info "  empty        = the last push carried no pair (the book has no quotable pair)"
+      info "  withheld:*   = a FAIL-CLOSED withdrawal — the solver pulled its quotes on purpose"
+      FAILURES=$(( FAILURES + 1 )) ;;
+  esac
+fi
+
 if (( FAILURES == 0 )); then
   ok "solver assertions passed"
   exit 0

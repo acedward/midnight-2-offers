@@ -8,11 +8,22 @@
 #   ./scripts/ci-check.sh --no-fund    # skip funding; verify then covers genesis wallets only
 #
 # The steps, in order:
-#   1. pick-ports   a random free host-port block >= 10100 and a unique compose project name
-#   2. up           the requested profiles, blocking until each is genuinely usable
-#   3. fund         fund-wallet.sh --all-demo (the demo-* and mnemonic-* wallets)
-#   4. verify       verify.sh, exact baked source pins, then script-funded wallets
-#   5. down -v      full teardown, then ASSERT that nothing survived
+#   1.  static      the offline artifact gates AND the e2e coverage matrix (every compose
+#                   service has a row naming the assertion that exercises it)
+#   2.  up          the requested profiles, blocking until each is genuinely usable — and, in
+#                   --all mode, an assertion that the `prices` profile really started
+#   3.  fund        fund-wallet.sh --all-demo (the demo-* and mnemonic-* wallets)
+#   3b. fund svc    the `fund` COMPOSE one-shot, narrowed to one probe wallet
+#   4a. verify      verify.sh --aa-mint --faucet-mint (every profile's section)
+#   4b. pins        the running images carry the pinned commits
+#   4c. wallets     verify-wallets.sh --include-script-funded
+#   4d. one-shots   every one-shot's OUTPUT assertion, from config/e2e-coverage.json
+#   4e. spa         the SPA's headless take (through the batcher) and make
+#   4f. aa-e2e      register x2 -> mint -> deposit -> transfer -> withdraw, four execute proofs
+#   5.  down -v     full teardown, then ASSERT that nothing survived
+#
+# Every step's output is also written to .ci-logs/<project>/<step>.log, and the run ends with a
+# table of step timings.
 #
 # Three properties this has that a hand-run sequence does not:
 #
@@ -35,6 +46,12 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 PROFILE_MODE=all      # all | core | list
 WITH_LIST=()
 DO_FUND=1
+DO_FUND_SERVICE=1
+DO_PRICES=1
+DO_AA_MINT=1
+DO_FAUCET_MINT=1
+DO_SPA_ROUNDTRIP=1
+DO_AA_E2E=1
 KEEP=0
 CI_ENV_FILE=""
 
@@ -50,6 +67,14 @@ Options:
   --core-only        core profile only (skips the umbra-evm image build)
   --with <profile>   bring up specific profiles instead of --all; repeatable
   --no-fund          skip the funding step
+  --no-fund-service  skip step 3b (the `fund` compose one-shot on one probe wallet)
+  --no-prices        do NOT require the `prices` profile. WITHOUT this flag, an --all run with
+                     no COINGECKO_API_KEY in the ENVIRONMENT fails immediately and says so,
+                     instead of quietly leaving one profile and one service untested
+  --no-aa-mint       skip the console mint through the local issuers (verify.sh --aa-mint)
+  --no-faucet-mint   skip the real faucet mint (verify.sh --faucet-mint)
+  --no-spa-roundtrip skip step 4e (the SPA's headless take + make)
+  --no-aa-e2e        skip step 4f (the EVM-signed execute path)
   --keep             on failure, leave the stack up for inspection (still cleaned on success)
   --env-file <path>  write the generated env file here and keep it (default: a temp file in
                      the repo, removed on exit)
@@ -64,6 +89,12 @@ while [[ $# -gt 0 ]]; do
     --core-only) PROFILE_MODE=core; shift ;;
     --with)      PROFILE_MODE=list; WITH_LIST+=(--with "${2:?--with needs a profile name}"); shift 2 ;;
     --no-fund)   DO_FUND=0; shift ;;
+    --no-fund-service) DO_FUND_SERVICE=0; shift ;;
+    --no-prices) DO_PRICES=0; shift ;;
+    --no-aa-mint) DO_AA_MINT=0; shift ;;
+    --no-faucet-mint) DO_FAUCET_MINT=0; shift ;;
+    --no-spa-roundtrip) DO_SPA_ROUNDTRIP=0; shift ;;
+    --no-aa-e2e) DO_AA_E2E=0; shift ;;
     --keep)      KEEP=1; shift ;;
     --env-file)  CI_ENV_FILE="${2:?--env-file needs a path}"; shift 2 ;;
     -h|--help)   usage; exit 0 ;;
@@ -81,6 +112,32 @@ case "$PROFILE_MODE" in
   # guard for PROFILE_ARGS in step 2 below.
   list) PROFILE_ARGS=(${WITH_LIST[@]+"${WITH_LIST[@]}"}) ;;
 esac
+
+# ── the `prices` precondition (checked BEFORE anything is built) ────────────
+#
+# `up.sh --all` deliberately DROPS the `prices` profile when COINGECKO_API_KEY is unset (Q23 —
+# it is the one value in this repository that is a real secret and has no default), and
+# `verify.sh` then auto-skips the prices section because there is no container. Both are
+# correct on their own, and together they mean a full `ci-check.sh` can pass with one profile
+# and one service never started. That is not hypothetical: infra issue 00013 is a run whose
+# `--all` announced eight profiles and no `prices`, because `--env-file` had overwritten the
+# file the key was in.
+#
+# So an --all run REQUIRES the key, in the PROCESS ENVIRONMENT (never --env-file, for exactly
+# the reason above), and fails here — before a single image is built — rather than reporting a
+# green gate over a gap. `--no-prices` is the explicit opt-out for a host that has no key.
+if [[ "$PROFILE_MODE" == "all" && $DO_PRICES -eq 1 && -z "${COINGECKO_API_KEY:-}" ]]; then
+  err "this gate requires the 'prices' profile, and COINGECKO_API_KEY is not in the environment"
+  info "  Without it, up.sh --all drops the profile and verify.sh skips the section: the run"
+  info "  would pass having never started price-feed at all (infra issue 00013)."
+  info ""
+  info "  Put the key in the PROCESS ENVIRONMENT, not in the env file — ci-check regenerates"
+  info "  the env file it is given, so a key written there is destroyed before anything starts:"
+  info "      set -a; . \$HOME/.midnight-2-offers.coingecko.env; set +a; ./scripts/ci-check.sh"
+  info "  or opt out explicitly, accepting the coverage gap:"
+  info "      ./scripts/ci-check.sh --no-prices"
+  exit 1
+fi
 
 require_docker
 
@@ -134,6 +191,12 @@ CI_IMAGE_TAGS=(
 TORE_DOWN=0
 FAILED=0
 FAILED_STEP=""
+# Declared HERE, not beside step(), because the EXIT trap prints them and a failure between
+# the trap and step()'s definitions would otherwise die on an unbound variable under `set -u`.
+STEP_IDS=()
+STEP_LABELS=()
+STEP_SECS=()
+STEP_STATES=()
 
 # leak_count — prints "<containers> <volumes> <networks> <unlabelled-volumes>" for this project.
 # The fourth number is the one that matters most: `docker volume create` (or a `docker run -v`)
@@ -202,6 +265,8 @@ teardown() {
   fi
 
   # Report the real outcome even when the trap fired from a signal.
+  print_step_table
+  info "step logs kept under ${LOG_DIR}"
   echo
   if (( FAILED )); then
     err "ci-check: FAILED at '${FAILED_STEP:-unknown}'"
@@ -213,19 +278,59 @@ teardown() {
 trap teardown EXIT
 trap 'echo; warn "interrupted"; FAILED=1; FAILED_STEP="interrupted"; exit 130' INT TERM
 
-step() {  # step <n> <label> <command...>
+# ── evidence: one log file per step, and a timing table ─────────────────────
+#
+# A gate that only says PASSED is not much use the morning a step takes 20 minutes or fails on
+# someone else's machine. Each step's console output is ALSO written to a file, and the run
+# ends with the step table — which is what goes into the PR body and the plan.
+LOG_DIR="${CI_LOG_DIR:-$REPO_ROOT/.ci-logs/${COMPOSE_PROJECT_NAME}}"
+mkdir -p "$LOG_DIR"
+info "logs    ${LOG_DIR}"
+
+record_step() {  # record_step <id> <label> <seconds> <state>
+  STEP_IDS+=("$1"); STEP_LABELS+=("$2"); STEP_SECS+=("$3"); STEP_STATES+=("$4")
+}
+
+step() {  # step <id> <label> <command...>
   local n="$1" label="$2"; shift 2
-  local t0=$SECONDS
+  local t0=$SECONDS rc
+  local logfile="${LOG_DIR}/$(printf '%s' "$n" | tr -c 'A-Za-z0-9._-' '-')".log
   echo
-  log "step ${n}/5: ${label}"
-  if "$@"; then
+  log "step ${n}: ${label}"
+  # `pipefail` is set at the top of this file, so the pipeline's status is the COMMAND's.
+  # Without it every step would report success because `tee` succeeded.
+  "$@" 2>&1 | tee "$logfile"
+  rc=$?
+  if (( rc == 0 )); then
     ok "step ${n} passed in $(( SECONDS - t0 ))s"
+    record_step "$n" "$label" "$(( SECONDS - t0 ))" "pass"
     return 0
   fi
   err "step ${n} FAILED after $(( SECONDS - t0 ))s: ${label}"
+  info "  full output: ${logfile}"
+  record_step "$n" "$label" "$(( SECONDS - t0 ))" "FAIL"
   FAILED=1
   FAILED_STEP="${FAILED_STEP:-$label}"
   return 1
+}
+
+skip_step() {  # skip_step <id> <label> <why>
+  echo
+  dim "step ${1}: ${2} — SKIPPED (${3})"
+  record_step "$1" "$2" "0" "skip"
+}
+
+print_step_table() {
+  local i
+  echo
+  log "step table"
+  printf '    %-4s %-8s %7s  %s\n' "step" "result" "seconds" "what ran"
+  printf '    %-4s %-8s %7s  %s\n' "----" "--------" "-------" "--------"
+  for (( i = 0; i < ${#STEP_IDS[@]}; i++ )); do
+    printf '    %-4s %-8s %7s  %s\n' \
+      "${STEP_IDS[$i]}" "${STEP_STATES[$i]}" "${STEP_SECS[$i]}" "${STEP_LABELS[$i]}"
+  done
+  printf '    %-4s %-8s %7s  %s\n' "" "" "$SECONDS" "TOTAL (wall clock, this process)"
 }
 
 # ── the run ──────────────────────────────────────────────────────────────────
@@ -275,27 +380,98 @@ static_gates() {
   python3 "$REPO_ROOT/scripts/render-readme-pins.py" --check                || rc=1
   python3 "$REPO_ROOT/scripts/render-readme-pins.py" --self-test >/dev/null \
     && ok "README pin-table renderer self-test passed" || rc=1
+  # THE COVERAGE MATRIX. Every service compose renders has a row naming the assertion that
+  # exercises it, every named assertion is still present in the script that makes it, and every
+  # one-shot has an OUTPUT assertion. Its --self-test mutates the matrix six ways and requires
+  # each to be caught, so a coverage checker that stopped biting fails here too.
+  "$REPO_ROOT/scripts/verify-e2e-coverage.sh"                              || rc=1
+  "$REPO_ROOT/scripts/verify-e2e-coverage.sh" --self-test >/dev/null \
+    && ok "e2e coverage self-test passed" || rc=1
   return $rc
 }
 
-step 1 "offline artifact gates: decisions, fetch pins, mirror record, compose pins, source-pin defaults" \
+step 1 "offline artifact gates + e2e coverage matrix" \
   static_gates || true
 
 if step 2 "up --build ${PROFILE_ARGS[*]:-(core only)}" \
      "$REPO_ROOT/up.sh" --build "${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"}"; then
 
-  RUN_FUND=1
-  (( DO_FUND )) || RUN_FUND=0
-  if (( RUN_FUND )); then
-    step 3 "fund the demo and mnemonic wallets" \
-      "$REPO_ROOT/scripts/fund-wallet.sh" --all-demo || true
-  else
-    echo
-    dim "step 3/5: funding skipped (--no-fund)"
+  # ── the prices profile REALLY started ─────────────────────────────────────
+  # The key was required before the build; this is the other half — that it reached compose and
+  # the container is UP. A price-feed that exited (64 = misconfiguration) or was never created
+  # is the silent gap this pair of checks exists to close, and neither `up.sh` (which warns)
+  # nor `verify.sh` (which auto-skips an absent profile) turns it into a failure.
+  if (( ! FAILED )) && [[ "$PROFILE_MODE" == "all" ]] && (( DO_PRICES )); then
+    if [[ -n "$(docker ps -q \
+          --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+          --filter "label=com.docker.compose.service=price-feed" 2>/dev/null)" ]]; then
+      ok "the prices profile is up: price-feed is running"
+    else
+      err "the prices profile is up: price-feed is running — NO, it is not"
+      info "  --all was requested and COINGECKO_API_KEY was in the environment, so up.sh should"
+      info "  have started it. An EXITED container means exit 64 (no key reached the container,"
+      info "  or the database has no ledger-v9 schema): docker compose … logs price-feed"
+      FAILED=1; FAILED_STEP="${FAILED_STEP:-prices-profile-missing}"
+    fi
   fi
 
+  RUN_FUND=1
+  (( DO_FUND )) || RUN_FUND=0
+  if (( ! FAILED && RUN_FUND )); then
+    step 3 "fund the demo and mnemonic wallets" \
+      "$REPO_ROOT/scripts/fund-wallet.sh" --all-demo || true
+  elif (( ! RUN_FUND )); then
+    skip_step 3 "fund the demo and mnemonic wallets" "--no-fund"
+  fi
+
+  # ── step 3b: the `fund` COMPOSE service ───────────────────────────────────
+  # scripts/fund-wallet.sh reaches the toolkit through `docker run`, so compose's own `fund`
+  # service (compose/core.yml, profile `fund`) had NO caller in this gate — the one compose
+  # service nothing exercised. FUND_ONLY_SEED narrows it to a single probe wallet: running it
+  # unnarrowed here would re-register the dust address of wallets whose facades are live
+  # (aa-console, the shielded-night driver, the poster), which is contention for no gain.
+  #
+  # demo-carol is the probe: a mnemonic wallet, already funded by step 3, held by no
+  # long-lived facade anywhere in the stack. The seed is read from wallets/wallets.json rather
+  # than written here, so it cannot drift from the file the service itself mounts.
+  if (( ! FAILED && DO_FUND_SERVICE )); then
+    PROBE_SEED="$(python3 -c '
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+for w in doc.get("wallets", []):
+    if w.get("name") == sys.argv[2]:
+        print(w.get("seed", "")); break
+' "$REPO_ROOT/wallets/wallets.json" "${CI_FUND_PROBE_WALLET:-demo-carol}" 2>/dev/null || true)"
+    if [[ -z "$PROBE_SEED" ]]; then
+      skip_step 3b "the 'fund' compose one-shot" "no ${CI_FUND_PROBE_WALLET:-demo-carol} in wallets.json"
+    else
+      fund_service() {
+        PROFILES="" ENV_FILE="$CI_ENV_FILE" COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
+        docker compose --env-file "$CI_ENV_FILE" -f "$REPO_ROOT/compose/core.yml" \
+          -p "$COMPOSE_PROJECT_NAME" --profile fund \
+          run --rm --no-deps -T -e FUND_ONLY_SEED="$PROBE_SEED" fund
+      }
+      if step 3b "the 'fund' compose one-shot (one probe wallet)" fund_service; then
+        ok "fund compose one-shot funded the probe wallet (${CI_FUND_PROBE_WALLET:-demo-carol})"
+      fi
+    fi
+  elif (( ! DO_FUND_SERVICE )); then
+    skip_step 3b "the 'fund' compose one-shot" "--no-fund-service"
+  fi
+
+  # ── step 4a: verify.sh, with the two opt-in extras ON ─────────────────────
+  # `--aa-mint` and `--faucet-mint` are off for a human (each is minutes of proving) and ON
+  # here, because they are the only assertions that exercise the AA console's mint through the
+  # LOCAL issuers, upstream's own mint runner, and — through it — the plain proof-server.
   if (( ! FAILED )); then
-    step 4a "verify.sh (core + genesis wallets + evm)" "$REPO_ROOT/verify.sh" || true
+    VERIFY_ARGS=()
+    (( DO_AA_MINT ))     && VERIFY_ARGS+=(--aa-mint)
+    (( DO_FAUCET_MINT )) && VERIFY_ARGS+=(--faucet-mint)
+    VERIFY_LABEL=""
+    (( DO_AA_MINT ))     && VERIFY_LABEL="${VERIFY_LABEL} --aa-mint"
+    (( DO_FAUCET_MINT )) && VERIFY_LABEL="${VERIFY_LABEL} --faucet-mint"
+    step 4a "verify.sh${VERIFY_LABEL} (every profile section)" \
+      "$REPO_ROOT/verify.sh" ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"} || true
   fi
   if (( ! FAILED )); then
     step 4b "verify exact baked source pins" "$REPO_ROOT/scripts/verify-source-pins.sh" || true
@@ -306,6 +482,40 @@ if step 2 "up --build ${PROFILE_ARGS[*]:-(core only)}" \
   if (( ! FAILED && RUN_FUND )); then
     step 4c "verify-wallets.sh --include-script-funded" \
       "$REPO_ROOT/scripts/verify-wallets.sh" --include-script-funded || true
+  fi
+
+  # ── step 4d: every one-shot SAID it did the work ──────────────────────────
+  # Exit 0 is not coverage: every one-shot here is idempotent and every one has a correct
+  # do-nothing path. --require-all in --all mode, so a profile that silently failed to come up
+  # is a failure rather than a skipped line.
+  if (( ! FAILED )); then
+    ONESHOT_ARGS=()
+    [[ "$PROFILE_MODE" == "all" ]] && ONESHOT_ARGS=(--require-all)
+    step 4d "one-shot output assertions (config/e2e-coverage.json)" \
+      "$REPO_ROOT/scripts/verify-oneshots.sh" ${ONESHOT_ARGS[@]+"${ONESHOT_ARGS[@]}"} || true
+  fi
+
+  # ── step 4e: the SPA's take (through the batcher) and make ────────────────
+  if (( ! FAILED && DO_SPA_ROUNDTRIP )) && [[ "$PROFILE_MODE" == "all" ]]; then
+    step 4e "spa round trip: take through the batcher, then make" \
+      "$REPO_ROOT/scripts/verify-spa-roundtrip.sh" || true
+  elif (( ! DO_SPA_ROUNDTRIP )); then
+    skip_step 4e "spa round trip" "--no-spa-roundtrip"
+  elif [[ "$PROFILE_MODE" != "all" ]]; then
+    skip_step 4e "spa round trip" "needs offerfiles + faucet + poster + frontend (--all)"
+  fi
+
+  # ── step 4f: the EVM-signed execute path ──────────────────────────────────
+  # register x2 -> mint -> deposit -> transfer -> withdraw, four `execute` proofs against the
+  # MinoCrab artifact. It builds the :e2e image variant on first run (the unpruned Manager
+  # prover key), which is why it is last: everything cheaper has already reported by then.
+  if (( ! FAILED && DO_AA_E2E )) && [[ "$PROFILE_MODE" == "all" ]]; then
+    step 4f "aa-e2e.sh (register x2 -> mint -> deposit -> transfer -> withdraw)" \
+      "$REPO_ROOT/scripts/aa-e2e.sh" || true
+  elif (( ! DO_AA_E2E )); then
+    skip_step 4f "aa-e2e.sh" "--no-aa-e2e"
+  elif [[ "$PROFILE_MODE" != "all" ]]; then
+    skip_step 4f "aa-e2e.sh" "needs the aa profile (--all)"
   fi
 fi
 

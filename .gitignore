@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# CI evidence: one log per gate step, kept after the run (scripts/ci-check.sh)
+.ci-logs/
+
 # Local test artifacts — the workspace rule is "do not commit docker artifacts for testing"
 .test/
 *.log

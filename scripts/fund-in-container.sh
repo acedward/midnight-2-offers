@@ -115,6 +115,28 @@ fi
 # funding=mnemonic wallets are funded exactly like funding=fund-script ones: their seed is the
 # BIP-39 master seed of a mnemonic, which the toolkit accepts as an ordinary 128-hex seed.
 mapfile -t SEEDS < <(jq -r '.wallets[] | select(.funding == "fund-script" or .funding == "mnemonic") | .seed' "$WALLETS_JSON")
+
+# FUND_ONLY_SEED — narrow the run to ONE wallet.
+#
+# It exists for the e2e gate. `scripts/fund-wallet.sh` reaches the toolkit through `docker run`
+# (scripts/lib/toolkit.sh), so THIS compose service had no caller anywhere in the gate and was
+# the one compose service nothing exercised. Running it unnarrowed there is not an option: by
+# the time the gate reaches it the aa-console, the shielded-night driver and the poster all
+# hold live wallet facades on seeds in this list, and re-registering their dust address under a
+# running facade is contention nobody needs. One wallet that no facade holds proves the same
+# things — the service, its bind mounts, the pinned toolkit image, the entrypoint override and
+# the genesis transfer path — in under a minute.
+if [[ -n "${FUND_ONLY_SEED:-}" ]]; then
+  FOUND=""
+  for s in "${SEEDS[@]}"; do [[ "$s" == "$FUND_ONLY_SEED" ]] && FOUND="$s"; done
+  if [[ -z "$FOUND" ]]; then
+    say "FUND_ONLY_SEED ${FUND_ONLY_SEED:0:8}… is not a funding=fund-script/mnemonic wallet in ${WALLETS_JSON}"
+    exit 64
+  fi
+  SEEDS=("$FOUND")
+  say "FUND_ONLY_SEED: narrowing this run to one wallet (${FOUND:0:8}…${FOUND: -6})"
+fi
+
 (( ${#SEEDS[@]} )) || { say "no wallets with funding=fund-script or funding=mnemonic — nothing to do"; exit 0; }
 
 say "funding ${#SEEDS[@]} wallet(s) with ${AMOUNT} stars each from ${FROM_SEED:0:8}…"

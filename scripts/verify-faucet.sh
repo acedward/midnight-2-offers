@@ -365,6 +365,71 @@ else
   elif [[ -n "$G" && -n "$W" ]]; then
     ok "the poster's two legs are distinct token ids"
   fi
+
+  # ── THE DECIMALS ───────────────────────────────────────────────────────────
+  # The ids were checked above; the decimals were not, and they are the half that fails
+  # silently. `registry-env` writes `<SYM>_DECIMALS` beside every `<SYM>_TOKEN_ID`, and a
+  # consumer that reads the id but a wrong scale produces an amount off by 10^n rather than an
+  # error — which is exactly the class of defect PR-B's per-token decimals exist to remove
+  # (four of these six are NOT 6). Compared against this profile's own table, not against
+  # whatever the file happens to say.
+  MISSING_DEC=""
+  for pair in "${EXPECTED_DECIMALS[@]}"; do
+    sym="${pair%%:*}"; want="${pair##*:}"
+    key="$(printf '%s' "$sym" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')_DECIMALS"
+    got="$(printf '%s' "$STACK_ENV" | sed -nE "s/^${key}=([0-9]+)$/\\1/p" | head -1)"
+    if [[ -z "$got" ]]; then
+      MISSING_DEC="${MISSING_DEC} ${key}=absent"
+    elif [[ "$got" != "$want" ]]; then
+      MISSING_DEC="${MISSING_DEC} ${key}=${got}(want ${want})"
+    fi
+  done
+  if [[ -z "$MISSING_DEC" ]]; then
+    ok "stack-tokens.env carries the registry decimals for all six symbols (8/18/6/6/6/8)"
+  else
+    fail "stack-tokens.env decimals are wrong or missing:${MISSING_DEC}"
+  fi
+
+  # ── AND THAT SOMETHING ACTUALLY CONSUMED THEM ─────────────────────────────
+  # A file with the right contents that nothing reads is not a working handoff. The poster
+  # resolves OFFER_POSTER_GIVE_TOKEN out of this very file at container start (its entrypoint
+  # sources it), so the give leg of an offer in the KERNEL's book is the end-to-end proof: the
+  # id travelled registry -> registry-env -> stack-tokens.env -> the poster's environment -> a
+  # signed offer -> Celestia -> the kernel's index. Conditional on the poster being in this
+  # stack; `./verify.sh --poster` is what waits for the first tick, so this only re-reads.
+  if [[ -n "$G" ]] && docker ps -aq \
+       --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+       --filter "label=com.docker.compose.service=offer-poster" 2>/dev/null | grep -q .; then
+    GIVE_SEEN=0
+    GIVE_DEADLINE=$(( SECONDS + ${FAUCET_POSTER_CONSUME_TIMEOUT:-120} ))
+    while :; do
+      BOOK_JSON="$(curl -fsS --max-time 15 "http://${BIND}:${KERNEL_HOST_PORT:-9999}/v1/offers?limit=100" 2>/dev/null || true)"
+      if [[ -n "$BOOK_JSON" ]] && printf '%s' "$BOOK_JSON" | GIVE="$G" python3 -c '
+import json, os, sys
+want = os.environ["GIVE"].lower()
+doc = json.load(sys.stdin)
+for offer in doc.get("offers", []):
+    for leg in (offer.get("computed") or {}).get("gives") or []:
+        if str(leg.get("token", "")).lower() == want:
+            raise SystemExit(0)
+raise SystemExit(1)
+' >/dev/null 2>&1; then
+        GIVE_SEEN=1
+        break
+      fi
+      (( SECONDS < GIVE_DEADLINE )) || break
+      sleep 10
+    done
+    if (( GIVE_SEEN )); then
+      ok "the poster's give leg is the id registry-env rendered (${G:0:16}… is giving in the kernel book)"
+    else
+      fail "no offer in the kernel book gives ${G:0:16}… — the poster did not consume stack-tokens.env"
+      info "  the poster sources /registry/stack-tokens.env at start; a mismatch here means it"
+      info "  resolved a different id, or never posted (./verify.sh --poster names which)"
+    fi
+  else
+    dim "poster profile not up — nothing consumes stack-tokens.env in this stack"
+  fi
 fi
 
 # ── upstream's own read-only verification, run FRESH ─────────────────────────

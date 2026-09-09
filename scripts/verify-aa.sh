@@ -3,6 +3,7 @@
 # Assertions for the `aa` profile — the `aa` section of ./verify.sh.
 #
 #   ./scripts/verify-aa.sh
+#   ./scripts/verify-aa.sh --mint    …plus a REAL mint through the LOCAL issuers
 #
 # What it proves:
 #
@@ -31,6 +32,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/common.sh
 source "$REPO_ROOT/scripts/lib/common.sh"
+
+WITH_MINT=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mint) WITH_MINT=1; shift ;;
+    -h|--help) sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
 
 load_env
 
@@ -265,6 +275,55 @@ if [[ -n "$artifact" ]]; then
     err "manager zkir source: ${zk:-unreadable} (configured ${AA_ZKIR_SOURCE_EXPECTED})"
     FAILURES=$(( FAILURES + 1 ))
   fi
+fi
+
+# ── the mint, through the console's OWN API (opt-in) ────────────────────────
+#
+# THE GAP THIS CLOSES. Everything above about the token set is CONFIGURATION: `/api/info`
+# says where the six names came from and what their decimals are. None of it calls a mint.
+# PR-B's actual claim — the console's faucet buttons mint through the six LOCAL
+# mint-test-tokens issuers, because the offer-files contract they used to derive colours from
+# is gone — was proved once, by hand, in a browser.
+#
+# So this drives the same HTTP surface the page drives (`/api/prepare` -> sign ->
+# `/api/submit` -> `/api/fund` -> `/api/fund-shielded`) and then reads the MANAGER'S LEDGER
+# back through `/api/pure`. A job that says "done" only proves the relay did not throw; the
+# ledger read is what proves the value landed, on the right account, under the right colour.
+#
+# Opt-in because it is one `execute` proof plus two mint+deposit cycles on a cold devnet
+# (minutes). `./verify.sh --aa-mint` turns it on; scripts/ci-check.sh passes that by default.
+#
+# It runs INSIDE the console container (`docker exec`), which is where the driver, the aalib
+# signer and the pinned dependency tree already are — and where `http://127.0.0.1:8090` is
+# unambiguously THIS console rather than whatever a compose DNS name resolves to.
+if (( WITH_MINT )); then
+  echo
+  log "aa: a real mint through the local mint-test-tokens issuers, driven over the console's API"
+  if [[ -z "${console_cid:-}" ]]; then
+    err "--mint needs a running aa-console container for project '${COMPOSE_PROJECT_NAME}'"
+    FAILURES=$(( FAILURES + 1 ))
+  elif ! docker ps -aq \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=faucet-deploy" 2>/dev/null | grep -q .; then
+    err "--mint needs the faucet profile: there are no local issuers to mint through"
+    info "  ./up.sh --with aa --with faucet"
+    FAILURES=$(( FAILURES + 1 ))
+  else
+    info "expect several minutes: one execute proof to register, then two mint+deposit cycles"
+    MINT_OUT="$(docker exec "$console_cid" bun /aa/runner/aa-console-mint.ts 2>&1)" && MINT_RC=0 || MINT_RC=$?
+    printf '%s\n' "$MINT_OUT" | sed 's/^/      /'
+    if (( MINT_RC == 0 )) && printf '%s' "$MINT_OUT" | grep -q '\[aa-console-mint\] RESULT '; then
+      ok "console mint: one shielded and one unshielded token minted through the local issuers and deposited"
+      info "  $(printf '%s' "$MINT_OUT" | grep '\[aa-console-mint\] RESULT ' | head -1)"
+    else
+      err "the console mint failed (exit ${MINT_RC})"
+      FAILURES=$(( FAILURES + 1 ))
+    fi
+  fi
+else
+  echo
+  dim "console mint not attempted — pass --mint (or ./verify.sh --aa-mint) to run one"
+  dim "  it is an execute proof plus two mint+deposit cycles: minutes on a cold devnet"
 fi
 
 if (( FAILURES == 0 )); then

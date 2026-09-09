@@ -156,6 +156,15 @@ RUN bun run check:compact-runtime \
 # token does not exist until the celestia container initialises its bridge
 # store, so it arrives on a read-only volume and anything compose already set
 # wins over it.
+# ── the demo's own runners (not upstream's) ──────────────────────────────────
+# One file today: runner/spa-roundtrip.ts, the headless make/take the e2e gate runs
+# (scripts/verify-spa-roundtrip.sh, ci-check.sh step 4e). It lives UNDER /app so bun resolves
+# `@midnightntwrk/ledger-v9`, `@effectstream/mip-zswap-offer` and the pinned wallet SDK from
+# /app/node_modules — the tree `bun install --frozen-lockfile` produced above — rather than
+# auto-installing them from npm at run time (infra issue 00020, which the script also asserts
+# with Bun.resolveSync before importing anything).
+COPY runner/ /app/demo-runner/
+
 COPY entrypoint-common.sh /usr/local/lib/offerfiles/entrypoint-common.sh
 COPY entrypoint-kernel.sh entrypoint-batcher.sh \
      entrypoint-offer-poster.sh \

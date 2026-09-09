@@ -1,0 +1,794 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schemaVersion": "e2e-coverage-v1",
+  "note": [
+    "ONE ROW PER COMPOSE SERVICE. This file is the machine-readable half of docs/E2E-COVERAGE.md,",
+    "and it is what makes 'the gate touches every service' an assertion instead of a claim:",
+    "",
+    "  scripts/verify-e2e-coverage.sh  (OFFLINE, ci-check step 1) fails when a service rendered by",
+    "                                  compose/*.yml has no row, when a row names a service that no",
+    "                                  longer exists, when a check names a script that is not there",
+    "                                  or an assertion string that script no longer contains, and",
+    "                                  when a one-shot has no OUTPUT assertion.",
+    "  scripts/verify-oneshots.sh      (LIVE, ci-check step 4d) applies every `logPattern` below to",
+    "                                  the one-shot's own container logs, so a one-shot that exits 0",
+    "                                  having silently done nothing fails.",
+    "",
+    "kind:",
+    "  service    long-running. At least one check must be `behavioural: true` — a healthcheck or a",
+    "             200 is not coverage.",
+    "  one-shot   started by `up`, exits. MUST carry `logPattern`: an OUTPUT assertion, not `exited 0`.",
+    "  on-demand  compose `profiles:`-gated, never started by `up`. A gate step must RUN it; the check",
+    "             names the script that does.",
+    "",
+    "assertion: a literal substring that must be present in `script`. It is either the text of the",
+    "assertion's own ok/err line, or the call that makes it. Renaming or deleting an assertion without",
+    "updating this file fails the offline check — which is the point."
+  ],
+  "oneShotRunner": "scripts/verify-oneshots.sh",
+  "services": [
+    {
+      "service": "postgres",
+      "fragment": "compose/core.yml",
+      "profile": "core",
+      "kind": "service",
+      "why": "the one database: the kernel's offerfiles schema (asset_prices, known_tokens, offers) and umbra's evm_rpc schema.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-kernel.sh",
+          "assertion": "kernel /v1/prices answers and the seeded asset table is present",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-evm.sh",
+          "assertion": "eth_getLogs answers from Postgres (evm_rpc schema present)",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "node",
+      "fragment": "compose/core.yml",
+      "profile": "core",
+      "kind": "service",
+      "why": "the Midnight devnet. Everything that proves, funds, deploys or settles talks to it.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "verify.sh",
+          "assertion": "wait_finalized_advances",
+          "behavioural": true,
+          "note": "finality ADVANCING, not an RPC that answers: chain_getFinalizedHead keeps answering the same hash forever when GRANDPA has stalled."
+        }
+      ]
+    },
+    {
+      "service": "indexer",
+      "fragment": "compose/core.yml",
+      "profile": "core",
+      "kind": "service",
+      "why": "the GraphQL v4 view of the chain every wallet facade syncs from.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "verify.sh",
+          "assertion": "indexer has indexed at least one block",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "verify.sh",
+          "assertion": "indexer main database is running in WAL mode"
+        }
+      ]
+    },
+    {
+      "service": "proof-params-init",
+      "fragment": "compose/core.yml",
+      "profile": "core",
+      "kind": "one-shot",
+      "why": "verifies and atomically activates the shared read-only proof-data generation the proof servers mount.",
+      "logPattern": "\"result\":\"(NOOP|ACTIVATED)\"",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        }
+      ]
+    },
+    {
+      "service": "proof-server",
+      "fragment": "compose/core.yml",
+      "profile": "core",
+      "kind": "service",
+      "why": "the PLAIN zkir-v2 prover. Every wallet-standard-lane proof in the stack goes through it.",
+      "checks": [
+        {
+          "step": "4a verify.sh --faucet-mint",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "twUSDC minted and discovered by the recipient wallet",
+          "behavioural": true,
+          "note": "a REAL proof cycle against http://proof-server:6300 — the only behavioural claim this service can make, since its healthcheck is disabled (nix image, no curl)."
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "verify.sh",
+          "assertion": "core: proof-server"
+        }
+      ]
+    },
+    {
+      "service": "fund",
+      "fragment": "compose/core.yml",
+      "profile": "core",
+      "kind": "on-demand",
+      "why": "the compose-native face of scripts/fund-wallet.sh --all-demo: the toolkit one-shot that sends genesis NIGHT and registers a DUST address.",
+      "checks": [
+        {
+          "step": "3b fund compose one-shot",
+          "script": "scripts/ci-check.sh",
+          "assertion": "fund compose one-shot funded the probe wallet",
+          "behavioural": true,
+          "note": "FUND_ONLY_SEED narrows it to one wallet no long-lived facade holds, so the gate exercises the service, the bind mounts, the toolkit pin and the entrypoint override without re-registering DUST under a live facade."
+        },
+        {
+          "step": "4c verify-wallets.sh",
+          "script": "scripts/verify-wallets.sh",
+          "assertion": "holds NIGHT and can pay fees"
+        }
+      ]
+    },
+
+    {
+      "service": "evm-migrate",
+      "fragment": "compose/evm.yml",
+      "profile": "evm",
+      "kind": "one-shot",
+      "why": "applies the evm_rpc migration lineage into the shared postgres.",
+      "logPattern": "\"module\":\"evm-migrate\",\"event\":\"done\"",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-evm.sh",
+          "assertion": "eth_getLogs answers from Postgres (evm_rpc schema present)"
+        }
+      ]
+    },
+    {
+      "service": "evm-rpc",
+      "fragment": "compose/evm.yml",
+      "profile": "evm",
+      "kind": "service",
+      "why": "the read-only Ethereum JSON-RPC + WebSocket facade over the Midnight chain.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-evm.sh",
+          "assertion": "eth_chainId = ",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-evm.sh",
+          "assertion": "eth_blockNumber tracks the indexer head",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-evm.sh",
+          "assertion": "eth_subscribe(newHeads) delivered a header",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "wallet-monitor",
+      "fragment": "compose/evm.yml",
+      "profile": "evm",
+      "kind": "service",
+      "why": "folds indexed unshielded UTXOs into evm_rpc.{address_map,utxos,balances,tx_index}. It is what makes eth_getBalance non-zero.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-evm.sh",
+          "assertion": "monitored wallet(s) report a non-zero eth_getBalance",
+          "behavioural": true,
+          "note": "the monitor listens on nothing and has no healthcheck, so this — a balance only it can have written — IS its liveness assertion."
+        }
+      ]
+    },
+
+    {
+      "service": "celestia",
+      "fragment": "compose/offerfiles.yml",
+      "profile": "offerfiles",
+      "kind": "service",
+      "why": "the DA devnet every offer file is published to.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-celestia.sh",
+          "assertion": "blob.Submit accepted",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-celestia.sh",
+          "assertion": "the blob is NOT visible in a different namespace at the same height",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "kernel",
+      "fragment": "compose/offerfiles.yml",
+      "profile": "offerfiles",
+      "kind": "service",
+      "why": "the sync node: the order book, the token registry, /v1/quote and the prices the batcher sponsors from.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-kernel.sh",
+          "assertion": "/v1/midnight/config carries no contract address (the kernel line is contract-free)",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-kernel.sh",
+          "assertion": "kernel names all six local tokens with their real decimals",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "batcher",
+      "fragment": "compose/offerfiles.yml",
+      "profile": "offerfiles",
+      "kind": "service",
+      "why": "two targets, and they are different code paths: `celestia` publishes maker offer files, `midnight-balancer` balances and SPONSORS a taker's settlement.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-poster.sh",
+          "assertion": "lastOfferId is in the kernel's open book",
+          "behavioural": true,
+          "note": "the celestia target: an offer only reaches the book by going through the batcher and landing in a Celestia blob."
+        },
+        {
+          "step": "4e spa-roundtrip",
+          "script": "scripts/verify-spa-roundtrip.sh",
+          "assertion": "the batcher settled the take",
+          "behavioural": true,
+          "note": "the midnight-balancer target: the sponsored take, the half no other gate step reaches."
+        }
+      ]
+    },
+
+    {
+      "service": "poster-fund",
+      "fragment": "compose/poster.yml",
+      "profile": "poster",
+      "kind": "one-shot",
+      "why": "sends the offer poster its genesis NIGHT UTXOs so it can register a dust address.",
+      "logPattern": "(poster funded with|already funded — nothing to do)",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        }
+      ]
+    },
+    {
+      "service": "offer-poster",
+      "fragment": "compose/poster.yml",
+      "profile": "poster",
+      "kind": "service",
+      "why": "keeps the book non-empty: adopts one prefunded twBTC coin and posts one takeable offer per interval.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-poster.sh",
+          "assertion": "poster state=ok",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-poster.sh",
+          "assertion": "poster has used",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-poster.sh",
+          "assertion": "give leg is exactly OFFER_POSTER_GIVE_AMOUNT"
+        }
+      ]
+    },
+
+    {
+      "service": "price-feed",
+      "fragment": "compose/prices.yml",
+      "profile": "prices",
+      "kind": "service",
+      "why": "the only process in the stack holding a real secret. It refreshes asset_prices from CoinGecko; /v1/quote and the batcher's sponsorship gate read what it wrote.",
+      "checks": [
+        {
+          "step": "2 up --build --all",
+          "script": "scripts/ci-check.sh",
+          "assertion": "the prices profile is up: price-feed is running",
+          "behavioural": true,
+          "note": "the ANTI-SKIP gate. `up.sh --all` drops `prices` when COINGECKO_API_KEY is unset, and verify.sh then auto-skips the section — so without this the whole profile can vanish from a passing run (issue 00013 produced exactly that)."
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-prices.sh",
+          "assertion": "the feed has completed a cycle against this database",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-prices.sh",
+          "assertion": "both legs of the quote are priced from the FEED (not the seed)",
+          "behavioural": true
+        }
+      ]
+    },
+
+    {
+      "service": "aa-proof-server",
+      "fragment": "compose/aa.yml",
+      "profile": "aa",
+      "kind": "service",
+      "why": "the EXPERIMENTAL zkir-v3 [v7] prover. Only the AA contract circuits go here; the wallet's own pieces go to the plain one.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-aa.sh",
+          "assertion": "artifact complete: addresses + both colours + both mint txs",
+          "behavioural": true,
+          "note": "both mints were proved through this server; a colour and a tx id are what that leaves behind."
+        },
+        {
+          "step": "4f aa-e2e.sh",
+          "script": "scripts/aa-e2e.sh",
+          "assertion": "four execute proofs",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "aa-deploy",
+      "fragment": "compose/aa.yml",
+      "profile": "aa",
+      "kind": "one-shot",
+      "why": "deploys the AA Manager and the test-support Minter on this chain and records them in /aa/out/aa-contracts.json.",
+      "logPattern": "wrote /aa/out/aa-contracts.json",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-aa.sh",
+          "assertion": "manager zkir source",
+          "note": "WHICH compiler produced the circuits that are live, read out of the deploy receipt."
+        }
+      ]
+    },
+    {
+      "service": "aa-console",
+      "fragment": "compose/aa.yml",
+      "profile": "aa",
+      "kind": "service",
+      "why": "browser EVM wallet -> relay -> Manager.execute. Its faucet buttons mint through the six LOCAL mint-test-tokens issuers.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-aa.sh",
+          "assertion": "aa-console takes its token set from the local mint-test-tokens registry"
+        },
+        {
+          "step": "4a verify.sh --aa-mint",
+          "script": "scripts/verify-aa.sh",
+          "assertion": "console mint: one shielded and one unshielded token minted through the local issuers and deposited",
+          "behavioural": true,
+          "note": "drives the console's OWN HTTP API — /api/prepare, /api/submit, /api/fund, /api/fund-shielded — and then asserts the Manager's ledger balances through /api/pure."
+        }
+      ]
+    },
+
+    {
+      "service": "faucet-fund",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "one-shot",
+      "why": "gives the mint-test-tokens deployer NIGHT and a spendable DUST UTXO. Upstream's deployer never asks a faucet on `undeployed`, so the seed must already hold funds.",
+      "logPattern": "the mint-test-tokens deployer is funded and fee-capable",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        }
+      ]
+    },
+    {
+      "service": "faucet-deploy",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "one-shot",
+      "why": "deploys the six local test-token issuers and publishes metadata.undeployed.json onto the shared registry volume.",
+      "logPattern": "is ready with 6 active deployments",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "registry status is ready"
+        }
+      ]
+    },
+    {
+      "service": "faucet-verify",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "one-shot",
+      "why": "upstream's own read-only verifier: on-chain verifier keys, immutable metadata, derived token ids, artifact digests, the pinned source revision and the original deploy action.",
+      "logPattern": "OK: six issuers verified",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "six issuers verified: on-chain verifier keys, immutable metadata, derived token IDs,",
+          "behavioural": true,
+          "note": "re-run FRESH inside verify.sh, not a replay of the bring-up container's exit code."
+        }
+      ]
+    },
+    {
+      "service": "registry-bridge",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "one-shot",
+      "why": "teaches the kernel this stack's six colours by name, colour and REAL decimals. Without it every display shows short hex.",
+      "logPattern": "OK: six local tokens in the kernel registry",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "is named in the kernel registry",
+          "behavioural": true,
+          "note": "read back through the kernel's own API, never from the bridge's exit code."
+        }
+      ]
+    },
+    {
+      "service": "registry-env",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "one-shot",
+      "why": "renders /registry/stack-tokens.env — this chain's token ids and decimals under role names the poster and the AA console consume.",
+      "logPattern": "stack-tokens\\.env rendered",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "stack-tokens.env carries a 64-hex id for all six symbols",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "stack-tokens.env carries the registry decimals for all six symbols",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "the poster's give leg is the id registry-env rendered",
+          "behavioural": true,
+          "note": "the CONSUMPTION half: the offer in the kernel's book gives exactly the token id this file names for OFFER_POSTER_GIVE_SYMBOL."
+        }
+      ]
+    },
+    {
+      "service": "faucet-mint",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "one-shot",
+      "why": "idempotent-by-balance grants: the offer poster's exact-size twBTC coins and the SPA wallet's twUSDC. Nothing else puts local tokens in a demo wallet.",
+      "logPattern": "OK: the demo wallets hold their local test-token inventory",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-poster.sh",
+          "assertion": "poster has used",
+          "behavioural": true,
+          "note": "the POSTER grant, read from the recipient's own wallet: the poster can only adopt a coin of exactly OFFER_POSTER_GIVE_AMOUNT if faucet-mint minted one."
+        },
+        {
+          "step": "4e spa-roundtrip",
+          "script": "scripts/verify-spa-roundtrip.sh",
+          "assertion": "the spa grant is in the SPA wallet",
+          "behavioural": true,
+          "note": "the SPA grant, read from the demo-spa wallet itself before it is spent."
+        }
+      ]
+    },
+    {
+      "service": "faucet-site",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "service",
+      "why": "upstream's own static server: the mint page, the registry answered out of the volume by path on every request, and the v2 receiver ZK artifacts as bytes.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "GET / serves an HTML document",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "a missing artifact answers 404, not the SPA fallback",
+          "behavioural": true,
+          "note": "the negative control. With an SPA fallback every path answers 200, so a 200 proves nothing."
+        }
+      ]
+    },
+    {
+      "service": "faucet-mint-test",
+      "fragment": "compose/faucet.yml",
+      "profile": "faucet",
+      "kind": "on-demand",
+      "why": "upstream's own mint runner: mints one token and requires a SECOND wallet to discover the coin.",
+      "checks": [
+        {
+          "step": "4a verify.sh --faucet-mint",
+          "script": "scripts/verify-faucet.sh",
+          "assertion": "twUSDC minted and discovered by the recipient wallet",
+          "behavioural": true,
+          "note": "shielded on purpose: the unshielded path would pass even with additionalCoinEncPublicKeyMappings broken."
+        }
+      ]
+    },
+
+    {
+      "service": "frontend",
+      "fragment": "compose/frontend.yml",
+      "profile": "frontend",
+      "kind": "service",
+      "why": "the zswap-da swap SPA. It compiles and deploys nothing since upstream #922; everything port-, chain- and wallet-shaped is rendered into /config.js at container start.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-frontend.sh",
+          "assertion": "config.js injects MIDNIGHT_HOST_PORTS",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-frontend.sh",
+          "assertion": "the Faucet link resolves",
+          "behavioural": true
+        },
+        {
+          "step": "4e spa-roundtrip",
+          "script": "scripts/verify-spa-roundtrip.sh",
+          "assertion": "driving the SPA's own runtime configuration",
+          "behavioural": true,
+          "note": "the round trip reads THIS container's /config.js and uses its API_BASE, BATCHER_URL, MIDNIGHT_NETWORK_ID and DEMO_WALLET_SEED — so the values the page would use are the values that settle a swap."
+        }
+      ]
+    },
+
+    {
+      "service": "shielded-night-fund",
+      "fragment": "compose/shielded-night.yml",
+      "profile": "shielded-night",
+      "kind": "one-shot",
+      "why": "funds the deployer and the round-trip driver wallets with NIGHT and a spendable DUST UTXO.",
+      "logPattern": "both shielded-night wallets are funded and fee-capable",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        }
+      ]
+    },
+    {
+      "service": "shielded-night-deploy",
+      "fragment": "compose/shielded-night.yml",
+      "profile": "shielded-night",
+      "kind": "one-shot",
+      "why": "deploys the 2.x ConvertibleNight contract on the undeployed lane and publishes its address onto the shared volume. There is no join path upstream, so contract.json IS the idempotence flag.",
+      "logPattern": "published .*/contract\\.json",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-shielded-night.sh",
+          "assertion": "deploy volume carries contract",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "shielded-night",
+      "fragment": "compose/shielded-night.yml",
+      "profile": "shielded-night",
+      "kind": "service",
+      "why": "the NIGHT <-> sNight dApp page: /config.js picks the 2.x adapter and names this stack's contract, and nginx serves 33 ZK artifacts as bytes.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-shielded-night.sh",
+          "assertion": "/config.js selects the 2.x adapter for the local network (UNDEPLOYED_PROTOCOL)",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-shielded-night.sh",
+          "assertion": "artifacts served as non-empty binary",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-shielded-night.sh",
+          "assertion": "both round trips completed with exact balance assertions",
+          "behavioural": true,
+          "note": "upstream's own 2.x external suite (MN_EXTERNAL_STACK=1), joined to THIS stack's contract through CV_ADDRESS."
+        }
+      ]
+    },
+    {
+      "service": "shielded-night-register",
+      "fragment": "compose/shielded-night.yml",
+      "profile": "shielded-night",
+      "kind": "one-shot",
+      "why": "derives sNight's colour from the deployed contract and replaces the schema's seeded PREVIEW colour in the kernel's registry.",
+      "logPattern": "OK: SNIGHT = [0-9a-f]{64}",
+      "checks": [
+        {
+          "step": "4d verify-oneshots.sh",
+          "script": "scripts/verify-oneshots.sh",
+          "assertion": "output assertion from config/e2e-coverage.json"
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-shielded-night.sh",
+          "assertion": "GET /v1/known-tokens names SNIGHT",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "shielded-night-verify",
+      "fragment": "compose/shielded-night.yml",
+      "profile": "shielded-night",
+      "kind": "on-demand",
+      "why": "upstream's read-only deployment verifier and its external round-trip suite, run fresh against the chain.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-shielded-night.sh",
+          "assertion": "11/11 circuits verified on chain against the served keys",
+          "behavioural": true
+        }
+      ]
+    },
+
+    {
+      "service": "solver-sink",
+      "fragment": "compose/solver.yml",
+      "profile": "solver",
+      "kind": "service",
+      "why": "the observation-mode relay stand-in. It is the only place 'nothing was ever sent to the solver' can be asserted, because it is the thing that would have had to send it.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-solver.sh",
+          "assertion": "solver sink healthy and solver connected",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-solver.sh",
+          "assertion": "solver published capabilities + ladder; observation safety holds",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "solver",
+      "fragment": "compose/solver.yml",
+      "profile": "solver",
+      "kind": "service",
+      "why": "the observation-only COW solver: it derives ladders from the kernel book and publishes them on the wire; it never settles.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-solver.sh",
+          "assertion": "solver /status/snapshot is bearer-gated",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-solver.sh",
+          "assertion": "solver status port :9100 is not published to the host",
+          "behavioural": true
+        }
+      ]
+    },
+    {
+      "service": "solver-frontend",
+      "fragment": "compose/solver.yml",
+      "profile": "solver",
+      "kind": "service",
+      "why": "the read-only monitor site: the one page that says whether the solver is quoting and, if not, why.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-solver.sh",
+          "assertion": "solver monitor read all three sources",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-solver.sh",
+          "assertion": "the monitor's rendered kernel book carries",
+          "behavioural": true,
+          "note": "book.count >= 1 — a non-error but EMPTY book section used to pass."
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-solver.sh",
+          "assertion": "the monitor renders the solver's ladder state",
+          "behavioural": true,
+          "note": "ladder.state, not 'the section did not error': never-derived and not-started used to pass."
+        }
+      ]
+    }
+  ]
+}
