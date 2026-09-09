@@ -445,12 +445,13 @@ for w in doc.get("wallets", []):
     if [[ -z "$PROBE_SEED" ]]; then
       skip_step 3b "the 'fund' compose one-shot" "no ${CI_FUND_PROBE_WALLET:-demo-carol} in wallets.json"
     else
-      fund_service() {
-        PROFILES="" ENV_FILE="$CI_ENV_FILE" COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
-        docker compose --env-file "$CI_ENV_FILE" -f "$REPO_ROOT/compose/core.yml" \
-          -p "$COMPOSE_PROJECT_NAME" --profile fund \
-          run --rm --no-deps -T -e FUND_ONLY_SEED="$PROBE_SEED" fund
-      }
+      # A SUBSHELL function: use_all_profiles exports PROFILES, and `dc` needs every fragment
+      # named or compose calls the other profiles' containers orphans on every `run`. Doing it
+      # in a subshell keeps that export out of the rest of this script.
+      fund_service() (
+        use_all_profiles
+        dc --profile fund run --rm --no-deps -T -e FUND_ONLY_SEED="$PROBE_SEED" fund
+      )
       if step 3b "the 'fund' compose one-shot (one probe wallet)" fund_service; then
         ok "fund compose one-shot funded the probe wallet (${CI_FUND_PROBE_WALLET:-demo-carol})"
       fi

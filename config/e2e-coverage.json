@@ -639,7 +639,7 @@
       "profile": "shielded-night",
       "kind": "one-shot",
       "why": "deploys the 2.x ConvertibleNight contract on the undeployed lane and publishes its address onto the shared volume. There is no join path upstream, so contract.json IS the idempotence flag.",
-      "logPattern": "published .*/contract\\.json",
+      "logPattern": "(published|JOIN:) .*/contract\\.json",
       "checks": [
         {
           "step": "4d verify-oneshots.sh",
@@ -688,7 +688,7 @@
       "profile": "shielded-night",
       "kind": "one-shot",
       "why": "derives sNight's colour from the deployed contract and replaces the schema's seeded PREVIEW colour in the kernel's registry.",
-      "logPattern": "OK: SNIGHT = [0-9a-f]{64}",
+      "logPattern": "OK: SNIGHT (=|already names) [0-9a-f]{64}",
       "checks": [
         {
           "step": "4d verify-oneshots.sh",

@@ -268,9 +268,12 @@ fi
 #   book.count >= 1    the kernel really has an open offer, read through the monitor's own
 #                      projection of it (not through the kernel API, which verify-kernel.sh and
 #                      verify-poster.sh already do — the claim here is that the MONITOR sees it).
-#   ladder.state       the solver's own view of what it last put on the wire: `quoting` when it
-#                      derived a ladder with at least one pair. `not-started`, `never-derived`,
-#                      `empty` and every `withheld:*` are the states the page renders in red.
+#   ladder             the solver's own view of what it last put on the wire. The RAW section is
+#                      `{state: "not-started"|"never-derived"|"derived", last: {pairs, withheld}}`
+#                      (packages/solver/src/status.ts); the monitor's page label `quoting` is
+#                      DERIVED from it — `derived` + `withheld === null` + `pairs > 0`. That
+#                      derivation is reproduced here rather than matched by label, because the
+#                      label is the page's and the section is the contract.
 #
 # BOUNDED WAIT, and conditional on the poster: the poster is what makes the book non-empty, and
 # on a cold devnet its first tick follows a wallet sync and a proving round. Without the poster
@@ -288,7 +291,7 @@ if (( ! POSTER_PRESENT )); then
 else
   SOLVER_BOOK_TIMEOUT="${SOLVER_BOOK_TIMEOUT:-300}"
   info "waiting up to ${SOLVER_BOOK_TIMEOUT}s for the monitor to render a non-empty book and a live ladder"
-  BOOK_COUNT=""; LADDER_STATE=""; LADDER_PAIRS=""
+  BOOK_COUNT=""; LADDER_STATE=""; LADDER_PAIRS=""; LADDER_WITHHELD=""
   SOLVER_DEADLINE=$(( SECONDS + SOLVER_BOOK_TIMEOUT ))
   while :; do
     RENDERED="$(curl -fsS --max-time 10 "$MBASE/api/snapshot" 2>/dev/null | python3 -c '
@@ -305,16 +308,18 @@ if isinstance(book, dict) and "error" not in book:
 solver = j.get("solver") or {}
 status = solver.get("snapshot") or {}
 ladder = status.get("ladder")
-state = pairs = ""
+state = pairs = withheld = ""
 if isinstance(ladder, dict) and "error" not in ladder:
     state = str(ladder.get("state") or "")
     last = ladder.get("last")
     if isinstance(last, dict):
         pairs = str(last.get("pairs", ""))
-print("\x1f".join([count, state, pairs]))
+        withheld = "" if last.get("withheld") is None else str(last.get("withheld"))
+print("\x1f".join([count, state, pairs, withheld]))
 ' 2>/dev/null || true)"
-    IFS=$'\x1f' read -r BOOK_COUNT LADDER_STATE LADDER_PAIRS <<< "${RENDERED:-}"
+    IFS=$'\x1f' read -r BOOK_COUNT LADDER_STATE LADDER_PAIRS LADDER_WITHHELD <<< "${RENDERED:-}"
     if [[ "${BOOK_COUNT:-0}" =~ ^[0-9]+$ ]] && (( BOOK_COUNT >= 1 )) \
+       && [[ "${LADDER_STATE:-}" == "derived" ]] && [[ -z "${LADDER_WITHHELD:-}" ]] \
        && [[ "${LADDER_PAIRS:-0}" =~ ^[0-9]+$ ]] && (( LADDER_PAIRS >= 1 )); then
       break
     fi
@@ -322,7 +327,7 @@ print("\x1f".join([count, state, pairs]))
     sleep 10
   done
 
-  info "monitor renders book.count=${BOOK_COUNT:-?} ladder.state=${LADDER_STATE:-?} ladder.last.pairs=${LADDER_PAIRS:-?}"
+  info "monitor renders book.count=${BOOK_COUNT:-?} ladder.state=${LADDER_STATE:-?} ladder.last.pairs=${LADDER_PAIRS:-?} withheld=${LADDER_WITHHELD:-none}"
   if [[ "${BOOK_COUNT:-}" =~ ^[0-9]+$ ]] && (( BOOK_COUNT >= 1 )); then
     ok "the monitor's rendered kernel book carries ${BOOK_COUNT} open offer(s)"
   else
@@ -331,19 +336,18 @@ print("\x1f".join([count, state, pairs]))
     FAILURES=$(( FAILURES + 1 ))
   fi
 
-  case "${LADDER_STATE:-}" in
-    quoting)
-      ok "the monitor renders the solver's ladder state = quoting (${LADDER_PAIRS} pair(s) on the wire)" ;;
-    "")
-      err "the monitor renders the solver's ladder state as unreadable — the ladder section errored or is absent"
-      FAILURES=$(( FAILURES + 1 )) ;;
-    *)
-      err "the monitor renders the solver's ladder state = ${LADDER_STATE} (pairs=${LADDER_PAIRS:-none}), not 'quoting'"
-      info "  not-started  = no relay client yet;    never-derived = no push derived yet"
-      info "  empty        = the last push carried no pair (the book has no quotable pair)"
-      info "  withheld:*   = a FAIL-CLOSED withdrawal — the solver pulled its quotes on purpose"
-      FAILURES=$(( FAILURES + 1 )) ;;
-  esac
+  if [[ "${LADDER_STATE:-}" == "derived" && -z "${LADDER_WITHHELD:-}" ]] \
+     && [[ "${LADDER_PAIRS:-0}" =~ ^[0-9]+$ ]] && (( LADDER_PAIRS >= 1 )); then
+    ok "the monitor renders the solver's ladder state as QUOTING (derived, ${LADDER_PAIRS} pair(s), nothing withheld)"
+  else
+    err "the monitor renders the solver's ladder state as NOT quoting: state=${LADDER_STATE:-unreadable} pairs=${LADDER_PAIRS:-none} withheld=${LADDER_WITHHELD:-none}"
+    info "  not-started   = no relay client yet (dry run, or the solver is still coming up)"
+    info "  never-derived = the solver has derived no push at all"
+    info "  derived + pairs=0     = the last push carried no pair (no quotable pair in the book)"
+    info "  derived + withheld=…  = a FAIL-CLOSED withdrawal: the solver pulled its quotes on purpose"
+    info "  (unreadable = the ladder section itself errored, or the bearer did not work)"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
 fi
 
 if (( FAILURES == 0 )); then

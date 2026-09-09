@@ -156,24 +156,36 @@ try {
   log(`the spa grant is in the SPA wallet: ${beforeWant} ${WANT_SYMBOL} (>= ${GRANT_MIN})`);
 
   // ── 4. TAKE ───────────────────────────────────────────────────────────────
+  // `0x`-tolerant on BOTH sides: the kernel's own row shape has changed spelling before, and a
+  // colour comparison that silently never matches reads as "the book is empty" — the least
+  // useful diagnosis available.
+  const norm = (v: unknown) => String(v ?? "").replace(/^0x/i, "").toLowerCase();
   const book = await getJson<any>(`${API}/v1/offers?limit=50`);
   const candidates = (book.offers ?? []).filter((o: any) => {
     const c = o.computed ?? {};
     const gives = c.gives ?? [];
     const wants = c.wants ?? [];
     if (gives.length !== 1 || wants.length !== 1) return false;
-    if (String(gives[0].token ?? "").toLowerCase() !== GIVE) return false;
-    if (String(wants[0].token ?? "").toLowerCase() !== WANT) return false;
-    return BigInt(wants[0].amount ?? 0) <= beforeWant && BigInt(wants[0].amount ?? 0) > 0n;
+    if (norm(gives[0].token) !== GIVE) return false;
+    if (norm(wants[0].token) !== WANT) return false;
+    const pay = BigInt(String(wants[0].amount ?? "0"));
+    return pay > 0n && pay <= beforeWant;
   });
   if (candidates.length === 0) {
+    for (const o of (book.offers ?? []).slice(0, 5)) {
+      const c = o.computed ?? {};
+      log(`  book: ${String(o.offerId).slice(0, 12)}… gives ` +
+          `${(c.gives ?? []).map((g: any) => `${g.amount}:${norm(g.token).slice(0, 12)}`).join(",")} wants ` +
+          `${(c.wants ?? []).map((x: any) => `${x.amount}:${norm(x.token).slice(0, 12)}`).join(",")}`);
+    }
     fail(`the book has no live ${GIVE_SYMBOL} -> ${WANT_SYMBOL} offer this wallet can afford ` +
-         `(${(book.offers ?? []).length} offer(s) listed). The offer poster is what fills it; ` +
-         `./verify.sh --poster names the reason when it is not posting.`);
+         `(${(book.offers ?? []).length} offer(s) listed, want-colour ${WANT.slice(0, 12)}…, ` +
+         `budget ${beforeWant}). The offer poster is what fills it; ./verify.sh --poster names ` +
+         `the reason when it is not posting.`);
   }
   const chosen = candidates[0];
-  const takeGive = BigInt(chosen.computed.gives[0].amount);
-  const takeWant = BigInt(chosen.computed.wants[0].amount);
+  const takeGive = BigInt(String(chosen.computed.gives[0].amount));
+  const takeWant = BigInt(String(chosen.computed.wants[0].amount));
   log(`taking offer ${String(chosen.offerId).slice(0, 16)}… — pay ${takeWant} ${WANT_SYMBOL}, ` +
       `receive ${takeGive} ${GIVE_SYMBOL}`);
 

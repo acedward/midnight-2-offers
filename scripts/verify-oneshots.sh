@@ -98,6 +98,15 @@ while IFS=$'\t' read -r SVC PROFILE PATTERN; do
     FAILURES=$(( FAILURES + 1 ))
     continue
   fi
+  # `created` is the trap this message exists for: docker reports ExitCode 0 for a container
+  # that was never started, and its logs are empty — so without this it reads as "exited 0 but
+  # printed nothing", which sends the reader looking at the wrong thing entirely.
+  if [[ "$STATE" == "created" ]]; then
+    err "${SVC} was CREATED but never started — compose made the container and something upstream of it did not complete"
+    info "  this is not a one-shot that failed; it is a one-shot that never ran"
+    FAILURES=$(( FAILURES + 1 ))
+    continue
+  fi
   if [[ "$RC" != "0" ]]; then
     err "${SVC} exited ${RC}"
     info "  logs: docker logs ${CID}"
