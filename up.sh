@@ -306,7 +306,21 @@ log "starting containers"
 # proof-data generation once — about a minute. Every later run finds it already active and
 # the one-shot returns NOOP in a few seconds.
 dim "first run only: proof-params-init populates the shared proof-data cache (~223 MB, ~60s)"
-if ! dc up -d --remove-orphans; then
+# The offer poster is started LAST, on its own, after every other service has
+# passed its wait (see the poster block below): it is the one component whose
+# only job is to exercise everything else — kernel, batcher, faucet inventory,
+# registry-env, node, indexer, proof server, and the quotes the price feed feeds
+# — so starting it beside them turns every startup race into "the poster is
+# unhealthy" (issue 00022 was exactly that shape). Compose `depends_on` cannot
+# express "after the WAITS", only "after the containers exist", so the initial
+# `up` names every rendered service except the poster.
+START_SERVICES=()
+if [[ " $PROFILES " == *" poster "* ]]; then
+  while IFS= read -r svc; do
+    [[ "$svc" == "offer-poster" ]] || START_SERVICES+=("$svc")
+  done < <(dc config --services)
+fi
+if ! dc up -d --remove-orphans "${START_SERVICES[@]+"${START_SERVICES[@]}"}"; then
   FAILED=1
   echo
   err "docker compose up failed. Container state and last 40 log lines follow:"
@@ -557,53 +571,6 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]]; then
   fi
 fi
 
-# The offer poster. Its healthcheck cannot come up until the wallet has synced,
-# registered its dust address and seen a spendable DUST UTXO — minutes on a cold
-# 2.x chain, which is why the timeout is its own variable. (There is no contract
-# to join any more; there is inventory to find instead.)
-#
-# `degraded` is a WARNING here and not a failure: the poster is up and telling
-# the truth about why it is not posting yet, and a one-shot may still be
-# settling. `./verify.sh --poster` is the gate that turns that into a FAIL,
-# because a gate that also had to wait would either be flaky or slow. The reason
-# to expect since the contract removal is `insufficient_inventory` — the poster
-# no longer mints, so its coins come from `faucet-mint`.
-if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]]; then
-  wait_compose_healthy offer-poster "${POSTER_WAIT_TIMEOUT:-900}" || FAILED=1
-  if (( ! FAILED )); then
-    POSTER_HEALTH_JSON="$(curl -fsS --max-time 10 \
-      "http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health" 2>/dev/null || true)"
-    # `state` is one of starting|ok|degraded|unhealthy|stopping, and `lastFailure`
-    # carries the reason a tick could not mint (e.g. insufficient_dust).
-    POSTER_STATE="$(printf '%s' "$POSTER_HEALTH_JSON" \
-      | python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-print(d.get("state") or "unknown")' 2>/dev/null || true)"
-    POSTER_WHY="$(printf '%s' "$POSTER_HEALTH_JSON" \
-      | python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-print(d.get("lastFailure") or d.get("lastError") or "")' 2>/dev/null || true)"
-    case "$POSTER_STATE" in
-      ok)
-        info "offer-poster is minting and posting (state=ok)" ;;
-      degraded|starting)
-        warn "offer-poster state=${POSTER_STATE}${POSTER_WHY:+ (${POSTER_WHY})} — up, and honest about why it is not minting yet"
-        info "  ./verify.sh --poster is the gate; give it a few minutes, or check: ENV_FILE=${ENV_FILE:-.env} docker compose … logs poster-fund" ;;
-      unhealthy)
-        err "offer-poster state=unhealthy${POSTER_WHY:+ (${POSTER_WHY})} — HEALTH_STALE_TICKS consecutive failed ticks"
-        info "  ${POSTER_HEALTH_JSON:0:400}"
-        FAILED=1 ;;
-      *)
-        warn "offer-poster /health did not report a state (${POSTER_STATE:-no answer}) — ./verify.sh --poster is the gate" ;;
-    esac
-  fi
-fi
 
 # The price feed. It publishes no port and has no healthcheck — it is a WRITER, and
 # its liveness signal is a row in the database — so "usable" here is read from the
@@ -649,6 +616,62 @@ raise SystemExit(0 if (d.get("feed") or {}).get("last_ok_at") else 1)' 2>/dev/nu
   else
     warn "the price feed has not completed a cycle yet — the stack still quotes from the seeded prices"
     info "  ./verify.sh --prices is the gate; the reason is in: ENV_FILE=${ENV_FILE:-.env} docker compose … logs price-feed"
+  fi
+fi
+
+# The offer poster. Its healthcheck cannot come up until the wallet has synced,
+# registered its dust address and seen a spendable DUST UTXO — minutes on a cold
+# 2.x chain, which is why the timeout is its own variable. (There is no contract
+# to join any more; there is inventory to find instead.)
+#
+# `degraded` is a WARNING here and not a failure: the poster is up and telling
+# the truth about why it is not posting yet, and a one-shot may still be
+# settling. `./verify.sh --poster` is the gate that turns that into a FAIL,
+# because a gate that also had to wait would either be flaky or slow. The reason
+# to expect since the contract removal is `insufficient_inventory` — the poster
+# no longer mints, so its coins come from `faucet-mint`.
+#
+# It starts HERE, last: the initial `up` deliberately left it out (see above),
+# so this is the first time its container exists. Everything it depends on has
+# passed its own wait by now; `--no-deps` says exactly that.
+if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]]; then
+  log "starting the offer poster last — every other service has passed its wait"
+  dc up -d --no-deps offer-poster || FAILED=1
+fi
+if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]]; then
+  wait_compose_healthy offer-poster "${POSTER_WAIT_TIMEOUT:-900}" || FAILED=1
+  if (( ! FAILED )); then
+    POSTER_HEALTH_JSON="$(curl -fsS --max-time 10 \
+      "http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health" 2>/dev/null || true)"
+    # `state` is one of starting|ok|degraded|unhealthy|stopping, and `lastFailure`
+    # carries the reason a tick could not mint (e.g. insufficient_dust).
+    POSTER_STATE="$(printf '%s' "$POSTER_HEALTH_JSON" \
+      | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+print(d.get("state") or "unknown")' 2>/dev/null || true)"
+    POSTER_WHY="$(printf '%s' "$POSTER_HEALTH_JSON" \
+      | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+print(d.get("lastFailure") or d.get("lastError") or "")' 2>/dev/null || true)"
+    case "$POSTER_STATE" in
+      ok)
+        info "offer-poster is minting and posting (state=ok)" ;;
+      degraded|starting)
+        warn "offer-poster state=${POSTER_STATE}${POSTER_WHY:+ (${POSTER_WHY})} — up, and honest about why it is not minting yet"
+        info "  ./verify.sh --poster is the gate; give it a few minutes, or check: ENV_FILE=${ENV_FILE:-.env} docker compose … logs poster-fund" ;;
+      unhealthy)
+        err "offer-poster state=unhealthy${POSTER_WHY:+ (${POSTER_WHY})} — HEALTH_STALE_TICKS consecutive failed ticks"
+        info "  ${POSTER_HEALTH_JSON:0:400}"
+        FAILED=1 ;;
+      *)
+        warn "offer-poster /health did not report a state (${POSTER_STATE:-no answer}) — ./verify.sh --poster is the gate" ;;
+    esac
   fi
 fi
 
