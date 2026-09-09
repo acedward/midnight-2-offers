@@ -898,36 +898,38 @@ NIGHT. Eleven circuits, and two conversion models:
 
 `./verify.sh` exercises **both**, in a container, with exact balance assertions.
 
-### The pin is a branch head, and the image checks the line
+### The pin is `main`, and the image checks the lane rather than trusting the SHA
 
-This stack is Midnight **2.x** on the `undeployed` network, and the long-lived
-**`ledger-v9`** branch (`30af63f3…`) is the only line of this dApp on which the `undeployed`
-deploy / verify / round-trip lane is a 2.x lane. Its own CI runs the unit tier, the frontend
-build, the byte-exact contract rebuild and the full integration suite against node
-2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5. The sibling repository
-`midnight-1-offers` pins `main` for the same profile.
+This stack is Midnight **2.x** on the `undeployed` network, and since upstream
+[PR #16](https://github.com/effectstream/shielded-night/pull/16) (`main` @ `1337afc3…`, merged
+2026-09-09) `main` serves exactly that combination. That PR made `undeployed`
+protocol-selectable in the three places that decide it: an `undeployed()` profile in
+`contracts/v2/scripts/profile.ts` (all five `MN_*_URL` endpoints overridable, maintenance key
+**ephemeral and optional** where stagenet's is mandatory and durable), `MN_ENV=undeployed`
+accepted by the v2 deploy and verify scripts, and an `UNDEPLOYED_PROTOCOL` switch on the page —
+plus the 2.x counterpart of the external-stack round-trip suite this profile uses as its gate.
+It retired the long-lived `ledger-v9` branch this repository tracked while `main` could not
+serve a local ledger-9 devnet (upstream PR #13 had put 2.x on **stagenet only**; the full
+measurement is in `docs/KNOWN-LIMITATIONS.md`).
 
-`main` used to be describable as "the 1.x line". **It is not any more**, and the correction
-matters because it is now easy to assume the re-pin is available. Upstream
-[PR #13](https://github.com/effectstream/shielded-night/pull/13) (`main` @
-`edac395d4a2517879c2315daca7ed72f09eaf17c`) split the repository into two protocol-isolated
-trees — 1.x at `src/` + `frontend/protocols/v1` (compactc 0.31.1, ledger-v8) and 2.x at
-`contracts/v2/` + `frontend/protocols/v2` (compactc 0.34.0, ledger-v9). The 2.x half,
-however, is wired to **stagenet only**: `contracts/v2/scripts/deploy.ts` and
-`verify-deployment.ts` both refuse every `MN_ENV` but `stagenet`, `profile.ts` exports only
-`stagenet()`, `MN_MAINTENANCE_KEY_FILE` is mandatory and must be on durable storage, and
-`frontend/src/lib/networks.ts` still declares `undeployed` as `protocolFamily:
-'midnight-1.x'` with no env or runtime seam. `contracts/v2/test/` is two unit files, so the
-`MN_EXTERNAL_STACK` round trips this profile uses as its gate have no 2.x counterpart at all.
-On `main`, therefore, the only `undeployed` lane is the ledger-v8 one — which cannot talk to
-a ledger-9 chain. See `docs/KNOWN-LIMITATIONS.md` for what would have to land upstream first.
+`main` carries **both generations**, protocol-isolated: 1.x at `src/` + `frontend/` +
+`frontend/protocols/v1` (compactc 0.31.1, ledger-v8, bun) and 2.x at `contracts/v2/` +
+`frontend/protocols/v2` (compactc 0.34.0, ledger-v9, **npm**). Which one is used is a choice
+this profile makes twice — `MN_ENV=undeployed` on the runner side, `UNDEPLOYED_PROTOCOL=
+midnight-2.x` in the `/config.js` the web container writes — and both halves must agree, because
+a page told 1.x against a ledger-9 chain connects and then fails every call.
 
-Because *only the pin* separates the two images, the pin is not trusted. `images/shielded-night`
-asserts the line in both directions, in both packages **and in both resolved lockfiles**:
-`@midnightntwrk/ledger-v9` is `1.0.0-rc.3`, `@midnight-ntwrk/compact-runtime` is `0.19.0`, no
-`ledger-v8` is depended on, and neither `bun.lock` resolves one. The lockfile half is the one
-that matters — two ledger wasm instances in a single process fail each other's `instanceof`
-checks during proving, hours later and nowhere near the cause.
+So the pin is not trusted. `images/shielded-night` asserts, **per v2 tree** (`contracts/v2` and
+`frontend/protocols/v2`), that it has its own `package-lock.json`, pins
+`@midnightntwrk/ledger-v9` `1.0.0-rc.3` and `@midnight-ntwrk/compact-runtime` `0.19.0`, depends
+on no `ledger-v8`, and **resolves** none. That is separation rather than absence: the ledger-v8
+packages are legitimately in this tree now, on the 1.x side. The lockfile half is the one that
+matters — two ledger wasm instances in a single package tree fail each other's `instanceof`
+checks during proving, hours later and nowhere near the cause. The build additionally asserts
+every knob it depends on (the `undeployed` v2 env, the five endpoint overrides, the ephemeral
+maintenance-key path, `UNDEPLOYED_PROTOCOL` and the `Local (undeployed · 2.x)` label it
+produces, `MN_EXTERNAL_STACK`, `CV_ADDRESS`, `DEPLOY_OUT`, and the sealed constructor
+arguments), so a re-pin to a tree without them fails at build time.
 
 ### The contract is recompiled, not trusted
 
@@ -964,7 +966,7 @@ inside the compose network against this stack's indexer.
 | `shielded-night-deploy` | one-shot (`restart: "no"`) | deploys the contract ONCE per stack and publishes `contract.json` atomically to a named volume |
 | `shielded-night-register` | one-shot (`restart: "no"`) | teaches the offer-files kernel THIS stack's sNight colour, when the `offerfiles` profile is in the stack. Every kernel request is retried, bounded and jittered, because health is not schema readiness (infra issue 00016). No kernel → it waits for the name to appear (`SNIGHT_KERNEL_DNS_WAIT_S`, default 300 s — the kernel container starts ~80 s after this one-shot on `--with offerfiles --with shielded-night`), then one log line and exit 0 |
 | `shielded-night` | nginx | serves the SPA and the compiled artifacts; its entrypoint waits for that address and writes `/config.js` before starting nginx |
-| `shielded-night-verify` | never started by `up.sh` | the bun-side assertions `./verify.sh` runs with `compose run --rm` (a compose `profiles:` key keeps it out of `up -d`, exactly as `core.yml`'s `fund` service does) |
+| `shielded-night-verify` | never started by `up.sh` | the runner-side assertions `./verify.sh` runs with `compose run --rm` — upstream's `contracts/v2` `verify:deployment` and its `test:external` round-trip suite (a compose `profiles:` key keeps it out of `up -d`, exactly as `core.yml`'s `fund` service does) |
 
 ### Naming sNight in the kernel's token registry
 
@@ -1028,6 +1030,15 @@ value, and ships a no-op `public/config.js` placeholder that `index.html` alread
 **classic** script. The web entrypoint overwrites that one already-served file at container
 start and touches nothing else — **no patch of the source and no patch of the built output**.
 
+**It writes two keys, not one.** The same lane carries `UNDEPLOYED_PROTOCOL`, which selects the
+ledger generation the local network runs. Its default is `midnight-1.x` — right for upstream's
+own local flow, wrong for this stack, which is ledger-9 — so the entrypoint writes
+`midnight-2.x` explicitly. That is what turns the network row into `Local (undeployed · 2.x)`
+and loads `frontend/protocols/v2`. Without it the page loads, offers `Local (undeployed)`,
+connects a wallet, and then fails every call with an error naming neither the adapter nor the
+chain. An unrecognised value is reported on the page and blocks Connect (upstream refuses to
+guess), which is one reason it is a constant here rather than an operator knob.
+
 What makes it run first is that it is a classic script, not where it sits in the document:
 Vite hoists the bundle's `<script type="module">` into `<head>` while the config tag stays in
 `<body>`, and a module script is deferred by specification. `verify.sh` asserts that property
@@ -1035,12 +1046,11 @@ rather than document order, because asserting the order would be both wrong and 
 
 ### The network dropdown now also offers PreProd
 
-Since `ledger-v9` @ `30af63f3…` (project 00007 phase F2) merged shielded-night `main`'s own PR
-#11, `frontend/.env`'s `PREPROD_ADDRESS` is baked into the bundle at build time alongside
-`PREVIEW_ADDRESS` — so the page this profile serves shows **Preview**, **PreProd** and
-**Local (undeployed)** in its network dropdown, not just the first and third. This is a
-consequence of the re-pin, not new code in this repository: nothing here adds, wires or tests a
-PreProd lane. **Selecting PreProd talks to the real, public preprod network and its live,
+`frontend/.env`'s `PREPROD_ADDRESS` (and, since the `main` re-pin, `STAGENET_ADDRESS`) is baked
+into the bundle at build time alongside `PREVIEW_ADDRESS` — so the page this profile serves
+shows **Preview**, **PreProd**, **Stagenet** and **Local (undeployed · 2.x)** in its network
+dropdown, not just the first and last. This is a consequence of the pin, not new code in this
+repository: nothing here adds, wires or tests a public-network lane. **Selecting PreProd talks to the real, public preprod network and its live,
 unlocked contract — not this stack's own devnet.** The devnet deploy this profile drives is
 always `Local (undeployed)`, which is what `/config.js` points the dropdown at by default and
 what `verify.sh` and the round-trip driver both exercise.
@@ -1312,7 +1322,7 @@ prose is kept because it explains *why* each row is what it is.
 | — solver monitor site | `solver` | **`http://127.0.0.1:10802`** | `solver-frontend` from the kernel image — the read-only "is it quoting, and if not why" page. Reads the solver's status listener on the unpublished `:9100`, the kernel API and the sink's `GET /tokens`; holds no wallet, mutates nothing |
 | Offer poster (the book fills itself) | `poster` — **needs `faucet` too** | health `http://127.0.0.1:10803/health` | same repo/commit — **selects** an existing coin of exactly `OFFER_POSTER_GIVE_AMOUNT` and posts one takeable offer per interval, paying fees with its own DUST. It does not mint: inventory is finite and comes from `faucet-mint`, and both token ids are resolved by symbol out of `registry-env`'s file. Dedicated seed (`0ffe…`), NIGHT from a `poster-fund` one-shot; durable journal on its own volume |
 | zswap-da frontend (swap SPA) | `frontend` — the Faucet link needs `faucet` | `http://127.0.0.1:10600` | [`effectstream/effectstream@400880ce`](https://github.com/effectstream/effectstream/tree/400880ceb6814738d1ae193dae18ad5128922edc/templates/zswap-da), branch **`midnight-1`** — fetched directly at build time and adapted by the checked-in 8-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed. **No contract and no compactc in this image**: upstream [PR #922](https://github.com/effectstream/effectstream/pull/922) removed the template's local faucet contract, as kernel #69/#70 removed the kernel's, so the patch is now purely the 1.x → 2.x dependency port plus six ledger-v8 → v9 modules. Test tokens come from the `faucet` profile and the SPA's top-nav **Faucet** link opens this stack's `faucet-site` at `?network=undeployed`. Whole-coin display reads each token's real `decimals` off `GET /v1/known-tokens` (8/18/6/6/6/8 for the six local tokens), and the page is **usable in a browser on ANY port block**: the image injects `window.MIDNIGHT_HOST_PORTS`, `window.MIDNIGHT_NETWORK_ID` and `window.FAUCET_HOST_PORT` at container start and `browser-network-urls.patch` resolves the kernel's compose-internal URIs and the faucet origin through them |
-| Shielded NIGHT dApp (NIGHT ⇄ sNight) | `shielded-night` | `http://127.0.0.1:10900` | [effectstream/shielded-night](https://github.com/effectstream/shielded-night) — branch **`ledger-v9`** @ `30af63f3…` (the 2.x port; its PR #10 is CLOSED and the branch is what is tracked). `main` carries a 2.x tree since upstream PR #13 but wires it to **stagenet only**, so it cannot serve this stack — see `docs/KNOWN-LIMITATIONS.md`. Contract, harness and page from ONE commit, no patch of any kind; the contract is **recompiled in-image** with SHA-256-pinned compactc `0.34.0` and the build fails unless the output is byte-identical to the committed `src/managed/`. Deploys ONCE per stack (`shielded-night-deploy` one-shot, address persisted on a volume and injected into the page as `/config.js`). With `--with offerfiles` a second one-shot names **this stack's** sNight colour in the kernel's token registry — the schema seeds *preview's*, and the colour follows the contract address |
+| Shielded NIGHT dApp (NIGHT ⇄ sNight) | `shielded-night` | `http://127.0.0.1:10900` | [effectstream/shielded-night](https://github.com/effectstream/shielded-night) — branch **`main`** @ `1337afc3…`, the merge of [PR #16](https://github.com/effectstream/shielded-night/pull/16), which brought the `undeployed` lane onto this dApp's 2.x profile and retired the `ledger-v9` branch this profile used to track. `main` carries both generations; this profile selects 2.x twice — `MN_ENV=undeployed` for the one-shots, `UNDEPLOYED_PROTOCOL=midnight-2.x` in the injected `/config.js`, which labels the page's local network **`Local (undeployed · 2.x)`**. Contract, harness and page from ONE commit, no patch of any kind; the **v2** contract is **recompiled in-image** with SHA-256-pinned compactc `0.34.0` and the build fails unless the output is byte-identical to the committed `contracts/v2/managed/` (the tree's 1.x contract is 0.31.1 and is shipped as committed — this stack never selects a 1.x network). Deploys ONCE per stack (`shielded-night-deploy` one-shot, address persisted on a volume and injected into the page as `/config.js`). With `--with offerfiles` a second one-shot names **this stack's** sNight colour in the kernel's token registry — the schema seeds *preview's*, and the colour follows the contract address |
 | AA Manager + Minter | `aa` | deploy receipt in the `aa-out` volume | [acedward/AA-midnight-evm-experiment-v3](https://github.com/acedward/AA-midnight-evm-experiment-v3) — `main @ 41de69de` (sha-pinned; key-breaking merges need a redeploy) · [PR #12](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12) split `manager.compact` into a preset + nine modules. Compiled in-image with the compactc `0.34.0` / compact-runtime `0.19.0` the kernel tree still pins — ONE toolchain, which is what closed the old two-toolchain hazard, and which must now also match the runtime the COPIED mint-test-tokens artifacts were built for, since the console loads those beside the Manager's — **except `execute`**, which comes from [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release **`v0.2.0`** by default (`AA_ZKIR_SOURCE=minocrab`): the same contract transcribed into MinoCrab, a third-party Rust compiler, landing `execute` at **k = 18 / 211,047 rows** instead of compactc's k = 19 / 382,780 — half the proving key (544 MiB vs 1.14 GB), roughly half the proving time. The image downloads the release's files and takes them by SHA-256; the identity is `sha256(SHA256SUMS)` = `4a8c0183…`, **never the tag**. **Unaudited compiler; equivalence TESTED, NOT PROVEN** (59 differential tests, 5,128 tamper probes, 0 acceptance disagreements) — dev chains only, see [KNOWN-LIMITATIONS](docs/KNOWN-LIMITATIONS.md). `AA_ZKIR_SOURCE=compactc` opts out; `minocrab-all` takes all nine circuits |
 | **AA web console** (this stack's UI) | `aa` | **`http://127.0.0.1:10700`** | this repo (`images/aa-contracts/console/`) — tabs: AA+EVM, AA+Midnight (preview), COW solver feed, infrastructure canvas, Memos, Repos |
 | `@effectstream` packages | (npm) | — | [effectstream/effectstream](https://github.com/effectstream/effectstream) — the versions the kernel pin resolves: `@effectstream/celestia`, `midnight-contracts`, `orchestrator` `@0.200.2` · `mip-zswap-offer@0.4.0-v9.0` · `@midnightntwrk/ledger-v9@1.0.0-rc.3` (a root `overrides` entry, so ONE ledger WASM per process) · midnight-js network-id `5.0.0-beta.6` |

@@ -469,9 +469,12 @@ On the 2.x line the wallet must **also** speak ledger-v9. The one measured to do
    run for it, and no service in this stack holds it open. `demo-alice` works too after
    `./scripts/fund-wallet.sh --all-demo`.
 
-5. **Open `http://127.0.0.1:10900`**, connect the wallet, and pick **Local (undeployed)** in
-   the network dropdown. The page defaults to *Preview*; the entry that appears only because
-   `/config.js` injected this stack's address is the local one.
+5. **Open `http://127.0.0.1:10900`**, connect the wallet, and pick **Local (undeployed · 2.x)**
+   in the network dropdown. The page defaults to *Preview*; the entry that appears only because
+   `/config.js` injected this stack's address is the local one, and the `· 2.x` suffix is the
+   page telling you that `/config.js` also set `UNDEPLOYED_PROTOCOL=midnight-2.x`, so it will
+   load the ledger-v9 adapter. If it reads plain **Local (undeployed)**, the protocol switch did
+   not arrive and a ledger-v9 wallet will fail every call.
 
 6. **Convert 1 NIGHT → sNight, then back.** One wallet approval per direction on the atomic
    path. NIGHT should drop by exactly 1 plus fees (fees are DUST, so the NIGHT delta is

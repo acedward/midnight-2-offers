@@ -567,12 +567,19 @@ keeps everything it already wrote.
    registered DUST cannot pay a fee at all, and the failure would surface inside transaction
    balancing with an error naming none of this.
 2. **`shielded-night-deploy`** (one-shot, `restart: "no"`) waits for node block #1, the proof
-   server and the indexer, then deploys the contract and publishes `contract.json` to its
-   named volume — temp file plus `mv`, so a reader can never see a half-written record. If a
-   record is already there it JOINs and exits 0 without deploying.
+   server and the indexer, then runs upstream's `npm --prefix contracts/v2 run deploy` with
+   `MN_ENV=undeployed` and publishes `contract.json` to its named volume — temp file plus
+   `mv`, so a reader can never see a half-written record. If a record is already there it
+   JOINs and exits 0 without deploying. **That JOIN is entirely this deployment's**: upstream
+   states outright that `deploy:v2` always deploys a NEW contract and that resumability belongs
+   to the caller, so the presence of `contract.json` is the only thing standing between a
+   `--force-recreate` and a second contract. The published record is upstream's own, plus the
+   flat aliases this repository's consumers read (`address`, `networkId`, `name`, `symbol`,
+   `decimals`, `commit`) and the deployer's role.
 3. **`shielded-night`** (nginx) starts only on the one-shot's
    `service_completed_successfully`, blocks until it can read the address, writes `/config.js`
-   and execs nginx.
+   — this stack's contract address **and** `UNDEPLOYED_PROTOCOL: "midnight-2.x"`, without which
+   the page would load the ledger-v8 adapter against this ledger-9 chain — and execs nginx.
 4. `up.sh` then waits for the container healthcheck **and reads the address back off the
    volume**, naming it in the summary line. `service_completed_successfully` alone is not
    enough: it is equally satisfied by a one-shot that took the JOIN path against a volume left
@@ -598,36 +605,45 @@ After a redeploy the page must be restarted to pick the new address up, because 
 reads the volume once at container start. `./up.sh` orders this correctly on its own; if you
 drop the volume by hand, `docker compose … restart shielded-night`.
 
-### Locking
+### Locking — not available on the 2.x lane, and refused rather than ignored
 
-`SHIELDED_NIGHT_LOCK=true` makes the one-shot run upstream's `deploy-and-lock.ts`, which
-dissolves the contract's maintenance committee. That is a **one-way door** meant for hosted
-releases: no verifier key and no rule can ever be changed again. A throwaway devnet contract
-that dies with `./down.sh -v` gains nothing from it, so it is off by default — and `verify.sh`
-asserts the authority state in **both** directions, failing if the contract is locked when
-nobody asked for it.
+`deploy-and-lock.ts` and `lock.ts` are the **1.x** tree's scripts. `contracts/v2` has no
+counterpart, so on this profile `SHIELDED_NIGHT_LOCK=true` is **refused** by the deploy one-shot
+(exit 78, with the reason) instead of quietly doing nothing. Locking dissolves the contract's
+maintenance committee — a **one-way door** meant for hosted releases, after which no verifier
+key and no rule can ever be changed again — and a throwaway devnet contract that dies with
+`./down.sh -v` would gain nothing from it.
 
-Note that upstream's `verify-deployment.ts`, by default, exits non-zero on an unlocked contract
-*even when all 11 verifier keys match*, because its own contract is "the code matches AND the
-contract is immutable" — wrong for a throwaway devnet deploy, which is deliberately never
-locked. Since shielded-night `ledger-v9` @ `30af63f3…` (project 00007 phase F2, upstream PR #12)
-the script takes `--allow-unlocked`: the lock state is still measured and printed, but only the
-verifier-key/circuit-set check decides the exit code, so `images/shielded-night/entrypoint-verify.sh`
-now trusts that exit status directly instead of parsing stdout (project 00007 Q8/F2).
+The v2 verifier needs no `--allow-unlocked` flag either. The 1.x script did (delivered as
+upstream PR #12 for project 00007 Q8): by default it exited non-zero on an unlocked contract
+*even when all 11 verifier keys matched*. `contracts/v2/scripts/verify-deployment.ts` reports
+the maintenance-authority state and folds only the circuit-set, verifier-key and sealed-metadata
+comparison into its exit code, so a deliberately unlocked devnet contract is information rather
+than a failure and `images/shielded-night/entrypoint-verify.sh` trusts that exit status
+directly.
 
 ### What the verify section asserts
 
 `scripts/verify-shielded-night.sh`, in order: the page serves HTML; `/config.js` is the
-**generated** one (upstream ships a placeholder, so a 200 proves nothing) and carries *exactly*
-the address on the volume; `index.html` loads it as a classic script; the deploy record names
+**generated** one (upstream ships a placeholder, so a 200 proves nothing), carries *exactly* the
+address on the volume **and** `UNDEPLOYED_PROTOCOL: "midnight-2.x"`; `index.html` loads it as a
+classic script; the served bundle carries the baked PreProd address and the
+`Local (undeployed · 2.x)` label the protocol switch produces; the deploy record names
 `networkId=undeployed` and the fields the docs promise; all 33 ZK artifacts (11 circuits ×
-prover/verifier/bzkir) answer with non-empty non-HTML bytes; `compiler/contract-manifest.json`
-is served, names compactc 0.34.0 and covers all 11 circuits; a circuit that does not exist
-answers **404**, never the SPA shell; the on-chain verifier keys equal the served ones 11/11;
-and a funded driver wallet distinct from the deployer completes **both** round trips — atomic
-and two-step — with exact balance assertions, by running the *upstream* integration suite
-against this stack (`MN_EXTERNAL_STACK=1`).
+prover/verifier/bzkir) answer from **`/contract/v2/shielded-night/`** with non-empty non-HTML
+bytes; `compiler/contract-manifest.json` is served, names compactc 0.34.0 and covers all 11
+circuits; a circuit that does not exist answers **404**, never the SPA shell; the on-chain
+verifier keys equal the served ones 11/11; and a funded driver wallet distinct from the deployer
+runs the *upstream* 2.x external-stack suite against this stack (`MN_EXTERNAL_STACK=1`,
+`CV_ADDRESS` = this stack's contract, so it JOINS rather than deploying another) — four cases
+including **both** round trips, atomic and two-step, with exact balance assertions.
 
-**Budget minutes for the round trips.** The same two tests take ~280 s against the 1.x triple
-and were measured at 487–537 s in the `ledger-v9` branch's own CI: proving on the 2.x line runs
-about 1.25–1.6× slower.
+**The artifact path is `/contract/v2/`, not `/contract/compiled/`.** On `main` the built site
+carries both generations, and `contract/compiled/shielded-night` is the legacy **v1** (compactc
+0.31.1) copy — which has no `compiler/contract-manifest.json` at all, because compactc only
+began emitting one at 0.33. The compose healthcheck reads the v2 path for the same reason.
+
+**Budget minutes for the round trips.** The equivalent 1.x tests take ~280 s; proving on the 2.x
+line runs about 1.25–1.6× slower, and the whole four-case file runs rather than two selected
+cases. The suite's own vitest config allows 10 minutes per test and 20 for the hooks, with
+retries at **zero**.

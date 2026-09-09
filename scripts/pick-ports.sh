@@ -69,7 +69,7 @@ AA_CONSOLE_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}-console
 AA_E2E_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}-e2e
 SOLVER_IMAGE=midnight-2-offers/cow-solver:${IMAGE_TAG_SUFFIX}
 SOLVER_SINK_IMAGE=midnight-2-offers/cow-solver-sink:${IMAGE_TAG_SUFFIX}
-# ONE build context, TWO runtime targets (nginx page server + bun deploy/verify one-shot), so
+# ONE build context, TWO runtime targets (nginx page server + node/bun deploy/verify one-shot), so
 # two image names. Both must carry the run-specific tag or a second stack on this daemon would
 # reuse the first one's binaries.
 SHIELDED_NIGHT_IMAGE=midnight-2-offers/shielded-night:${IMAGE_TAG_SUFFIX}

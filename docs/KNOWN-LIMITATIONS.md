@@ -416,43 +416,35 @@ These are properties of the upstream dApp and of the 2.x line, not defects intro
 Everything the automated gates *can* prove, they prove; this section is the honest list of what
 they cannot.
 
-### shielded-night cannot track `main` yet — `main`'s 2.x lane is stagenet-only
+### `main` now carries the `undeployed` 2.x lane — the `ledger-v9` branch pin is retired
 
-`SHIELDED_NIGHT_REF` points at the long-lived **`ledger-v9`** branch
-(`30af63f3865d0bc5d5331ae32a7891ad48818303`) rather than at `main`, and the reason changed on
-2026-09-07. Before that, `main` was simply the 1.x / ledger-v8 line. Upstream
-[PR #13](https://github.com/effectstream/shielded-night/pull/13) (`main` @
-`edac395d4a2517879c2315daca7ed72f09eaf17c`) added Preview / Preprod / **Stagenet** support with
-protocol-isolated adapters, so `main` now carries a real 2.x tree — and it is easy to conclude
-from that alone that the re-pin is available. It is not. The 2.x half of `main` is wired to
-**stagenet only**, and this stack has no stagenet: it is a local `undeployed` devnet.
+`SHIELDED_NIGHT_REF` points at **`main`** @ `1337afc35ac1e6089dcc5957feafdb2bdc3bf1a3`. Between
+2026-09-07 and 2026-09-09 it could not: upstream
+[PR #13](https://github.com/effectstream/shielded-night/pull/13) gave `main` a 2.x tree but
+wired it to **stagenet only**, so the only `undeployed` lane it offered was the ledger-v8 one —
+which cannot deploy to or read this stack's ledger-9 chain. This repository tracked the
+long-lived `ledger-v9` branch (`30af63f3…`) through that window and recorded the measurement
+here rather than closing the gap by patching a third-party tree.
 
-Measured at `edac395` on 2026-09-08:
+Upstream [PR #16](https://github.com/effectstream/shielded-night/pull/16) closed it properly:
+`MN_ENV=undeployed` on the `contracts/v2` deploy and verify scripts (with an **ephemeral,
+optional** maintenance key instead of stagenet's mandatory durable one), a 2.x external-stack
+round-trip suite, and an `UNDEPLOYED_PROTOCOL` switch on the page. This profile therefore
+selects 2.x on both sides — `MN_ENV=undeployed` for the runner one-shots,
+`UNDEPLOYED_PROTOCOL=midnight-2.x` in the `/config.js` the web container writes — and the page's
+network row reads **`Local (undeployed · 2.x)`**. Nothing is patched, and the `ledger-v9` branch
+is no longer referenced anywhere in this repository.
 
-| What the demo needs | What `main` provides |
-|---|---|
-| a 2.x deploy on `undeployed` | `contracts/v2/scripts/deploy.ts`: *"The v2 deployment command only supports MN_ENV=stagenet."* `profile.ts` exports one profile (`stagenet()`, `networkId: 'stagenet'`) and `deploy.ts` hard-codes `walletNetworkId: NetworkId.StageNet` |
-| a 2.x read-only verify on `undeployed` | `contracts/v2/scripts/verify-deployment.ts`: the same refusal |
-| a deployer that runs inside a throwaway container | `MN_MAINTENANCE_KEY_FILE` is mandatory and must be on **durable** storage — upstream's README says outright that a path inside an ephemeral container or volume does not qualify |
-| the page to select the 2.x adapter for `undeployed` | `frontend/src/lib/networks.ts` declares `undeployed` as `protocolFamily: 'midnight-1.x'`; only `stagenet` is `'midnight-2.x'`, and `useShieldedNight.ts` picks the adapter on exactly that field. There is no env or runtime seam |
-| a round-trip gate on 2.x | `contracts/v2/test/` is two unit files. The `MN_EXTERNAL_STACK` integration suite this profile uses as its gate lives in the 1.x tree and has no 2.x counterpart |
+Two consequences worth knowing:
 
-The `undeployed` lane that *does* exist on `main` — `MN_ENV=undeployed`, `DEPLOY_OUT`, the four
-`MN_*_URL` overrides, `MN_EXTERNAL_STACK` — is entirely on the **ledger-v8** side, and a
-ledger-v8 client cannot deploy to or read a ledger-9 chain. That is the same wall that caused
-the `ledger-v9` branch to be created in the first place.
-
-**What would unblock the re-pin**, in the upstream repository and not here: an `undeployed()`
-profile in `contracts/v2/scripts/profile.ts` with the `MN_*_URL` overrides it already has the
-helper for, `MN_ENV` widened in the v2 deploy/verify scripts with the maintenance-key file
-optional on a throwaway devnet, `undeployed` moved to `protocolFamily: 'midnight-2.x'` in
-`networks.ts`, and a 2.x counterpart of the external-stack integration suite. Until that lands,
-this repository stays on `ledger-v9` — and it does **not** close the gap locally by patching
-`networks.ts` in the image or by forcing `MN_ENV=stagenet` against a local devnet. The first
-breaks the profile's founding no-patch rule; the second would tag the deploy transaction and
-derive the contract and deployer addresses under the *stagenet* network id while the toolkit
-that funds the deployer, the kernel, the faucet, the zswap-da SPA and the browser wallet are
-all on `undeployed`.
+- **The tree has ledger-v8 in it, and must.** `main` carries both generations: 1.x at `src/` +
+  `frontend/` + `frontend/protocols/v1`, 2.x at `contracts/v2/` + `frontend/protocols/v2`. The
+  image asserts the two are SEPARATE (each v2 tree resolves ledger-v9 and no ledger-v8, in its
+  own lockfile) rather than asserting ledger-v8 is absent, which it is not.
+- **The served artifact path moved to `/contract/v2/shielded-night/`.**
+  `/contract/compiled/shielded-night/` is now the v1 (compactc 0.31.1) copy, and it carries no
+  `compiler/contract-manifest.json` because compactc only began emitting one at 0.33. The
+  compose healthcheck and `scripts/verify-shielded-night.sh` both read the v2 path.
 
 - **The browser flow is not automatable, and that is by design.** The page has no in-page
   wallet: it enumerates `window.midnight.*` (dApp-connector 4.x) and **refuses a wallet that
@@ -478,7 +470,7 @@ all on `undeployed`.
   `@midnight-ntwrk/dapp-connector-api` still declares only the narrow one, in `4.0.1` *and* in
   `4.1.0-beta.1`. When the connected wallet's proving provider has no `lookupKey`, the dApp
   supplies it from its own `zkConfigProvider`: **the same public artifacts it already serves at
-  `/contract/compiled/shielded-night/` and already handed the wallet a line earlier**, so
+  `/contract/v2/shielded-night/` and already handed the wallet a line earlier**, so
   nothing leaks and `prove`/`check` stay untouched. The page logs which lane it took at
   `console.info`. Upstream question, recorded as project 00007 Q9.
 - **The reverse path works only for coins minted in that browser.** Shielded balances reachable
@@ -487,25 +479,25 @@ all on `undeployed`.
   another browser, or after clearing site data — cannot be unwrapped from the page. The
   contract has no such limitation: the Node-side round trips unwrap fine. Upstream limitation,
   not fixed here.
-- **The contract is deployed once and is NOT locked.** `SHIELDED_NIGHT_LOCK=false` by default:
-  locking dissolves the maintenance committee permanently, which is a one-way door meant for
-  hosted releases. By default upstream's `verify-deployment.ts` exits non-zero on this stack's
-  contract *even when all 11 verifier keys match* — its contract is "the code matches AND the
-  contract is immutable" — so the verify container passes `--allow-unlocked`, which still
-  measures and prints the lock state but folds only the verifier-key/circuit-set check into the
-  exit code (project 00007 Q8, delivered as upstream PR #12; consumed here from `ledger-v9` @
-  `30af63f3…`, project 00007 phase F2).
+- **The contract is deployed once and is NOT locked — and on the 2.x lane it cannot be.**
+  `scripts/deploy-and-lock.ts` and `scripts/lock.ts` are the 1.x tree's; `contracts/v2` has no
+  counterpart, so `SHIELDED_NIGHT_LOCK=true` is REFUSED by the deploy one-shot rather than
+  quietly ignored. A throwaway devnet contract that dies with `./down.sh -v` gains nothing from
+  a permanent maintenance-committee dissolution anyway. The v2 verifier needs no
+  `--allow-unlocked` flag either (the 1.x one did, delivered as upstream PR #12 for project
+  00007 Q8): it reports the authority state and folds only the circuit-set / verifier-key /
+  metadata comparison into its exit code, so an unlocked devnet contract is information, not a
+  failure.
 - **`./down.sh -v` changes the token.** The sNight colour is derived from the contract address,
   so a full reset does not merely redeploy: every sNight coin from the previous chain becomes a
   different, unspendable token. That is why the deploy is a JOIN-or-deploy one-shot and why
   only dropping the volume can force a new contract.
-- **The round trips are slow on this line.** The two `verify.sh` round trips take ~280 s
-  against the 1.x triple and were measured at 487–537 s in the `ledger-v9` branch's own CI —
-  proving on 2.x runs about 1.25–1.6× slower. Budget minutes, and note that the branch itself
-  had to raise its CI integration timeout from 60 to 150 minutes for the same reason.
-- **The pin is a branch head, not a merge commit.** `effectstream/shielded-night`'s `ledger-v9`
-  branch is deliberately long-lived: it merges into `main` when the network moves to 2.x
-  ([PR #10](https://github.com/effectstream/shielded-night/pull/10)). Until then the pin here
-  is a commit on that branch. It is a full 40-hex SHA and the image refuses anything shorter,
-  so the pin is immutable even though the branch is not — but a reviewer looking for a merged
-  upstream commit will not find one.
+- **The round trips are slow on this line.** The equivalent 1.x round trips take ~280 s; on
+  2.x proving runs about 1.25–1.6× slower, and `verify.sh` now runs the whole four-case
+  `contracts/v2` external suite rather than two selected cases. Its own vitest config allows 10
+  minutes per test and 20 for the hooks, with retries at **zero** — a retry of a half-completed
+  round trip would assert against balances the first attempt already moved. Budget minutes.
+- **The pin is a branch head.** `main` is a live branch, so the pin is a commit on it — a full
+  40-hex SHA, and the image refuses anything shorter, so what is built is immutable even though
+  the branch is not. `1337afc3…` happens to be a merge commit (upstream PR #16), which the
+  previous `ledger-v9` pin was not.
