@@ -427,6 +427,11 @@ COPY console/ /aa/console/
 # sit at /aa/node_modules to be visible to generated code and runner alike.
 RUN cp /aa/runner/package.json /aa/package.json && cd /aa && bun install
 
+# The console's recipient parser must accept a full Midnight shielded address
+# (135 chars); the SDK's own MidnightBech32m.parse() stops at bech32's 90. The
+# test carries the exact address that failed (infra issue 00023).
+RUN cd /aa && bun test runner/midnight-bech32m.test.ts
+
 # ── ONE compactc, ONE compact-runtime (issues/00011) ─────────────────────────
 # This process imports generated contract modules from TWO different repositories
 # — the AA Manager/Minter it compiled here, and mint-test-tokens' two issuers it
