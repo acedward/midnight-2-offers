@@ -34,8 +34,8 @@ Options:
   --with <profile>   ALSO bring up an optional profile; repeatable, and additive — see below.
                      A profile is a compose fragment in compose/, named after the profile. An
                      unknown name is an error, not a no-op.
-                     Available now: aa, evm, frontend, offerfiles, poster, prices,
-                     shielded-night, solver.
+                     Available now: aa, evm, faucet, frontend, offerfiles, poster,
+                     prices, shielded-night, solver.
   --all              bring up every shipped profile in compose/, EXCEPT `prices` unless
                      COINGECKO_API_KEY is set — that profile is the only one that needs a
                      third-party secret, and a host without one must still be able to run
@@ -59,14 +59,17 @@ genuinely up are protected. To take a profile down, use ./down.sh (everything) o
 without it (that profile only).
 
 Every shipped profile is complete: offerfiles includes Celestia, the kernel and batcher;
-frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA; aa deploys and serves its console; solver is
+frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA (branch midnight-1, contract-free:
+its Faucet link needs the faucet profile); aa deploys and serves its console; solver is
 the observation-mode solver, its authenticated sink and the read-only monitor site; poster funds a dedicated
 wallet and keeps the book non-empty by minting one coin and posting one offer per interval (it needs
 offerfiles); prices runs the CoinGecko feed that refreshes the kernel's reference prices (it needs
 offerfiles AND a COINGECKO_API_KEY in the env file — the stack quotes from seeded prices without
 it); shielded-night funds its own wallets,
 deploys the NIGHT <-> sNight wrapper contract ONCE per stack and serves its dApp, depending on
-nothing but core. `--all` selects all of them.
+nothing but core; faucet funds its own deployer, deploys the six mint-test-tokens issuers ONCE
+per stack, serves their mint site and — when offerfiles is also up — names all six in the
+kernel's token registry, also depending on nothing but core. `--all` selects all of them.
 
 Environment:
   ENV_FILE=<path>    use a different env file than ./.env — this is how two stacks run
@@ -79,6 +82,7 @@ Examples:
   ./up.sh --with offerfiles     # …and Celestia + kernel + batcher, without stopping evm
   ./up.sh --with frontend       # …and the zswap-da SPA
   ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
+  ./up.sh --with faucet         # …and the six local test tokens + their mint site
   ./up.sh --with offerfiles --with prices   # …and live CoinGecko reference prices (needs a key)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
@@ -204,6 +208,29 @@ while IFS= read -r p; do
   fi
 done < <(running_profiles)
 export PROFILES
+
+# ── `poster` requires `faucet`, since the contract removal ───────────────────
+#
+# The offer poster no longer mints. It resolves BOTH token ids out of
+# `/registry/stack-tokens.env` (rendered by `registry-env`) and offers coins put
+# in its wallet by `faucet-mint` — both on the `faucet` fragment's volume, both
+# named in its `depends_on`. Without that fragment compose fails to render at
+# all, with `service "registry-env" ... not found`, which says nothing about the
+# cause. This says it once, before anything is built.
+#
+# NOT auto-added: `./up.sh --with offerfiles --with poster` asking for a stack
+# that cannot exist should be told so, not silently given a third profile — the
+# faucet deploys six contracts and takes minutes, which is not a thing to start
+# on somebody's behalf. `--all` includes both anyway.
+if [[ " $PROFILES " == *" poster "* && " $PROFILES " != *" faucet "* ]]; then
+  err "the 'poster' profile needs 'faucet' too"
+  info "  since KERNEL_REF 5d794f9 the offer-files contract is gone: the poster mints nothing."
+  info "  Both of its token ids are explicit 64-hex values that exist only once this stack's"
+  info "  issuers are deployed, and the coins it offers come from the faucet-mint one-shot."
+  info "      ./up.sh --with faucet --with offerfiles --with poster"
+  info "  (or ./up.sh --all, which includes every profile)."
+  exit 2
+fi
 
 log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
 # Print the readable version AND the digest that is the actual identity: a version alone
@@ -387,6 +414,89 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
   fi
 fi
 
+# The faucet profile. Compose gates the site on `faucet-verify`, which is gated on
+# `faucet-deploy` — and that chain is NOT enough on its own: it is equally satisfied by a
+# deploy that took the RESUME path against a registry from a previous chain, and by a site
+# container that is still blocking on an empty volume. So the two things that actually matter
+# are asserted here — the registry really is on the volume with six ready tokens, and the page
+# really is serving it — and the six colours are summarised so an operator can see at a glance
+# whether a `./down.sh -v` gave them new issuers.
+FAUCET_TOKENS=""
+if (( ! FAILED )) && [[ " $PROFILES " == *" faucet "* ]]; then
+  wait_compose_healthy faucet-site "${FAUCET_WAIT_TIMEOUT:-1500}" || FAILED=1
+  if (( ! FAILED )); then
+    # Read through the SITE's own HTTP surface rather than off the volume: that is where a
+    # browser reads it, and a page still serving a previous inode would pass a filesystem check
+    # and fail a user. `|| true` keeps a failed read reportable by the assertion below.
+    FAUCET_TOKENS="$(dc exec -T faucet-site \
+      node -e 'const r = await fetch("http://127.0.0.1:14119/metadata.undeployed.json"); const d = await r.json(); if (d.status !== "ready") process.exit(1); const a = (d.tokens ?? []).filter((t) => (t.deployments ?? []).some((x) => x.deploymentId === t.activeDeploymentId && x.status === "active")); if (a.length !== 6) process.exit(1); process.stdout.write(a.map((t) => t.symbol).join(" "));' \
+      2>/dev/null || true)"
+    if [[ -z "$FAUCET_TOKENS" ]]; then
+      err "the faucet site is not serving a ready registry with six active deployments"
+      FAILED=1
+    else
+      log "faucet: six issuers ready — ${FAUCET_TOKENS}"
+    fi
+  fi
+  # ── the two one-shots the REST of the stack depends on ────────────────────
+  # `registry-env` renders this chain's token ids onto the shared volume and
+  # `faucet-mint` puts spendable coins in the poster's wallet. Compose gates the
+  # poster on both, so a failure there shows up as a container that never starts
+  # — with the cause three services away. Waited for here, where the reason is
+  # still in front of the operator.
+  if (( ! FAILED )); then
+    for oneshot in registry-env faucet-mint; do
+      os_cid="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=${oneshot}" 2>/dev/null | head -1)"
+      if [[ -z "$os_cid" ]]; then
+        err "no ${oneshot} container — the poster cannot resolve a token id or find inventory"
+        FAILED=1
+        continue
+      fi
+      os_code="$(docker wait "$os_cid" 2>/dev/null || echo "")"
+      if [[ "$os_code" == "0" ]]; then
+        case "$oneshot" in
+          registry-env) log "registry-env: this chain's token ids are on /registry/stack-tokens.env" ;;
+          faucet-mint)  log "faucet-mint: the demo wallets hold their local test-token inventory" ;;
+        esac
+      else
+        err "${oneshot} exited ${os_code:-<unknown>}"
+        info "  logs: docker logs ${os_cid}"
+        case "$oneshot" in
+          registry-env) info "  without it the offer poster exits 78: both token ids are required and explicit" ;;
+          faucet-mint)  info "  without it the offer poster reports degraded: insufficient_inventory forever" ;;
+        esac
+        FAILED=1
+      fi
+    done
+  fi
+
+  # `registry-bridge` teaches the kernel this stack's six local colours. It cannot be expressed
+  # as a compose dependency of anything (a profile here IS a fragment filename, so it may not
+  # name a service from offerfiles.yml, and nothing in offerfiles.yml may name it), so its
+  # completion is waited for HERE — and only when the kernel is actually in this stack, because
+  # with no kernel the one-shot exits 0 by design after waiting its DNS budget out.
+  if (( ! FAILED )) && [[ " $PROFILES " == *" offerfiles "* ]]; then
+    bridge_cid="$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=registry-bridge" 2>/dev/null | head -1)"
+    if [[ -z "$bridge_cid" ]]; then
+      warn "no registry-bridge container — the six local tokens will show as short hex everywhere"
+    else
+      bridge_code="$(docker wait "$bridge_cid" 2>/dev/null || echo "")"
+      if [[ "$bridge_code" == "0" ]]; then
+        log "registry-bridge: the six local tokens are named in the kernel's token registry"
+      else
+        err "registry-bridge exited ${bridge_code:-<unknown>} — the six local tokens have no names"
+        info "  logs: docker logs ${bridge_cid}"
+        info "  the swap page, the monitor and /v1/quote will show short hex until this succeeds"
+        FAILED=1
+      fi
+    fi
+  fi
+fi
+
 # The shielded-night profile. `service_completed_successfully` on the deploy one-shot is what
 # compose gates the web container on, and it is NOT enough on its own: it is equally satisfied
 # by a one-shot that took the JOIN path against a volume from a previous chain. So the two
@@ -448,14 +558,16 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" solver "* ]]; then
 fi
 
 # The offer poster. Its healthcheck cannot come up until the wallet has synced,
-# registered its dust address and seen a spendable DUST UTXO, and the contract
-# has been joined — minutes on a cold 2.x chain, which is why the timeout is its
-# own variable.
+# registered its dust address and seen a spendable DUST UTXO — minutes on a cold
+# 2.x chain, which is why the timeout is its own variable. (There is no contract
+# to join any more; there is inventory to find instead.)
 #
-# `degraded` is a WARNING here and not a failure: the poster is up, it is telling
-# the truth about why it is not minting yet, and the funding one-shot may simply
-# still be settling. `./verify.sh --poster` is the gate that turns that into a
-# FAIL, because a gate that also had to wait would either be flaky or slow.
+# `degraded` is a WARNING here and not a failure: the poster is up and telling
+# the truth about why it is not posting yet, and a one-shot may still be
+# settling. `./verify.sh --poster` is the gate that turns that into a FAIL,
+# because a gate that also had to wait would either be flaky or slow. The reason
+# to expect since the contract removal is `insufficient_inventory` — the poster
+# no longer mints, so its coins come from `faucet-mint`.
 if (( ! FAILED )) && [[ " $PROFILES " == *" poster "* ]]; then
   wait_compose_healthy offer-poster "${POSTER_WAIT_TIMEOUT:-900}" || FAILED=1
   if (( ! FAILED )); then
@@ -572,11 +684,31 @@ fi
 if [[ " $PROFILES " == *" shielded-night "* ]]; then
   info "Shielded NIGHT     http://${HOST_ADDR}:${SHIELDED_NIGHT_HOST_PORT:-10900}   contract ${SHIELDED_NIGHT_CONTRACT:-unknown}"
 fi
+if [[ " $PROFILES " == *" faucet "* ]]; then
+  info "test-token faucet  http://${HOST_ADDR}:${FAUCET_PORT:-10950}/?network=undeployed   ${FAUCET_TOKENS:-unknown}"
+  info "                   the page needs an injected DApp-connector wallet to MINT; it has none of its own"
+fi
+if [[ " $PROFILES " == *" frontend "* ]]; then
+  info "zswap-da SPA       http://${HOST_ADDR}:${FRONTEND_HOST_PORT:-10600}   (make/take swaps; network ${FRONTEND_NETWORK_ID:-undeployed})"
+  # The SPA has no mint of its own since upstream #922: the Faucet link is how a
+  # user gets test tokens. It is rendered from FAUCET_PORT whether or not the
+  # faucet profile is up, because the frontend fragment deliberately does not
+  # depend on it — so say which of the two states this stack is in, rather than
+  # letting the operator discover it as a connection refused in the browser.
+  if [[ " $PROFILES " == *" faucet "* ]]; then
+    info "                   its Faucet link opens http://${HOST_ADDR}:${FAUCET_PORT:-10950}/?network=${FRONTEND_NETWORK_ID:-undeployed}"
+  else
+    warn "the SPA's Faucet link points at ${HOST_ADDR}:${FAUCET_PORT:-10950}, and nothing is serving it"
+    info "  the SPA mints nothing itself (upstream #922 removed the template's faucet contract)."
+    info "  Add the profile — no rebuild needed, the link is rendered at container start:"
+    info "      ./up.sh --with faucet --with offerfiles --with frontend"
+  fi
+fi
 if [[ " $PROFILES " == *" solver "* ]]; then
   info "solver monitor     http://${HOST_ADDR}:${SOLVER_FRONTEND_PORT:-10802}   (read-only: is it quoting, and if not why)"
 fi
 if [[ " $PROFILES " == *" poster "* ]]; then
-  info "offer poster       http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health   (mints one coin, posts one offer, every interval)"
+  info "offer poster       http://${HOST_ADDR}:${POSTER_HEALTH_PORT:-10803}/health   (posts one PREFUNDED coin as an offer, every interval)"
 fi
 if [[ " $PROFILES " == *" prices "* ]]; then
   # No URL of its own: the feed serves nothing. What it produced is read here.

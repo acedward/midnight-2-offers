@@ -1,23 +1,27 @@
-// Typed mint recipients for the offer-files contract.
+// Typed mint recipients for the LOCAL TEST-TOKEN ISSUERS.
 //
-// Since zswap-offerfiles-kernel PR #67 (in KERNEL_REF 80bace3) both mint
-// circuits take an EXPLICIT recipient instead of implying the caller:
+// It was written for the offer-files contract's `mint_shielded`/`mint_unshielded`
+// (kernel PR #67, which made the recipient explicit instead of implying the
+// caller). That contract is gone at KERNEL_REF 5d794f9 — but the file survives
+// UNCHANGED IN BEHAVIOUR, because mint-test-tokens' two issuer circuits take the
+// SAME `Either` shapes:
 //
-//   mint_shielded(domain_sep, amount, nonce, recipient: Either<ZswapCoinPublicKey, ContractAddress>)
-//   mint_unshielded(domainSep, amount,        recipient: Either<ContractAddress, UserAddress>)
+//   shielded-token.compact    mint(recipient: Either<ZswapCoinPublicKey, ContractAddress>, amount: Uint<64>, nonce: Bytes<32>)
+//   unshielded-token.compact  mint(recipient: Either<ContractAddress, UserAddress>,        amount: Uint<64>)
+//
+// (Only the parameter ORDER changed — the recipient now comes first and the
+// domain separator is a ledger field of the issuer instead of an argument.)
 //
 // Compact's `Either<L, R>` crosses the boundary as a struct with BOTH arms
 // present — the inactive one must still be 32 zero bytes, not omitted — so
 // hand-building it at each call site is how a mint to nobody gets written.
 //
-// This is a copy of the kernel's own helper at that commit,
-// `packages/contracts-midnight/contract-offer-files/src/mint-recipient.ts`
-// (exported there as `@zswap-da/contract-offer-files/mint-recipient`), kept
-// byte-equal in behaviour. Copied and not imported for the same reason
-// `domainSepFromName` is copied into aa-console.ts: this image carries the AA
-// repo's node_modules, never the kernel workspace. If the kernel's helper
-// changes, this file changes with it — the worked caller to diff against is
-// `packages/contracts-midnight/mint-test-tokens.ts` at KERNEL_REF.
+// It began as a copy of the kernel's own helper at KERNEL_REF 80bace3,
+// `packages/contracts-midnight/contract-offer-files/src/mint-recipient.ts`.
+// The upstream original no longer exists; the worked callers to diff against are
+// now mint-test-tokens' `contracts/v2/mint-wallet-test.ts` and this repo's
+// `images/mint-test-tokens/runner/faucet-mint.ts`, which build the identical
+// structs inline.
 //
 // The `encode*` functions take HEX STRINGS (ledger-v9 types `CoinPublicKey`,
 // `UserAddress` and `ContractAddress` are all `string`) and return exactly 32

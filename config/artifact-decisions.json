@@ -1,6 +1,6 @@
 {
   "schemaVersion": "artifact-decision-matrix-v1",
-  "pinsDigest": "8ae49e39f09d038aaeea0d9c97ec284b910d9c598be8fc8f209cca1fa227c986",
+  "pinsDigest": "001ae1b2295026ecc25e48d6940b0398b7d1bdfc8feb3c12e40f4f449932dc92",
   "frozenOn": "2026-08-31",
   "note": "Frozen artifact-selection contract for the external runtime dependencies of this demo. Every field here was re-derived from live sources on the freeze date. scripts/verify-artifact-decisions.sh enforces it. Do not edit a digest to make a build pass: re-verify the source first.",
   "selectionOrder": [
@@ -582,7 +582,7 @@
       "id": "compact",
       "decision": "official-upstream-direct",
       "inArtifactNormalizationScope": false,
-      "reason": "Compact keeps its direct official LFDT acquisition under the current compatible pin. This entry covers the OFFER-FILES KERNEL and AA contract builds: migrating THOSE to Compact 0.34 / runtime 0.19 is explicitly out of scope for this project, and their pins do not move. It is not a statement about the whole repository - the shielded-night image carries its own SHA-256-pinned compactc 0.34.0 because the ledger-v9 contract it rebuilds was compiled with exactly that toolchain, and the two compilers never meet: each side's generated bindings version-check against their own compact-runtime at import time."
+      "reason": "Compact keeps its direct official LFDT acquisition under the current compatible pin. This entry covers the OFFER-FILES KERNEL and AA contract builds: migrating THOSE to Compact 0.34 / runtime 0.19 is explicitly out of scope for this project, and their pins do not move. It is not a statement about the whole repository - the shielded-night image carries its own SHA-256-pinned compactc 0.34.0 because the ledger-v9 (contracts/v2) contract it rebuilds was compiled with exactly that toolchain, and the two compilers never meet: each side's generated bindings version-check against their own compact-runtime at import time."
     },
     {
       "id": "offerfiles-kernel",
@@ -627,10 +627,16 @@
       "reason": "pg_ivm is compiled in; no reusable warehouse runtime artifact exists."
     },
     {
+      "id": "mint-test-tokens",
+      "decision": "source-build",
+      "inArtifactNormalizationScope": false,
+      "reason": "The six native test-token issuers, their canonical registry and the static mint site (effectstream/mint-test-tokens), built from an immutable full commit on the long-lived main branch, with the commit baked into both runtime images as /.mint-test-tokens-commit and asserted by scripts/verify-source-pins.sh. UNIQUELY AMONG THIS REPOSITORY'S SOURCE BUILDS IT DOWNLOADS AND RUNS NO COMPILER, and that is a stronger position rather than a weaker one: contracts/v2/managed/ is TRACKED upstream (91 files, stamped compiler 0.34.0 / language 0.26.0 / runtime 0.19.0), and upstream's own deploy and verify runners refuse to touch the chain unless the artifact bytes on disk equal the bytes at the resolved commit exactly - so a recompile into that tree would make the very tool this image exists to run REFUSE to deploy. Rule 2's principle (an exact published artifact is taken by hash, never recompiled) applies here with the immutable commit as the artifact, the same reasoning sources[minocrab-release] records for the AA Manager's ZK keys. The build asserts the artifacts are tracked, that they declare the 2.x toolchain, and that their zkir is v2 - the PLAIN proof-server lane, not the aa profile's experimental v3 - and then runs upstream's own provenance gate at build time so a bad tree fails in seconds rather than mid-bring-up."
+    },
+    {
       "id": "shielded-night",
       "decision": "source-build",
       "inArtifactNormalizationScope": false,
-      "reason": "Application code (a Compact contract plus its Vite/React dApp) with no reusable warehouse runtime artifact. Built from effectstream/shielded-night at an immutable full commit on the long-lived ledger-v9 branch, with the commit baked into both runtime images as /.shielded-night-commit and asserted by scripts/verify-source-pins.sh. The one EXTERNAL artifact its build fetches is the compactc 0.34.0 Linux musl release asset, SHA-256-pinned per architecture in images/shielded-night/Dockerfile: the contract is recompiled in-image and the build fails unless the output is byte-identical to the pinned tree's committed src/managed/, which is what makes the served prover keys provably the ones the on-chain verifier keys came from (project 00007, question Q3 -> owner decision A)."
+      "reason": "Application code (a Compact contract plus its Vite/React dApp) with no reusable warehouse runtime artifact. Built from effectstream/shielded-night at an immutable full commit on branch `main`, which since upstream PR #16 carries an `undeployed` lane on its 2.x profile (that PR retired the long-lived ledger-v9 branch this image used to track). The commit is baked into both runtime images as /.shielded-night-commit and asserted by scripts/verify-source-pins.sh. The one EXTERNAL artifact its build fetches is the compactc 0.34.0 Linux musl release asset, SHA-256-pinned per architecture in images/shielded-night/Dockerfile: the v2 contract is recompiled in-image and the build fails unless the output is byte-identical to the pinned tree's committed contracts/v2/managed/, which is what makes the served prover keys provably the ones the on-chain verifier keys came from (project 00007, question Q3 -> owner decision A). The tree's OTHER contract -- the 1.x `src/`, compactc 0.31.1 -- is shipped exactly as committed and is NOT recompiled: this stack never selects a 1.x network, and a second compiler in one image is what this repository's one-toolchain rule exists to prevent."
     }
   ]
 }

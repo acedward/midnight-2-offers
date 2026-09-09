@@ -6,12 +6,27 @@
 # :3334) — there is deliberately no cross-fragment depends_on, so `--with
 # frontend` neither drags in nor breaks without the kernel; the page just
 # shows a disconnected state until `--with offerfiles` is up.
+#
+# THE SAME IS TRUE OF `faucet`, and deliberately so. Since PR #922 the SPA has
+# no mint of its own: its Faucet link points at the mint-test-tokens site the
+# `faucet` profile serves on ${FAUCET_PORT}. This fragment mounts nothing of
+# that profile's and declares no depends_on on it, so `--with frontend` alone
+# still renders and still runs — the Faucet link is then a local port nothing is
+# listening on, and `up.sh` says so at the end of a bring-up. That is a weaker
+# coupling than `poster`, which compose cannot even RENDER without the faucet
+# fragment; see questions Q12 for the option table behind this choice.
 
 services:
-  # Fetches effectstream/effectstream at an immutable commit, extracts
-  # templates/zswap-da, and applies images/zswap-da/ledger-v9.patch. The
-  # upstream template remains on ledger-v8; no third-party SPA tree is stored
-  # in this repository. A cold build needs GitHub + npm network access.
+  # Fetches effectstream/effectstream at an immutable commit ON THE `midnight-1`
+  # BRANCH, extracts templates/zswap-da, and applies
+  # images/zswap-da/ledger-v9.patch. The upstream template is on ledger-v8 and
+  # the 1.x (@effectstream/*@0.104.x) dependency line; the patch ports it to the
+  # 2.x set this stack runs. No third-party SPA tree is stored in this
+  # repository. A cold build needs GitHub + npm network access.
+  #
+  # There is NO CONTRACT and no compactc in this image any more: upstream #922
+  # deleted the template's local faucet contract and kernel #69/#70 deleted the
+  # kernel's, so test tokens come from the `faucet` profile's issuers.
   #
   # Wallet story (T5.3, spec Q5 note): the in-page JS wallet works against any
   # host ports — the published node/indexer/proof-server ports are injected at
@@ -24,7 +39,7 @@ services:
       context: '../images/zswap-da'
       args:
         FRONTEND_REPO: '${FRONTEND_REPO:-https://github.com/effectstream/effectstream.git}'
-        FRONTEND_REF: '${FRONTEND_REF:-ea04ff7c16dab5118d4bdfeec6e7455c89981827}'
+        FRONTEND_REF: '${FRONTEND_REF:-400880ceb6814738d1ae193dae18ad5128922edc}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${FRONTEND_HOST_PORT:-10600}:10600'
     environment:
@@ -46,6 +61,31 @@ services:
       NODE_HOST_PORT: '${NODE_HOST_PORT:-9944}'
       INDEXER_HOST_PORT: '${INDEXER_HOST_PORT:-8088}'
       PROOF_HOST_PORT: '${PROOF_HOST_PORT:-6300}'
+      # The chain this stack runs. It is the wallet's network id AND the
+      # `?network=` the Faucet link carries: the mint-test-tokens site serves a
+      # different registry per network and 404s a network it has no file for, so
+      # this must be the stack's own. Upstream resolves it at BUILD time and
+      # defaults to preprod, which is why the image reads it at RUN time instead.
+      MIDNIGHT_NETWORK_ID: '${FRONTEND_NETWORK_ID:-undeployed}'
+      # The PUBLISHED port of the faucet site (compose/faucet.yml). Same shape as
+      # the three above: the container knows the port, the page knows the host,
+      # and src/config.ts composes the origin. Injected whether or not the
+      # `faucet` profile is up — this fragment has no way to know, and a port
+      # that is reserved-but-not-listening is a truthful description of a stack
+      # brought up without it (see the header, and questions Q12).
+      FAUCET_HOST_PORT: '${FAUCET_PORT:-10950}'
+      # Escape hatch: a COMPLETE faucet URL, used verbatim and winning over the
+      # port above. For a faucet behind a proxy, on another host, or the public
+      # mint-test-tokens site. Empty by default.
+      FAUCET_URL: '${FRONTEND_FAUCET_URL:-}'
+      # The in-page JS wallet's seed. Upstream generates a random one per page
+      # load; that was fine while the template could mint, and is not now — an
+      # empty wallet has no way to acquire anything, because the SPA has no mint
+      # and the faucet site needs a browser extension wallet. With a fixed seed
+      # this is the STACK's demo wallet: `faucet-mint` prefunds it (see the
+      # `spa` grant default in compose/faucet.yml) and it survives a reload.
+      # Set it empty to get upstream's random-wallet behaviour back.
+      DEMO_WALLET_SEED: '${FRONTEND_WALLET_SEED:-5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe}'
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO/dev/null http://127.0.0.1:10600/']
       interval: 5s

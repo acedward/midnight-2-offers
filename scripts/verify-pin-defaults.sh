@@ -46,12 +46,20 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 # thing and pretending they are all commits is how a check stops checking:
 #
 #   COMMIT_PINS  a 40-hex git commit
+#
+# The faucet profile contributes THREE commit pins rather than one, and all three are real
+# build inputs: MINT_TEST_TOKENS_REF is the tree, and the two CLIENT revisions are the
+# historical commits `frontend/scripts/verify-client-artifacts.mjs` hashes the bundled browser
+# artifacts against. The image fetches all three in one shallow fetch and asserts the tree's own
+# `frontend/client-artifacts.json` still names the two — but only THIS script proves the
+# repository states each of them once.
 #   HASH_PINS    a 64-hex SHA-256 — MINOCRAB_SUMS_SHA256 is the IDENTITY of the
 #                port's release (the hash of its SHA256SUMS), not a commit
 #   TAG_PINS     a release tag, which is only a LOCATOR. It still has to be
 #                single-valued: two files naming different tags would download
 #                two different releases and verify neither.
-COMMIT_PINS=(KERNEL_REF SOLVER_REF FRONTEND_REF AA_REF UMBRA_REF SHIELDED_NIGHT_REF MINOCRAB_REF)
+COMMIT_PINS=(KERNEL_REF SOLVER_REF FRONTEND_REF AA_REF UMBRA_REF SHIELDED_NIGHT_REF MINOCRAB_REF
+             MINT_TEST_TOKENS_REF MINT_TEST_TOKENS_CLIENT_V1_REV MINT_TEST_TOKENS_CLIENT_V2_REV)
 HASH_PINS=(MINOCRAB_SUMS_SHA256)
 TAG_PINS=(MINOCRAB_RELEASE)
 

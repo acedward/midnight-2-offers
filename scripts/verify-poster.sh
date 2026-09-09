@@ -9,25 +9,41 @@
 # that is correctly waiting for NIGHT. So a healthy container proves almost
 # nothing, and these are the assertions that do:
 #
-#   state          not `unhealthy`, not `failed`, and NOT `degraded` — degraded
-#                  is the poster's honest "I cannot mint", and on a stack whose
-#                  poster-fund one-shot completed it is a FAILURE of this gate.
-#                  The reason (`lastFailure`, e.g. insufficient_dust) is printed.
-#   mints >= 1     it actually proved and landed a mint transaction.
+#   state          not `unhealthy`, not `failed`, and NOT `degraded`. Since the
+#                  contract removal the degraded reason to expect is
+#                  `insufficient_inventory` — the poster's honest "I have no
+#                  spendable GIVE_TOKEN coin left" — and on a stack whose
+#                  `faucet-mint` one-shot completed it is a FAILURE of this gate,
+#                  not a transient. A restart cannot create inventory; the
+#                  remedy is `FAUCET_MINT_POSTER_COINS`, or a longer
+#                  `OFFER_POSTER_INTERVAL_MS`, or a shorter
+#                  `OFFER_POSTER_TTL_MINUTES`. The reason is printed either way.
+#   adoption       `inventoryAdoptions + reoffers >= 1`: it actually took a
+#                  prefunded coin (or got one back) and used it. THIS REPLACES
+#                  `mints >= 1`, which no longer exists — the poster does not
+#                  mint at this pin and `poster-health.ts` reports no `mints`
+#                  field or `offer_poster_mints_total` metric at all.
+#   freeCoins      reported, and printed. It is the number this gate's failure
+#                  mode is really about, and it is the number to look at before
+#                  changing the three knobs above.
 #   lastOfferId    it posted, and the id is present in the KERNEL's open book —
 #                  which is the only claim that matters, because an offer the
 #                  kernel has not indexed is invisible to every taker and to the
 #                  solver.
-#   give amount    whole coins: a multiple of 10^6 base units (every token this
-#                  stack mints has 6 decimals), and inside GIVE_MIN..GIVE_MAX
-#                  when a range is configured.
+#   give amount    EXACTLY `OFFER_POSTER_GIVE_AMOUNT` (or inside
+#                  GIVE_MIN..GIVE_MAX when a range is configured). Not "a
+#                  multiple of 10^6" any more: that assumed every token had 6
+#                  decimals, which the six local ones do not (8/18/6/6/6/8), and
+#                  the poster now SELECTS a coin of an exact size rather than
+#                  minting a whole-coin one.
 #   /metrics       answers, so the counters are scrapeable.
 #
 #   --static       OFFLINE: the shipped POSTER_SEED differs from every other
 #                  wallet seed in the repository. Needs no stack.
 #
-# The wait is bounded and generous (POSTER_VERIFY_TIMEOUT, default 300 s): a mint
-# is a real proving round on a cold devnet.
+# The wait is bounded and generous (POSTER_VERIFY_TIMEOUT, default 300 s): the
+# first tick follows wallet sync on a cold devnet, and posting an offer is a real
+# proving round.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -146,7 +162,8 @@ while (( SECONDS < DEADLINE )); do
     if printf '%s' "$HEALTH" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-raise SystemExit(0 if (d.get("mints") or 0) >= 1 and d.get("lastOfferId") else 1)
+use = (d.get("inventoryAdoptions") or 0) + (d.get("reoffers") or 0)
+raise SystemExit(0 if use >= 1 and d.get("lastOfferId") else 1)
 ' 2>/dev/null; then
       break
     fi
@@ -175,20 +192,23 @@ d = json.load(sys.stdin)
 give = d.get("giveRange") or {}
 print("\x1f".join(str(x) for x in [
     d.get("state", ""),
-    d.get("mints", 0),
+    (d.get("inventoryAdoptions") or 0) + (d.get("reoffers") or 0),
     d.get("lastOfferId") or "",
     d.get("lastFailure") or "",
     d.get("lastError") or "",
-    d.get("dustBalance") or "",
+    d.get("freeCoins") if d.get("freeCoins") is not None else "",
     d.get("liveOffers", 0),
     d.get("lastGiveAmount") or "",
     give.get("minBase") or "",
     give.get("maxBase") or "",
 ]))
 ' 2>/dev/null || true)"
-IFS=$'\x1f' read -r P_STATE P_MINTS P_OFFER P_FAILURE P_ERROR P_DUST P_LIVE P_GIVE P_MIN P_MAX <<< "$POSTER_FIELDS"
+IFS=$'\x1f' read -r P_STATE P_USES P_OFFER P_FAILURE P_ERROR P_FREE P_LIVE P_GIVE P_MIN P_MAX <<< "$POSTER_FIELDS"
 
-info "state=${P_STATE:-?} mints=${P_MINTS:-?} liveOffers=${P_LIVE:-?} dust=${P_DUST:-?}"
+info "state=${P_STATE:-?} adoptions+reoffers=${P_USES:-?} liveOffers=${P_LIVE:-?} freeCoins=${P_FREE:-?}"
+# Only present when a give RANGE is configured (poster-health.ts adds giveRange +
+# lastGiveAmount together), so it is printed rather than asserted.
+[[ -n "$P_GIVE" ]] && info "lastGiveAmount=${P_GIVE} base units"
 [[ -n "$P_OFFER" ]] && info "lastOfferId=${P_OFFER}"
 
 health_dump() { info "  /health: $(printf '%s' "$HEALTH" | head -c 600)"; }
@@ -197,11 +217,22 @@ case "$P_STATE" in
   ok)
     ok "poster state=ok" ;;
   degraded)
-    err "poster is DEGRADED — it is up but cannot mint (${P_FAILURE:-no reason given})"
-    if [[ "$P_FAILURE" == *dust* || "$P_DUST" == "0" || -z "$P_DUST" ]]; then
-      info "  no spendable DUST. The poster-fund one-shot sends NIGHT; the poster registers its own"
-      info "  dust address and waits for a UTXO. Check: docker compose … logs poster-fund"
-    fi
+    err "poster is DEGRADED — it is up but could neither adopt inventory nor re-offer (${P_FAILURE:-no reason given})"
+    case "$P_FAILURE" in
+      *inventory*)
+        info "  THIS IS THE FAILURE THE CONTRACT REMOVAL INTRODUCED. The poster no longer mints:"
+        info "  it selects an existing coin of exactly OFFER_POSTER_GIVE_AMOUNT and never creates"
+        info "  one, so its inventory is finite and externally supplied. freeCoins=${P_FREE:-?}."
+        info "  Fix one of three numbers, not the poster:"
+        info "    FAUCET_MINT_POSTER_COINS   more coins at bring-up (default 4)"
+        info "    OFFER_POSTER_INTERVAL_MS   slower ticks (default 300000)"
+        info "    OFFER_POSTER_TTL_MINUTES   coins come back sooner (default 10)"
+        info "  Steady state needs about TTL_MINUTES*60000/INTERVAL_MS coins."
+        info "  Check the mint ran: docker compose … logs faucet-mint" ;;
+      *dust*)
+        info "  no spendable DUST. The poster-fund one-shot sends NIGHT; the poster registers its own"
+        info "  dust address and waits for a UTXO. Check: docker compose … logs poster-fund" ;;
+    esac
     health_dump
     FAILURES=$(( FAILURES + 1 )) ;;
   unhealthy|failed)
@@ -209,7 +240,7 @@ case "$P_STATE" in
     health_dump
     FAILURES=$(( FAILURES + 1 )) ;;
   starting)
-    err "poster is still 'starting' after ${TIMEOUT}s — wallet sync, dust registration or the contract join is stuck"
+    err "poster is still 'starting' after ${TIMEOUT}s — wallet sync or dust registration is stuck"
     health_dump
     FAILURES=$(( FAILURES + 1 )) ;;
   *)
@@ -218,10 +249,12 @@ case "$P_STATE" in
     FAILURES=$(( FAILURES + 1 )) ;;
 esac
 
-if [[ "${P_MINTS:-0}" =~ ^[0-9]+$ ]] && (( P_MINTS >= 1 )); then
-  ok "poster has minted ${P_MINTS} coin(s)"
+if [[ "${P_USES:-0}" =~ ^[0-9]+$ ]] && (( P_USES >= 1 )); then
+  ok "poster has used ${P_USES} prefunded/returned coin(s) (inventoryAdoptions + reoffers)"
 else
-  err "poster has not landed a mint within ${TIMEOUT}s (mints=${P_MINTS:-?})"
+  err "poster has neither adopted nor re-offered a coin within ${TIMEOUT}s (${P_USES:-?})"
+  info "  freeCoins=${P_FREE:-?}. If it is 0, faucet-mint did not put coins in this wallet:"
+  info "  docker compose … logs faucet-mint"
   health_dump
   FAILURES=$(( FAILURES + 1 ))
 fi
@@ -265,15 +298,25 @@ raise SystemExit(1)
     ok "lastOfferId is in the kernel's open book (status=${B_STATUS:-?})"
     info "  gives ${B_GIVE_AMT} of ${B_GIVE_TOK}…  wants ${B_WANT_AMT} of ${B_WANT_TOK}…"
 
-    # WHOLE COINS. Every token this stack mints has 6 decimals and the faucet
-    # hands out whole coins scaled by 10^6, so a give amount that is not a
-    # multiple of 10^6 means the decimals contract broke somewhere between the
-    # poster, the registry and the kernel — the exact class of bug that is
-    # invisible until someone reads a price.
-    if [[ "$B_GIVE_AMT" =~ ^[0-9]+$ ]] && (( B_GIVE_AMT % 1000000 == 0 )) && (( B_GIVE_AMT > 0 )); then
-      ok "give leg is $(( B_GIVE_AMT / 1000000 )) whole coin(s) (${B_GIVE_AMT} base units, 6 decimals)"
+    # THE EXACT-COIN GUARANTEE. The old assertion here was "a multiple of 10^6",
+    # which encoded the pre-#63 belief that every token in this stack had 6
+    # decimals. The six local ones are 8/18/6/6/6/8, so that test is now both
+    # wrong and weaker than what is actually promised: the poster SELECTS a coin
+    # whose value equals OFFER_POSTER_GIVE_AMOUNT exactly, and `faucet-mint`
+    # mints coins of exactly that size from the SAME variable. An offer whose
+    # give leg is any other number means the two drifted apart — which is
+    # otherwise silent, because the poster would simply report
+    # `insufficient_inventory` forever while the wallet held coins of the wrong
+    # size.
+    EXPECT_GIVE="${OFFER_POSTER_GIVE_AMOUNT:-100000000}"
+    if [[ -n "$P_MIN" && -n "$P_MAX" ]]; then
+      : # a range is configured; the range assertion below is the one that applies
+    elif [[ "$B_GIVE_AMT" == "$EXPECT_GIVE" ]]; then
+      ok "give leg is exactly OFFER_POSTER_GIVE_AMOUNT (${B_GIVE_AMT} base units)"
     else
-      err "give leg ${B_GIVE_AMT} is not a positive multiple of 10^6 base units"
+      err "give leg ${B_GIVE_AMT} != OFFER_POSTER_GIVE_AMOUNT ${EXPECT_GIVE}"
+      info "  the poster matches on an EXACT coin value and faucet-mint mints that value;"
+      info "  if these disagree the wallet fills with coins the poster can never select."
       FAILURES=$(( FAILURES + 1 ))
     fi
 
@@ -301,7 +344,9 @@ raise SystemExit(1)
   fi
 fi
 
-if curl -fsS --max-time 10 "$PBASE/metrics" | grep -q '^offer_poster_mints_total'; then
+# `offer_poster_mints_total` is GONE with the mint; `inventory_adoptions_total`
+# is its successor and `free_coins` is the gauge that explains a degraded poster.
+if curl -fsS --max-time 10 "$PBASE/metrics" | grep -q '^offer_poster_inventory_adoptions_total'; then
   ok "poster /metrics answers with offer_poster_* counters"
 else
   err "poster /metrics did not answer with offer_poster_* counters"

@@ -20,10 +20,12 @@
 #
 # ── why several LARGE UTXOs rather than one ──────────────────────────────────
 # DUST is generated per NIGHT UTXO, so a wallet holding one UTXO generates on one
-# clock. The poster proves a mint AND an offer every interval, both paid from its
-# own dust; four generating UTXOs is what keeps it from stalling between ticks on
-# a cold chain. (Upstream's provision-solver-fees.ts funds its solver the same
-# way and for the same reason.)
+# clock. The poster proves and submits an offer every interval, paid from its own
+# dust; four generating UTXOs is what keeps it from stalling between ticks on a
+# cold chain. (Upstream's provision-solver-fees.ts funds its solver the same way
+# and for the same reason.) Since the contract removal it no longer pays for a
+# MINT as well — the swap tokens arrive prefunded from `faucet-mint` — so this is
+# now comfortably more headroom than a tick needs.
 #
 # ── idempotent ───────────────────────────────────────────────────────────────
 # Compose re-runs completed one-shots on every `up` (measured, T4.7). A second

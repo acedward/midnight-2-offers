@@ -10,6 +10,20 @@
 # Needs the stack up WITH the aa profile (./up.sh --with aa) — the test runs
 # against the contracts aa-deploy already put on this chain.
 #
+# ── WHY THE CONTRACT REMOVAL DID NOT TOUCH THIS TEST ────────────────────────
+# Kernel PRs #69/#70 deleted the offer-files contract, and with it the mint path
+# the AA CONSOLE used: its faucet buttons now call the local mint-test-tokens
+# issuers instead (see images/aa-contracts/runner/aa-console.ts).
+#
+# This driver never used that path. It mints through the AA repo's OWN
+# test-support Minter (`contract-minter`, deployed by aa-deploy and recorded in
+# /aa/out/aa-contracts.json as `mints.unshielded.color`), because what it is
+# testing is the EVM-signed `execute` path through the Manager — deposit,
+# internal transfer, withdraw — and that path takes a colour as 32 opaque bytes.
+# Where the colour came from is not part of the claim. So it needs no faucet
+# profile, no registry and no local issuer, and its amounts are raw base units
+# of a token whose decimals nothing here reads. Deliberately left unchanged.
+#
 # Builds the :e2e image variant on first run (AA_PRUNE_MANAGER_PROVERS=0): calling
 # `execute` proves it in this process, so the prover key the normal image prunes must
 # be present. With the MinoCrab default that key is 544 MiB (k=18); with

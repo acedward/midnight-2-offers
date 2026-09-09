@@ -44,6 +44,7 @@ Work down the list and stop at the first route that applies.
 | Compact (kernel + AA builds) | current compatible pin | direct official LFDT | unchanged by this policy |
 | Compact (shielded-night only) | `0.34.0` | official release asset, SHA-256 per arch | amd64 `775ccddf…`, arm64 `d3e292c4…` |
 | kernel, batcher, solver, AA, frontend, umbra-evm, Postgres, shielded-night | — | `source-build` | unchanged by this policy |
+| mint-test-tokens issuers + faucet site | commit `a51cf3ad…` | `source-build`, **no compiler** | the tracked `contracts/v2/managed/` at that commit |
 | AA Manager `execute` ZKIR + keys | minocrab release `v0.2.0` | `published-release-asset` (`sources[]`) | `sha256(SHA256SUMS)` `4a8c0183…` |
 
 Full digests, asset ids, member hashes, and per-platform manifest/config/layer digests live
@@ -57,6 +58,22 @@ toolchain and the build fails unless the output is byte-identical to the committ
 `src/managed/`. Each side's generated bindings version-check against their own
 `compact-runtime` at import time, so a shared compiler would be wrong for one of them rather
 than convenient for both.
+
+**A third Compact row that is not a row at all: the `faucet` profile compiles nothing.**
+`images/mint-test-tokens` is a `source-build` that downloads no compiler and runs none — and
+that is a stronger position than a rebuild, not a weaker one. `contracts/v2/managed/` is
+TRACKED in the pinned repository (91 files, 62 MB, stamped compiler 0.34.0 / language 0.26.0 /
+runtime 0.19.0), and upstream's deploy and verify runners both refuse to touch the chain unless
+the artifact bytes on disk equal the bytes at the resolved commit exactly — no modified,
+untracked or ignored file under `contracts/v2/{shielded-token.compact,unshielded-token.compact,managed/shielded,managed/unshielded}`.
+A recompile into that tree would therefore make the very tool this image exists to run REFUSE
+to deploy. Rule 2's principle — *an exact published artifact is taken by hash, never
+recompiled* — applies here with the immutable upstream commit as the artifact, exactly as
+`sources[minocrab-release]` records it for the AA Manager's ZK keys. The image asserts the
+artifacts are tracked, that they carry the declared toolchain, and that their zkir is **v2**
+(the plain proof-server lane, not the AA profile's experimental v3), and then RUNS upstream's
+own provenance gate at build time so a bad tree fails in seconds rather than mid-bring-up.
+See `images/mint-test-tokens/PROVENANCE.md`.
 
 ## Consumed releases (`sources[]`)
 

@@ -1,7 +1,14 @@
-# `config/` — files mounted into containers
+# `config/` — files mounted into containers, and records the gates read
 
-Anything here is bind-mounted read-only into a service, so it can be edited and the service
-restarted without rebuilding an image.
+Most of this directory is bind-mounted read-only into a service, so it can be edited and the
+service restarted without rebuilding an image. Three files are not mounts at all — they are
+RECORDS that an offline check compares against reality, and each is documented where it is used:
+
+| File | Read by | Fails when |
+|---|---|---|
+| `artifact-decisions.json` | `scripts/verify-artifact-decisions.sh`, `verify-artifact-fetch.sh`, `verify-compose-pins.sh` | a digest, platform or retained path drifts from the frozen decision |
+| `readme-components.json` | `scripts/render-readme-pins.py` | the README's generated pin table goes stale |
+| **`e2e-coverage.json`** | **`scripts/verify-e2e-coverage.sh`** (ci-check step 1) and **`scripts/verify-oneshots.sh`** (step 4d) | a compose service has no row, a named assertion no longer exists in the script that made it, or a one-shot has no OUTPUT assertion. See [docs/E2E-COVERAGE.md](../docs/E2E-COVERAGE.md) |
 
 ## `watch.json` — umbra-evm contract watch list (profile `evm`)
 

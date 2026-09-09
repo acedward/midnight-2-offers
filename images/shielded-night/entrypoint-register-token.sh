@@ -171,7 +171,25 @@ wait_http "${ZSWAP_API}/v1/health" "offer-files kernel" "${KERNEL_WAIT_S}" \
 # rawTokenType(domainSep, contract) mirrors the contract's own
 # tokenType(pad(32,"shielded-night:wrapper"), self()) — the same derivation the dApp's
 # frontend/src/lib/tokens.ts uses to find its balance.
-COLOUR="$(SN_ADDRESS="${ADDRESS}" bun -e '
+#
+# THE RESOLUTION SCOPE IS LOAD-BEARING SINCE THE RE-PIN TO `main`, and getting it wrong would
+# be SILENT. On the previous pin the ROOT tree was the ledger-v9 one and `bun -e` from /app
+# found the package. On `main` the root tree is the 1.x/ledger-v8 one and this image does not
+# install it at all: @midnightntwrk/ledger-v9 lives in `contracts/v2/node_modules`. So this one
+# program runs FROM that package directory, in a subshell so nothing after it inherits the cd.
+#
+# AND IT ASSERTS WHERE THE MODULE CAME FROM, because bun AUTO-INSTALLS a package it cannot
+# resolve: measured in this image, `bun -e 'await import("@midnightntwrk/ledger-v9")'` from `/`
+# SUCCEEDS with the network up (and only fails with `--network none`). A wrong cwd would
+# therefore not produce a module-not-found — it would quietly download an unpinned copy from
+# npm and derive the colour with it. `Bun.resolveSync` is checked against the pinned path
+# first: it is a pure resolver with no install fallback, so this fails loudly instead.
+COLOUR="$(cd "${REPO_ROOT}/contracts/v2" && SN_ADDRESS="${ADDRESS}" LEDGER_V9_ROOT="${REPO_ROOT}/contracts/v2/node_modules/@midnightntwrk/ledger-v9/" bun -e '
+    const resolved = Bun.resolveSync("@midnightntwrk/ledger-v9", process.cwd());
+    if (!resolved.startsWith(process.env.LEDGER_V9_ROOT)) {
+      console.error(`REFUSING: @midnightntwrk/ledger-v9 resolved to ${resolved}, not the pinned ${process.env.LEDGER_V9_ROOT}`);
+      process.exit(1);
+    }
     const { rawTokenType } = await import("@midnightntwrk/ledger-v9");
     const domain = new Uint8Array(32);
     domain.set(new TextEncoder().encode("shielded-night:wrapper"));

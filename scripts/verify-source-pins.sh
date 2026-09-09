@@ -185,10 +185,10 @@ if present proof-server && present aa-proof-server; then
   fi
 fi
 
-KERNEL_EXPECTED="${KERNEL_REF:-80bace37bc2412542452e1c597761b2ebce5c677}"
+KERNEL_EXPECTED="${KERNEL_REF:-5d794f9a27f6d65529bf176650405f740531d430}"
 # Provenance now, not a build input — and read from the matrix rather than duplicated here.
 INDEXER_EXPECTED="$(pin 'components[indexer-standalone].sourceProvenance.commit')"
-SOLVER_EXPECTED="${SOLVER_REF:-80bace37bc2412542452e1c597761b2ebce5c677}"
+SOLVER_EXPECTED="${SOLVER_REF:-5d794f9a27f6d65529bf176650405f740531d430}"
 AA_EXPECTED="${AA_REF:-41de69ded41ff933fe0db8697b264dc46fc6e0cb}"
 # The MinoCrab port's release: three DIFFERENT kinds of identity, and only the
 # first is a commit. `MINOCRAB_SUMS_SHA256` is the one that decides which bytes
@@ -199,11 +199,20 @@ MINOCRAB_SUMS_EXPECTED="${MINOCRAB_SUMS_SHA256:-4a8c0183cd887e3ca2d3446f196fab11
 MINOCRAB_RELEASE_EXPECTED="${MINOCRAB_RELEASE:-v0.2.0}"
 AA_ZKIR_SOURCE_EXPECTED="${AA_ZKIR_SOURCE:-minocrab}"
 UMBRA_EXPECTED="${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}"
-FRONTEND_EXPECTED="${FRONTEND_REF:-ea04ff7c16dab5118d4bdfeec6e7455c89981827}"
-# effectstream/shielded-night branch `ledger-v9` — the ledger-v9 port. The default here and
-# the Dockerfile ARG default and compose/shielded-night.yml all state the same SHA; this
-# assertion is what proves the RUNNING images were actually built from it.
-SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-30af63f3865d0bc5d5331ae32a7891ad48818303}"
+FRONTEND_EXPECTED="${FRONTEND_REF:-400880ceb6814738d1ae193dae18ad5128922edc}"
+# effectstream/shielded-night branch `main` @ the merge of upstream PR #16, which brought the
+# `undeployed` lane onto this dApp's 2.x profile (MN_ENV=undeployed on the contracts/v2
+# deploy/verify scripts, the page's UNDEPLOYED_PROTOCOL switch, and a 2.x external-stack
+# round-trip suite) and retired the long-lived `ledger-v9` branch this profile used to track.
+# The default here and the Dockerfile ARG default and compose/shielded-night.yml all state the
+# same SHA; this assertion is what proves the RUNNING images were actually built from it.
+SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-1337afc35ac1e6089dcc5957feafdb2bdc3bf1a3}"
+# effectstream/mint-test-tokens branch `main` — the six local test-token issuers and their mint
+# site. ONE pin for both runtime targets, and it is the one identity in this profile that
+# matters: the image runs no compiler, so "the right commit" is not a proxy for "the right
+# artifacts" here — it IS them. Upstream's deploy/verify runners re-prove the artifact bytes
+# against that commit on every run, and the image proves it once at build time.
+MINT_TEST_TOKENS_EXPECTED="${MINT_TEST_TOKENS_REF:-a51cf3ad46520d1ded938fb86db8b7b99373ce56}"
 
 if present indexer; then
   assert_pin indexer "${INDEXER_IMAGE:-midnight-2-offers/indexer:local}" /opt/indexer-standalone/.indexer-commit "$INDEXER_EXPECTED"
@@ -232,33 +241,51 @@ assert_zkir_source() { # <label> <image>
 
 if present aa-deploy; then
   assert_pin aa "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.aa-commit "$AA_EXPECTED"
-  assert_pin aa-offerfiles-contract "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.kernel-commit "$KERNEL_EXPECTED"
+  # The kernel tree is still cloned into this image, but ONLY for the compactc pin
+  # and its checksums — the offer-files contract it used to compile is gone. The
+  # label is kept because a stale AA image built against a pre-#69 kernel is
+  # exactly what this file exists to catch.
+  assert_pin aa-kernel-toolchain "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.kernel-commit "$KERNEL_EXPECTED"
+  # THE NEW ONE, and the important one: the console mints through the LOCAL
+  # issuers, whose COMMITTED artifacts this image copies. Their verifier keys are
+  # what the `faucet` profile registered on chain, so an AA image built from a
+  # different mint-test-tokens commit would prove against keys this stack never
+  # deployed. Same pin as compose/faucet.yml, asserted on the running image.
+  assert_pin aa-mint-test-tokens "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
   assert_zkir_source aa "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}"
 fi
 if present aa-console; then
   assert_pin aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.aa-commit "$AA_EXPECTED"
+  assert_pin aa-console-kernel-toolchain "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.kernel-commit "$KERNEL_EXPECTED"
+  assert_pin aa-console-mint-test-tokens "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
   assert_zkir_source aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
 fi
 # ── ONE COMPACT TOOLCHAIN ACROSS THE IMAGES (infra issues/00011) ────────────
-# The kernel image and both AA images compile the SAME offer-files contract, and
-# the AA console loads the kernel's contract module and the AA Manager's in ONE
-# process. If those images were built by different compactc versions their
-# verifier keys differ and the console's offer actions fail against the deployed
-# contract — the failure 00011 was opened about. Each image records the version
-# it actually used, so this compares images rather than restating a constant:
-# there is no number here to go stale when the kernel line moves again.
+#
+# THE COMPARISON MOVED WITH THE CONTRACT. It used to be kernel-image vs AA-image:
+# both compiled the SAME offer-files contract, and the AA console loaded that
+# contract's module and the AA Manager's in ONE process, so a compactc mismatch
+# meant verifier keys that did not match the deployed contract — the failure
+# issues/00011 was opened about. At KERNEL_REF 5d794f9 the kernel image compiles
+# NOTHING and ships no compactc, so that comparison has no left-hand side.
+#
+# The invariant it protected is still real, and it now has three parties:
+#   1. the two AA images must share one compactc (they compile the same Manager
+#      and Minter, and `aa-console` loads what `aa-deploy` deployed);
+#   2. each AA image's INSTALLED @midnight-ntwrk/compact-runtime must equal what
+#      its compactc emits — asserted inside the image at build time;
+#   3. …and must equal the runtime the COPIED mint-test-tokens artifacts were
+#      built for, which is the cross-repo half and also an in-image assertion.
+#
+# (2) and (3) cannot be re-checked from here without shipping more receipts, and
+# an image that failed them does not exist. (1) can, and it is the one a stale
+# image reintroduces: two AA images from different builds. Each records the
+# version it used, so this compares images rather than restating a constant.
 read_toolchain() { # <image> <path>
   docker run --rm --entrypoint cat "$1" "$2" 2>/dev/null | tr -d '\r\n'
 }
 assert_one_toolchain() {
-  local kernel_image="${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}"
-  local base ver image label bad=0
-  base="$(read_toolchain "$kernel_image" /app/.compactc-version)"
-  if [[ -z "$base" ]]; then
-    err "compact toolchain: ${kernel_image} carries no /app/.compactc-version"
-    FAILURES=$(( FAILURES + 1 ))
-    return
-  fi
+  local base="" ver image label entry bad=0 seen=0
   for entry in \
     "aa:${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" \
     "aa-console:${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
@@ -266,18 +293,41 @@ assert_one_toolchain() {
     label="${entry%%:*}"; image="${entry#*:}"
     ver="$(read_toolchain "$image" /aa/.compactc-version)"
     [[ -n "$ver" ]] || continue      # image not built in this stack
+    seen=$(( seen + 1 ))
+    if [[ -z "$base" ]]; then
+      base="$ver"
+      continue
+    fi
     if [[ "$ver" != "$base" ]]; then
-      err "compact toolchain: ${label} image compiled with compactc ${ver}, the kernel image with ${base}"
+      err "compact toolchain: ${label} image compiled with compactc ${ver}, the other AA image with ${base}"
       bad=$(( bad + 1 ))
     fi
   done
+  if (( seen == 0 )); then
+    err "compact toolchain: no AA image carries /aa/.compactc-version"
+    FAILURES=$(( FAILURES + 1 ))
+    return
+  fi
   if (( bad == 0 )); then
-    ok "one compact toolchain: compactc ${base} in every image that compiles a contract"
+    ok "one compact toolchain: compactc ${base} in every image that compiles a contract (${seen} image(s))"
   else
     FAILURES=$(( FAILURES + bad ))
   fi
+  # The kernel image must ship NONE. This is the demo-side twin of upstream's own
+  # CI assertion and of the in-image check in images/offerfiles-kernel/Dockerfile:
+  # "a fresh clone has zero Compact compilation for the kernel line" (spec SC-001)
+  # stated as something a running stack can fail.
+  local kernel_image="${KERNEL_IMAGE:-midnight-2-offers/offerfiles-kernel:local}"
+  if present kernel; then
+    if [[ -n "$(read_toolchain "$kernel_image" /app/.compactc-version)" ]]; then
+      err "compact toolchain: ${kernel_image} still carries /app/.compactc-version — it should compile nothing"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      ok "the kernel image ships no compactc (contract-free kernel line)"
+    fi
+  fi
 }
-if present kernel && { present aa-deploy || present aa-console; }; then
+if present aa-deploy || present aa-console; then
   assert_one_toolchain
 fi
 
@@ -286,6 +336,24 @@ if present evm-rpc; then
 fi
 if present frontend; then
   assert_pin zswap-da "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" /.zswap-da-commit "$FRONTEND_EXPECTED"
+  # The BRANCH, beside the commit. A commit alone cannot say which line of the
+  # template an image came from, and the two lines are not interchangeable:
+  # `midnight-1` is upstream's 1.x/preprod line (@effectstream/*@0.104.x, wallet
+  # SDK 1.x) that ledger-v9.patch ports to the 2.x set, while `v-next` is
+  # already on 0.200.x. An image silently built from the other branch would
+  # still carry a valid-looking 40-hex label.
+  assert_label zswap-da-branch "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" \
+    /.zswap-da-branch "${FRONTEND_BRANCH:-midnight-1}"
+  # …and it must ship no compiler, for the same reason the kernel image must not:
+  # since upstream PR #922 the template has no Compact source, so an image that
+  # can compile one was built from a tree that still had the contract lane.
+  if docker run --rm --entrypoint sh "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" \
+       -c 'command -v compactc >/dev/null 2>&1 || test -e /usr/share/nginx/html/keys' >/dev/null 2>&1; then
+    err "the frontend image carries a Compact compiler or ZK artifacts — it compiles no contract since FRONTEND_REF ${FRONTEND_EXPECTED:0:8} (#922)"
+    FAILURES=$(( FAILURES + 1 ))
+  else
+    ok "the frontend image ships no compactc and no ZK artifacts (contract-free SPA)"
+  fi
 fi
 # BOTH shielded-night runtime targets carry the commit, and both are asserted. They are two
 # images from one build — the nginx page server and the bun deploy/verify one-shot — and only
@@ -298,6 +366,20 @@ fi
 if present shielded-night-deploy; then
   assert_pin shielded-night-deploy "${SHIELDED_NIGHT_DEPLOY_IMAGE:-midnight-2-offers/shielded-night-deploy:local}" \
     /.shielded-night-commit "$SHIELDED_NIGHT_EXPECTED"
+fi
+# BOTH mint-test-tokens runtime targets carry the commit, for the same reason: the static site a
+# browser mints from and the runner that deployed the issuers are two images from one build, and
+# an operator answering "which revision are these tokens?" from the wrong one is answering about
+# the wrong artifact. The SITE is the sentinel service of the profile, so it is checked whenever
+# the profile is up at all; the runner's containers are one-shots that may already be gone,
+# which is why `present` is asked about each separately.
+if present faucet-site; then
+  assert_pin mint-test-tokens-site "${FAUCET_SITE_IMAGE:-midnight-2-offers/mint-test-tokens-site:local}" \
+    /.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
+fi
+if present faucet-deploy; then
+  assert_pin mint-test-tokens "${FAUCET_RUNNER_IMAGE:-midnight-2-offers/mint-test-tokens:local}" \
+    /.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
 fi
 
 if (( FAILURES == 0 )); then

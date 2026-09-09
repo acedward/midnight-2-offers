@@ -69,11 +69,15 @@ AA_CONSOLE_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}-console
 AA_E2E_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}-e2e
 SOLVER_IMAGE=midnight-2-offers/cow-solver:${IMAGE_TAG_SUFFIX}
 SOLVER_SINK_IMAGE=midnight-2-offers/cow-solver-sink:${IMAGE_TAG_SUFFIX}
-# ONE build context, TWO runtime targets (nginx page server + bun deploy/verify one-shot), so
+# ONE build context, TWO runtime targets (nginx page server + node/bun deploy/verify one-shot), so
 # two image names. Both must carry the run-specific tag or a second stack on this daemon would
 # reuse the first one's binaries.
 SHIELDED_NIGHT_IMAGE=midnight-2-offers/shielded-night:${IMAGE_TAG_SUFFIX}
 SHIELDED_NIGHT_DEPLOY_IMAGE=midnight-2-offers/shielded-night-deploy:${IMAGE_TAG_SUFFIX}
+# The faucet profile is the same shape: ONE build context, TWO runtime targets (the
+# deploy/verify/bridge/mint runner, and the static site), so two image names.
+FAUCET_RUNNER_IMAGE=midnight-2-offers/mint-test-tokens:${IMAGE_TAG_SUFFIX}
+FAUCET_SITE_IMAGE=midnight-2-offers/mint-test-tokens-site:${IMAGE_TAG_SUFFIX}
 
 # External runtime images: repository + IMMUTABLE DIGEST, never a tag. Node and toolkit are
 # the official multiarch images; both proof-server variants come from the Effectstream GHCR
@@ -116,6 +120,10 @@ SHIELDED_NIGHT_HOST_PORT=$(( BASE + 12 ))
 SOLVER_FRONTEND_PORT=$(( BASE + 13 ))
 # The offer poster's /health, /metrics and /journal.
 POSTER_HEALTH_PORT=$(( BASE + 14 ))
+# The local mint-test-tokens faucet site. It is the profile's ONLY published port: fund,
+# deploy, verify and the registry bridge are one-shots, and the page needs no endpoint
+# overrides — the connected wallet supplies indexer/node/proof URLs itself.
+FAUCET_PORT=$(( BASE + 15 ))
 
 # The SPA's hostname-relative fallback is valid only on the default :9999/:3334
 # layout. A generated random-port stack must inject its actual host endpoints.
@@ -139,4 +147,9 @@ POSTER_WAIT_TIMEOUT=${POSTER_WAIT_TIMEOUT:-900}
 # DUST registration + a wait for a spendable DUST UTXO) and a real contract deploy proved on a
 # cold chain. On the 2.x line proving runs 1.25-1.6x slower than on 1.x, so this is minutes.
 SHIELDED_NIGHT_WAIT_TIMEOUT=${SHIELDED_NIGHT_WAIT_TIMEOUT:-900}
+# The faucet page starts only after THREE one-shots: a toolkit funding pass (NIGHT + DUST
+# registration + the wait for a spendable DUST UTXO), six real contract deploys proved on a
+# cold chain, and a read-only verification that re-queries every one of them. On the 2.x line
+# proving runs 1.25-1.6x slower than on 1.x, so this is minutes.
+FAUCET_WAIT_TIMEOUT=${FAUCET_WAIT_TIMEOUT:-1500}
 EOF

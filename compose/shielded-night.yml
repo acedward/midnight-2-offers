@@ -88,17 +88,23 @@ services:
       target: 'deploy'
       args: &shielded_night_build_args
         SHIELDED_NIGHT_REPO: '${SHIELDED_NIGHT_REPO:-https://github.com/effectstream/shielded-night.git}'
-        # Branch `ledger-v9` — the ledger-v9 port, whose own CI is green on THIS stack's triple
-        # (node 2.0.0-rc.4 / indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5). `main` is the
-        # 1.x/ledger-v8 line and is what the sibling repository midnight-1-offers pins. The
-        # image ASSERTS the line in both directions and in both resolved lockfiles, because
-        # nothing else distinguishes the two builds.
-        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-30af63f3865d0bc5d5331ae32a7891ad48818303}'
+        # Branch `main`, at the merge of upstream PR #16 — the commit that brought the
+        # `undeployed` lane onto this dApp's 2.x profile and thereby retired the long-lived
+        # `ledger-v9` branch this profile used to track. `main` carries BOTH generations in
+        # protocol-isolated trees; which one is used is chosen by `MN_ENV` on the runner side
+        # and by `UNDEPLOYED_PROTOCOL` on the page side, and this profile chooses 2.x on both.
+        # The image ASSERTS every knob it depends on (the undeployed v2 profile, the protocol
+        # switch, the external-stack suite, DEPLOY_OUT), so a re-pin to a tree without them
+        # fails at build time rather than as a page that loads the wrong ledger adapter.
+        SHIELDED_NIGHT_REF: '${SHIELDED_NIGHT_REF:-1337afc35ac1e6089dcc5957feafdb2bdc3bf1a3}'
         # DELIBERATELY NOT OVERRIDABLE from the environment. The pinned tree's own package.json
-        # runs `compact compile +0.34.0` and the image asserts that line still says so, then
-        # recompiles and requires the output to be byte-identical to the committed
-        # src/managed/. Any other compiler simply fails — but it would fail as an inscrutable
-        # diff of binary keys rather than as the policy violation it is.
+        # runs `compact compile +0.34.0 contracts/v2/shielded-night.compact` and the image
+        # asserts that line still says so, then recompiles and requires the output to be
+        # byte-identical to the committed contracts/v2/managed/. Any other compiler simply
+        # fails — but it would fail as an inscrutable diff of binary keys rather than as the
+        # policy violation it is. (The tree's OTHER contract, the 1.x `src/`, is compactc
+        # 0.31.1 and is shipped as committed: this stack never selects a 1.x network, and a
+        # second compiler in the image would break this repository's one-toolchain rule.)
         COMPACT_VERSION: '0.34.0'
     entrypoint: ['/usr/local/bin/entrypoint-deploy.sh']
     restart: 'no'
@@ -118,6 +124,10 @@ services:
       MN_INDEXER_URL: 'http://indexer:8088/api/v4/graphql'
       MN_INDEXER_WS_URL: 'ws://indexer:8088/api/v4/graphql/ws'
       MN_NODE_URL: 'http://node:9944'
+      # NEW ON THE 2.x LANE, and not a duplicate of MN_NODE_URL: contracts/v2's `undeployed()`
+      # profile resolves the node's websocket endpoint separately and defaults it to
+      # ws://127.0.0.1:9944. Omitting it here would leave the wallet dialling this container.
+      MN_NODE_WS_URL: 'ws://node:9944'
       MN_PROOF_SERVER_URL: 'http://proof-server:6300'
       # THE DEPLOYER — a DEDICATED seed, funded at bring-up by shielded-night-fund, and not
       # any of the three genesis wallets: genesis-1 is the funding faucet and the offer-files
@@ -127,15 +137,21 @@ services:
       # the entrypoint REFUSES that seed outright rather than trusting this value (FR-009).
       SHIELDED_NIGHT_WALLET_SEED: '${SHIELDED_NIGHT_WALLET_SEED:-5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e}'
       SHIELDED_NIGHT_ROLE: 'shielded-night-deployer'
-      # The wrapper's sealed metadata. Defaults are upstream's own ("Shielded Night" / "sNight"
-      # / 6); they are sealed into the contract at deploy and cannot be changed afterwards.
+      # The wrapper's sealed metadata — and on the 2.x lane "sealed" is literal: upstream's
+      # contracts/v2/scripts/deploy.ts passes ['Shielded Night', 'sNight', 6n] as constants and
+      # its verifier refuses any other on-chain metadata. These three are still PASSED (rather
+      # than dropped) precisely so that a non-default value reaches the container and is
+      # REFUSED by name with the reason — a variable that never arrives is a variable silently
+      # ignored, which is how the kernel's SNIGHT row would come to disagree with the chain.
+      # SHIELDED_NIGHT_DECIMALS is additionally what shielded-night-register writes.
       SHIELDED_NIGHT_NAME: '${SHIELDED_NIGHT_NAME:-Shielded Night}'
       SHIELDED_NIGHT_SYMBOL: '${SHIELDED_NIGHT_SYMBOL:-sNight}'
       SHIELDED_NIGHT_DECIMALS: '${SHIELDED_NIGHT_DECIMALS:-6}'
       # Locking dissolves the maintenance committee — a ONE-WAY door meant for hosted releases.
-      # A throwaway devnet contract gains nothing from it, so it is off; the knob exists
-      # because upstream's release path uses it, and verify asserts the state either way
-      # (spec FR-016).
+      # There is NO v2 lock script upstream (deploy-and-lock.ts and lock.ts are the 1.x tree's),
+      # so on this lane a truthy value is refused by the entrypoint rather than quietly doing
+      # nothing. It is still passed for exactly that reason. Verify reads the authority state
+      # either way (spec FR-016).
       SHIELDED_NIGHT_LOCK: '${SHIELDED_NIGHT_LOCK:-false}'
       # Not a code-level name — upstream has never heard of it. It is this deployment's
       # convention for where the entrypoints publish and read contract.json.
@@ -186,12 +202,19 @@ services:
       # `try_files … =404` a missing artifact would answer 200 with the app shell, and
       # midnight-js's FetchZkConfigProvider would be handed an HTML document as a proving key.
       #
+      # THE PATH IS `/contract/v2/`, NOT `/contract/compiled/`. On `main` the built site carries
+      # both generations: `contract/v1/shielded-night` and the LEGACY `contract/compiled/
+      # shielded-night` are the compactc 0.31.1 (ledger-v8) artifacts, and `contract/v2/
+      # shielded-night` is the 0.34.0 set this stack's adapter fetches. Probing the legacy path
+      # would test a lane this profile never uses — and would fail on the manifest anyway,
+      # because compactc only began emitting one at 0.33.
+      #
       # The manifest is on this line what makes the keys USABLE: midnight-js 5 verifies every
       # fetched artifact against compiler/contract-manifest.json, fail-closed. A page serving
       # keys without it connects a wallet and then refuses to prove anything.
       test:
         - 'CMD-SHELL'
-        - 'wget -qO/dev/null http://127.0.0.1:10900/ && wget -qO- http://127.0.0.1:10900/config.js | grep -q entrypoint-web.sh && wget -qO/tmp/vk http://127.0.0.1:10900/contract/compiled/shielded-night/keys/convertToShielded.verifier && [ -s /tmp/vk ] && wget -qO/tmp/mf http://127.0.0.1:10900/contract/compiled/shielded-night/compiler/contract-manifest.json && [ -s /tmp/mf ]'
+        - 'wget -qO/dev/null http://127.0.0.1:10900/ && wget -qO- http://127.0.0.1:10900/config.js | grep -q entrypoint-web.sh && wget -qO/tmp/vk http://127.0.0.1:10900/contract/v2/shielded-night/keys/convertToShielded.verifier && [ -s /tmp/vk ] && wget -qO/tmp/mf http://127.0.0.1:10900/contract/v2/shielded-night/compiler/contract-manifest.json && [ -s /tmp/mf ]'
       interval: 5s
       timeout: 4s
       retries: 12

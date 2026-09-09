@@ -10,9 +10,11 @@
 #
 #   serves      GET / answers an HTML document (nginx up, dist/ present).
 #   config.js   GET /config.js is 200 and carries EXACTLY the address on the deploy volume —
-#               not a stale one, not the baked-in preview one, not an empty string. It is
-#               written at container start, so a 404 means the entrypoint never ran; and
-#               index.html must load it as a CLASSIC script or it cannot run before the bundle.
+#               not a stale one, not the baked-in preview one, not an empty string — AND the
+#               protocol switch UNDEPLOYED_PROTOCOL=midnight-2.x, without which the page would
+#               load the ledger-v8 adapter against this ledger-9 chain. It is written at
+#               container start, so a 404 means the entrypoint never ran; and index.html must
+#               load it as a CLASSIC script or it cannot run before the bundle.
 #   zk assets   all 11 circuits' keys/<c>.prover, keys/<c>.verifier and zkir/<c>.bzkir answer
 #               with non-empty BYTES, and a circuit that does not exist answers 404 — because
 #               midnight-js's FetchZkConfigProvider only checks `response.ok`, so an SPA
@@ -35,7 +37,7 @@
 #               than no name at all, because every display believes it.
 #
 # The last two run inside a container from the same image the contract was deployed from
-# (`docker compose run --rm shielded-night-verify`), so this script needs no bun, no node and
+# (`docker compose run --rm shielded-night-verify`), so this script needs no node, no bun and
 # no dependency a clean macOS box does not already have: curl, grep and sed.
 #
 set -euo pipefail
@@ -54,7 +56,13 @@ use_all_profiles
 BIND="${HOST_ADDR:-127.0.0.1}"
 SNPORT="${SHIELDED_NIGHT_HOST_PORT:-10900}"
 BASE="http://${BIND}:${SNPORT}"
-ARTIFACTS="${BASE}/contract/compiled/shielded-night"
+# THE 2.x TREE, NOT THE LEGACY PATH. On effectstream/shielded-night `main` the built site
+# carries both generations: `contract/v1/shielded-night` and the legacy
+# `contract/compiled/shielded-night` are the compactc 0.31.1 (ledger-v8) artifacts, and
+# `contract/v2/shielded-night` is the 0.34.0 set this stack's adapter fetches. Checking the
+# legacy path would verify a lane this profile never selects — and would fail on the manifest
+# regardless, because compactc only began emitting one at 0.33.
+ARTIFACTS="${BASE}/contract/v2/shielded-night"
 
 # The 11 circuits of the ShieldedNight contract. Written out rather than discovered, because
 # "the page serves some keys" and "the page serves THIS contract" are different claims and only
@@ -104,6 +112,21 @@ if CONFIG_JS="$(curl -fsS --max-time 10 "$BASE/config.js" 2>/dev/null)"; then
       fail "/config.js is the upstream placeholder — the web entrypoint never wrote this stack's address"
       ;;
   esac
+  # THE PROTOCOL SWITCH, and on this stack it is not cosmetic. Upstream's `undeployed` network
+  # defaults to `midnight-1.x`; this chain is ledger-9. A page served without this line loads,
+  # offers "Local (undeployed)", connects a wallet and then fails every call — with an error
+  # that names neither the adapter nor the chain. Matched on the exact key/value pair the web
+  # entrypoint writes, because a truncated or misspelled value is reported by upstream as a
+  # configuration error rather than guessed at, which would look like a broken page here.
+  case "$CONFIG_JS" in
+    *'UNDEPLOYED_PROTOCOL: "midnight-2.x"'*)
+      ok "/config.js selects the 2.x adapter for the local network (UNDEPLOYED_PROTOCOL)"
+      ;;
+    *)
+      fail "/config.js does not set UNDEPLOYED_PROTOCOL=midnight-2.x; the page would load the ledger-v8 adapter against this ledger-9 chain"
+      printf '%s\n' "$CONFIG_JS" | sed 's/^/      /' >&2
+      ;;
+  esac
 else
   CONFIG_JS=""
   fail "/config.js is missing — the web entrypoint did not run, or it never saw a contract"
@@ -127,18 +150,23 @@ else
   ok "index.html loads /config.js as a classic script, so it runs before the deferred bundle"
 fi
 
+# TWO THINGS IN THE BUILT BUNDLE, neither of which has a container-side lane to check.
+#
 # THE PREPROD NETWORK, BAKED AT BUILD TIME. Unlike UNDEPLOYED_ADDRESS (runtime-injected via
-# /config.js, checked above), PREVIEW_ADDRESS and PREPROD_ADDRESS come from the pinned tree's
-# own committed `frontend/.env` and are inlined into the module bundle by Vite at build time —
-# there is no container-side lane to check them through. Since ledger-v9 @ 30af63f3… (project
-# 00007 phase F2) merged shielded-night main's PR #11, that file carries a real PreProd address,
-# so the page this profile serves now offers Preview / PreProd / Local (undeployed) in its
-# network dropdown, not just the first and third. This is a consequence of the re-pin, not new
-# code here — the assertion exists so a future re-pin that silently drops PREPROD_ADDRESS (or
-# points it at the wrong contract) fails loudly instead of shipping a broken menu entry.
+# /config.js, checked above), PREVIEW_ADDRESS / PREPROD_ADDRESS / STAGENET_ADDRESS come from the
+# pinned tree's own committed `frontend/.env` and are inlined into the module bundle by Vite at
+# build time. The assertion exists so a re-pin that silently drops PREPROD_ADDRESS (or points it
+# at the wrong contract) fails loudly instead of shipping a broken menu entry — it survived the
+# move from the `ledger-v9` branch to `main` unchanged, which is itself worth knowing.
+#
+# THE 2.x LABEL. `Local (undeployed · 2.x)` is the label `networks.ts` produces ONLY when the
+# protocol switch resolves to midnight-2.x, so its presence in the bundle proves the switch is
+# wired into the network row rather than merely present in the config lane. /config.js supplies
+# the value; this proves the code that consumes it shipped. (The image asserts the same string
+# at build time, so a bundler charset change is caught there first, with a clearer message.)
 BUNDLE_SRC="$(printf '%s' "$HTML" | grep -o '<script type="module"[^>]*src="[^"]*"' | grep -o '/assets/[^"]*\.js' | head -1 || true)"
 if [[ -z "$BUNDLE_SRC" ]]; then
-  fail "index.html has no module bundle <script src>; cannot check the baked PreProd address"
+  fail "index.html has no module bundle <script src>; cannot check the baked PreProd address or the 2.x label"
 else
   BUNDLE_JS="$(curl -fsS --max-time 20 "${BASE}${BUNDLE_SRC}" 2>/dev/null || true)"
   case "$BUNDLE_JS" in
@@ -147,6 +175,14 @@ else
       ;;
     *)
       fail "the served bundle (${BUNDLE_SRC}) does not carry the PreProd contract address — the network dropdown would be missing PreProd"
+      ;;
+  esac
+  case "$BUNDLE_JS" in
+    *'Local (undeployed · 2.x)'*)
+      ok "the served bundle carries the 'Local (undeployed · 2.x)' label — the protocol switch reaches the network row"
+      ;;
+    *)
+      fail "the served bundle does not carry the 'Local (undeployed · 2.x)' label; UNDEPLOYED_PROTOCOL would have nothing to select"
       ;;
   esac
 fi
@@ -303,22 +339,26 @@ fi
 
 # ── the round trip ───────────────────────────────────────────────────────────
 #
-# The UPSTREAM integration suite, run against THIS stack (MN_EXTERNAL_STACK=1) with a driver
-# wallet distinct from the deployer. Both selected tests assert EXACT balances: wrapped == N,
-# and final NIGHT == starting NIGHT.
+# The UPSTREAM 2.x external-stack suite (`contracts/v2/test/external/`, added by upstream PR
+# #16), run against THIS stack (MN_EXTERNAL_STACK=1) with a driver wallet distinct from the
+# deployer, and with CV_ADDRESS pointing at the contract this stack deployed so the suite JOINS
+# it rather than deploying one nobody serves. Four cases: the served circuit set and sealed
+# metadata, the two-step round trip, the atomic round trip, and a wrong-secret refusal. Every
+# balance assertion is EXACT: wrapped == N, and final NIGHT == starting NIGHT.
 #
 # It is a REQUIRED check, not an optional one — a profile that serves a page for a contract
 # nobody has ever transacted with is not verified. The driver wallet is funded at bring-up by
 # the `shielded-night-fund` one-shot; if it were not, this container fails and so does this
 # section, loudly.
 #
-# IT IS SLOW ON THIS LINE. The same two round trips that take ~280 s against the 1.x triple
-# were measured at 487–537 s in the ledger-v9 branch's own CI, which is why the branch raised
-# its integration timeout from 60 to 150 minutes. Budget minutes, not seconds.
+# IT IS SLOW ON THIS LINE, and the whole file runs rather than two selected cases (the v2 suite
+# has no multi-wallet case to steer around, unlike the 1.x one). Its own vitest config allows
+# 10 minutes per test and 20 for the hooks, with retries at ZERO — a retry of a half-completed
+# round trip would assert against balances the first attempt already moved. Budget minutes.
 echo
-log "shielded-night: NIGHT <-> sNight round trips (atomic and two-step)"
+log "shielded-night: NIGHT <-> sNight round trips (atomic and two-step) — the 2.x external suite"
 info "driver wallet is SHIELDED_NIGHT_DRIVER_SEED (distinct from the deployer, spec FR-011)"
-info "expect 8-12 minutes: proving on the 2.x line runs 1.25-1.6x slower than on 1.x"
+info "expect 10-20 minutes: proving on the 2.x line runs 1.25-1.6x slower than on 1.x"
 if dc --profile shielded-night-verify run --rm -T shielded-night-verify roundtrip; then
   ok "both round trips completed with exact balance assertions"
 else

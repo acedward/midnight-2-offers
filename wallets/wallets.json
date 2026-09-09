@@ -11,7 +11,8 @@
     "each other's connection down, silently. That is why every service that holds a wallet",
     "open has its own: genesis-1 = funding faucet + offer-files kernel, genesis-2 = batcher,",
     "genesis-3 = AA deploy, aac0… = AA console relay, 7a4e… = AA taker, 5e5e… = shielded-night",
-    "deployer, d00d… = shielded-night verify driver, 0ffe… = the offer poster. `lace-test` is",
+    "deployer, d00d… = shielded-night verify driver, 0ffe… = the offer poster, fa7c… = the",
+    "mint-test-tokens faucet deployer. `lace-test` is",
     "deliberately held by no",
     "service at all, so a browser can import it at any time.",
     "",
@@ -32,6 +33,10 @@
     "                           'the poster could not register' unreportable). Deliberately NOT",
     "                           selected by fund-in-container.sh or verify-wallets.sh: this",
     "                           wallet's lifecycle belongs to the profile, not to the fund script.",
+    "funding = 'none'         : never funded, and that is correct. Today that is only",
+    "                           faucet-mint-recipient: it receives minted test tokens and never",
+    "                           pays a fee, so it needs no NIGHT and no DUST. Deliberately NOT",
+    "                           selected by fund-in-container.sh or verify-wallets.sh.",
     "funding = 'mnemonic'     : same as 'fund-script' (empty until funded), but the wallet is",
     "                           reachable from a BIP-39 mnemonic, so it can be imported into",
     "                           Lace by hand. See the 'mnemonic' and 'derivation' fields and",
@@ -311,6 +316,102 @@
         "shielded": "mn_shield-addr_undeployed1h2u9dgarcyvxz4g2t33p4avlewy4w0znum56hxk70657wne59c9p62scyzpm959npkj5e52fflxufz8k8n5uhwxdhyaxqavacjlqysq4rla8h",
         "dust": "mn_dust_undeployed1wdnvu20smxu2f4wgw8m0e5xdjnq0yyv56ndqpykten7u6tpgj9hrzzvnl2p",
         "userAddress": "4997214207e0568884961743d8286875b6e58caea3b77a886539b38ea950308e"
+      }
+    },
+    {
+      "name": "faucet-deployer",
+      "role": "deploys the six mint-test-tokens issuers ONCE per stack (profile `faucet`)",
+      "$comment": [
+        "A DEDICATED seed, not one of the three genesis wallets. genesis-1 is the funding faucet",
+        "and the offer-files kernel's MIDNIGHT_WALLET_SEED, genesis-2 is the batcher's and",
+        "genesis-3 is the AA deploy wallet's; a second wallet facade on any of them forces the",
+        "first one's connection down with nothing naming the cause. The image entrypoints REFUSE",
+        "all three outright rather than trusting the environment.",
+        "",
+        "Funded at bring-up by the `faucet-fund` one-shot in compose/faucet.yml (the same toolkit",
+        "lane scripts/fund-wallet.sh uses), which SKIPS a wallet that already holds NIGHT and a",
+        "spendable DUST UTXO \u2014 so repeated ./up.sh runs cost seconds.",
+        "",
+        "IT MUST HOLD NIGHT, and the reason is easy to misread. mint-test-tokens' v2 deploy runner",
+        "calls wallet.start(true) on `undeployed`, which reads as 'request local faucet funding'.",
+        "It is not: testkit 5.0.0-beta.7 only contacts a faucet when env.faucet is CONFIGURED, and",
+        "deploy.ts passes `faucet: undefined`. What that flag actually buys is the DUST-registration",
+        "half \u2014 and the runner then refuses to write a deployment intent until the synchronized",
+        "wallet exposes positive DUST, so an unfunded deployer fails inside wallet synchronization",
+        "with an error naming none of this.",
+        "",
+        "It is a ONE-SHOT facade: the container deploys or resumes, publishes",
+        "metadata.undeployed.json onto the faucet-registry volume, and exits."
+      ],
+      "seed": "fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7fa7cefa7",
+      "seedBytes": 32,
+      "funding": "compose-one-shot",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1n92e2zaeu4rcjfhzrgq9g2rndarr554nqrexwuapdauynujg2gfszrns8r",
+        "shielded": "mn_shield-addr_undeployed1etvd54x2t66nuagfvxal4779wt6cze23cjas08dy7ns7cgp67kt9qp5hhh727rr4ewtvsde2ssq2k6tmhpecx78aw9muhpqdyaduwwg9uaq0f",
+        "dust": "mn_dust_undeployed1wdvrnx7tk67y5x3mythm0w8ceh22qtfdp8u4zekensc0w864kuyjzhf3hef",
+        "userAddress": "9955950bb9e5478926e21a005428736f463a52b300f26773a16f7849f2485213"
+      }
+    },
+    {
+      "name": "faucet-mint-recipient",
+      "role": "receives the `faucet-mint-test` one-shot's mints (profile `faucet`, never started by up.sh)",
+      "$comment": [
+        "DELIBERATELY UNFUNDED, and that is the design rather than an omission. The mint test runs",
+        "with MN_SKIP_RECIPIENT_SPEND=1, so this wallet never builds a transaction: it only",
+        "receives minted test tokens and proves it DISCOVERS them through its own chain scan. It",
+        "therefore needs no NIGHT and no DUST, and the deployer pays every fee.",
+        "",
+        "It must DIFFER from faucet-deployer, and entrypoint-mint-test.sh refuses a run where they",
+        "are equal: a wallet cannot prove that a mint to ITSELF is discoverable by somebody else,",
+        "which is exactly the claim the encrypted-output path has to make.",
+        "",
+        "Nothing holds this wallet open: the one-shot carries a compose `profiles:` key, so ./up.sh",
+        "never starts it. Run it with ./scripts/verify-faucet.sh --mint."
+      ],
+      "seed": "f00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafe",
+      "seedBytes": 32,
+      "funding": "none",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed13zujtktmgdezx0u6rumg3w8xults7xjnd4n67rz9zgztayzfehnqhdt5cu",
+        "shielded": "mn_shield-addr_undeployed1cr8ndzjarxxl2ctdrv6h3k8a9wsdr06dq9hucrdghznn9w3arjdjr6ddj6yuke9s9cc5hdz30fw30w2s3yaaua0jg9r4l2uu9rahgks4eaer8",
+        "dust": "mn_dust_undeployed1wv7eppt9xetu4k95x854p0sht0rekw4sx4pst4s0jjhh6mrzl2d9ctxq70u",
+        "userAddress": "88b925d97b4372233f9a1f3688b8e6e7d70f1a536d67af0c451204be9049cde6"
+      }
+    },
+    {
+      "name": "demo-spa",
+      "role": "the swap SPA's in-page JS wallet (profile `frontend`) \u2014 prefunded with local twETH so the demo UI can take an offer",
+      "$comment": [
+        "NEW IN PR-C of project 00017, and it exists because the SPA lost its mint. Upstream",
+        "effectstream/effectstream PR #922 removed the template's local faucet contract, and the",
+        "template's connectLocal() GENERATES a random 32-byte seed when it is not given one \u2014 so",
+        "the in-page wallet was a brand-new EMPTY wallet on every page load, with no way to ever",
+        "acquire anything: the SPA has no mint of its own, and the mint-test-tokens SITE drives an",
+        "injected DApp-connector extension wallet, which an in-page wallet is not.",
+        "",
+        "Fixing the seed makes it THE STACK's demo wallet: compose/frontend.yml injects it as",
+        "window.DEMO_WALLET_SEED, the faucet-mint one-shot's `spa` grant prefunds it with one whole",
+        "twETH (the token the offer poster WANTS, so the SPA can take a poster offer), and the",
+        "wallet survives a page reload instead of being replaced by an empty one.",
+        "",
+        "IT NEEDS NO NIGHT AND NO DUST, which is why funding is 'none'. Both halves of a swap go",
+        "through the batcher: the maker half is an unbalanced offer file, and the taker half is",
+        "balanced and SPONSORED by the batcher when the pair is priced. Giving this wallet NIGHT",
+        "would also make it a second facade on a funded seed, for no benefit.",
+        "",
+        "ONE FACADE PER SEED still applies, and this one is held by a BROWSER. Do not import it",
+        "into Lace while the SPA has it connected; `lace-test` (a51c86de\u2026) is the seed kept free",
+        "for exactly that."
+      ],
+      "seed": "5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe",
+      "seedBytes": 32,
+      "funding": "none",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed10f557rtylr4gvxxylsygf9nknztzclc9vcjx8l59u7xrswqle26q66wgtd",
+        "shielded": "mn_shield-addr_undeployed1k0z4xefyg9k8madnrg6vmshm0f33lhj4rue60x680jpn6yev64zylac2xrrhayng7k4q0l9yl4ptc9js8xj6gmw03z2n8zj6uhqkghgtcqqd0",
+        "dust": "mn_dust_undeployed1wv42f7za6qqy8yqrrg2gf74cqmn5x43w5duqlawkgdsce6n6evw35w493jy",
+        "userAddress": "7a694f0d64f8ea8618c4fc0884967698962c7f05662463fe85e78c38381fcab4"
       }
     }
   ]

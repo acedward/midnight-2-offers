@@ -9,6 +9,11 @@
 # Upstream's runtime-config lane resolves `window.SHIELDED_NIGHT.<NETWORK>_ADDRESS` ahead of
 # the build-time value; this script is what writes that global.
 #
+# IT WRITES TWO KEYS, NOT ONE. Since the re-pin to `main` (upstream PR #16) the same lane
+# also carries UNDEPLOYED_PROTOCOL, which selects the ledger generation the local network
+# runs. Its default is `midnight-1.x`; this stack is ledger-9, so the value is written
+# explicitly — see the block that composes the file.
+#
 # IT WAITS RATHER THAN GUESSING. compose gates this container on the one-shot's
 # `service_completed_successfully`, but that is not the only way it starts: a restart policy,
 # a `docker compose up` on a stack whose core is already running, or a manual `restart` can
@@ -57,14 +62,29 @@ if [ "${#ADDRESS}" -lt 16 ]; then
     die "contract address is implausibly short (${#ADDRESS} chars): '${ADDRESS}'"
 fi
 
+# THE PROTOCOL SWITCH IS THE SECOND HALF, and on this stack it is not optional. Upstream's
+# `undeployed` network defaults to `midnight-1.x` — the ledger-v8 adapter — because that is what
+# a local devnet has always been for this dApp. THIS devnet is ledger-9 (node 2.0.0-rc.4 /
+# indexer 4.4.0-rc.3 / proof-server 9.0.0-rc.5), so without this line the page would load, show
+# "Local (undeployed)", connect a wallet, and then fail every call with an error naming none of
+# it. With it, networks.ts resolves the row to midnight-2.x, labels it "Local (undeployed · 2.x)"
+# and loads frontend/protocols/v2.
+#
+# It is a CONSTANT here rather than an env knob: this profile has exactly one chain and its
+# generation is a property of the images compose/core.yml pins, not an operator preference. An
+# unrecognised value is reported on the page and blocks Connect (upstream refuses to guess),
+# which is one more reason not to make it settable from the outside.
+PROTOCOL='midnight-2.x'
+
 {
     printf '%s\n' '// Generated at container start by images/shielded-night/entrypoint-web.sh.'
-    printf '%s\n' '// The contract this stack deployed; resolved ahead of the build-time'
-    printf '%s\n' '// UNDEPLOYED_ADDRESS by frontend/src/lib/runtime-config.ts.'
-    printf 'window.SHIELDED_NIGHT = { UNDEPLOYED_ADDRESS: "%s" };\n' "${ADDRESS}"
+    printf '%s\n' '// The contract this stack deployed and the ledger generation its chain runs;'
+    printf '%s\n' '// both resolved ahead of the build-time values by frontend/src/lib/runtime-config.ts.'
+    printf 'window.SHIELDED_NIGHT = { UNDEPLOYED_PROTOCOL: "%s", UNDEPLOYED_ADDRESS: "%s" };\n' \
+        "${PROTOCOL}" "${ADDRESS}"
 } > "${TARGET}"
 
-log "contract ${ADDRESS}"
+log "contract ${ADDRESS} on ${PROTOCOL}"
 log "wrote ${TARGET}:"
 sed 's/^/    /' "${TARGET}" >&2
 

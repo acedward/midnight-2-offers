@@ -109,10 +109,13 @@ fi
 #   NIGHT   32 zero bytes, the one colour identical on every network, seeded in
 #           known_tokens against `midnight-3`. Always available, so it is what
 #           makes the route answer at all.
-#   WBTC    the two colours this stack actually quotes with. They derive from
-#   WETH    the deployed contract address, so they cannot be written down here —
-#           they are resolved from /v1/known-tokens, and simply left out when
-#           `register-tokens` has not named them (verify-kernel.sh owns that).
+#   TWBTC   the two colours this stack actually quotes with. They are derived
+#   TWETH   from their ISSUER contracts' addresses when the `faucet` profile
+#           deploys them, so they cannot be written down here — they are
+#           resolved from /v1/known-tokens, and simply left out when
+#           `registry-bridge` has not named them (verify-kernel.sh owns that).
+#           The kernel's own 000-init.sql seeds those two names against
+#           `bitcoin` and `ethereum`, which is what makes them priced at all.
 #
 # Without them the `assets` array would carry `midnight-3` alone and the
 # "still seeded" warning below could not see the assets that matter.
@@ -136,8 +139,8 @@ for row in rows or []:
         break
 ' 2>/dev/null || true
 }
-WBTC="$(resolve_color WBTC)"
-WETH="$(resolve_color WETH)"
+WBTC="$(resolve_color TWBTC)"
+WETH="$(resolve_color TWETH)"
 
 ASK="$NIGHT_COLOR"
 [[ -n "$WBTC" ]] && ASK="${ASK},${WBTC}"
@@ -254,19 +257,19 @@ fi
 #    actually reads.
 echo
 log "the quote path still answers with the refreshed prices"
-# WBTC/WETH were resolved above, with the price query.
+# TWBTC/TWETH were resolved above, with the price query.
 if [[ -n "$WBTC" && -n "$WETH" ]]; then
   QUOTE="$(curl -fsS --max-time 15 \
-    "$KBASE/v1/quote?from_token=${WBTC}&to_token=${WETH}&from_amount=1000000" 2>/dev/null || true)"
+    "$KBASE/v1/quote?from_token=${WBTC}&to_token=${WETH}&from_amount=100000000" 2>/dev/null || true)"
   if [[ -n "$QUOTE" ]] && printf '%s' "$QUOTE" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 to = str(d.get("to_amount") or "")
-print("    quote 1 WBTC -> {} base units WETH  market_rate={}  sponsored={}  from_source={}  to_source={}".format(
+print("    quote 1 twBTC -> {} base units twETH  market_rate={}  sponsored={}  from_source={}  to_source={}".format(
     to, d.get("market_rate"), d.get("sponsored"), d.get("from_source"), d.get("to_source")))
 raise SystemExit(0 if to.isdigit() and int(to) > 0 else 1)
 '; then
-    ok "/v1/quote sizes a WBTC -> WETH leg from the refreshed prices"
+    ok "/v1/quote sizes a twBTC -> twETH leg from the refreshed prices"
     # `from_source`/`to_source` say per LEG where the number came from. On a
     # stack whose feed has run they must be `feed`, and that is the end-to-end
     # proof: the feed wrote a row, the kernel read it, the quote used it.
@@ -279,15 +282,17 @@ raise SystemExit(0 if to.isdigit() and int(to) > 0 else 1)
       FAILURES=$(( FAILURES + 1 ))
     fi
   else
-    err "/v1/quote could not size a WBTC -> WETH leg"
+    err "/v1/quote could not size a twBTC -> twETH leg"
     info "  answer was: $(printf '%s' "${QUOTE:-<none>}" | head -c 300)"
     FAILURES=$(( FAILURES + 1 ))
   fi
 else
-  # Not a failure of the FEED: naming the colours is register-tokens' job and
-  # verify-kernel.sh's assertion. Say so rather than blaming this profile.
-  warn "WBTC/WETH are not named in /v1/known-tokens, so the quote leg was not checked here"
-  info "  that is the register-tokens one-shot's job — see ./verify.sh --kernel"
+  # Not a failure of the FEED: naming the colours is registry-bridge's job (the
+  # `faucet` profile) and verify-kernel.sh's assertion. Say so rather than
+  # blaming this profile.
+  warn "TWBTC/TWETH are not named in /v1/known-tokens, so the quote leg was not checked here"
+  info "  that is the faucet profile's registry-bridge one-shot — ./up.sh --with faucet,"
+  info "  then ./verify.sh --kernel"
 fi
 
 echo

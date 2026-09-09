@@ -6,7 +6,7 @@
     "The AA console/deploy runner's OWN dependency tree. It is a separate process from the",
     "kernel and does not share its lockfile, so this list is maintained here rather than",
     "inherited. What MUST agree with the kernel pin",
-    "(effectstream/zswap-offerfiles-kernel @ 80bace37bc2412542452e1c597761b2ebce5c677,",
+    "(effectstream/zswap-offerfiles-kernel @ 5d794f9a27f6d65529bf176650405f740531d430,",
     "branch ledger-v9, the Compact 0.34.0 head) is what crosses the wire between them:",
     "@midnightntwrk/ledger-v9 1.0.0-rc.3 (the offer blob's ledger types),",
     "@effectstream/mip-zswap-offer 0.4.0-v9.0 (the MIP-0005 encoding the kernel parses),",

@@ -58,13 +58,19 @@
     },
     {
       "component": "zswap-da SPA",
-      "source": "[`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/{full:FRONTEND_REF}/templates/zswap-da), fetched at build time and adapted by `images/zswap-da/ledger-v9.patch`",
+      "source": "[`effectstream/effectstream` `templates/zswap-da`](https://github.com/effectstream/effectstream/tree/{full:FRONTEND_REF}/templates/zswap-da) branch **`midnight-1`** ([PR #922](https://github.com/effectstream/effectstream/pull/922) — the local faucet contract removed), fetched at build time and ported from the 1.x line to this stack's 2.x set by `images/zswap-da/ledger-v9.patch`; **no compiler and no contract in the image**",
       "pin": "{commit:FRONTEND_REF@effectstream/effectstream}",
       "pinnedIn": "{files:FRONTEND_REF}"
     },
     {
+      "component": "**mint-test-tokens** \u2014 six local test-token issuers + the faucet site",
+      "source": "[`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` ([PR #4](https://github.com/effectstream/mint-test-tokens/pull/4)); **NO compiler in the image** \u2014 `contracts/v2/managed/` is tracked upstream and the deploy runner re-proves those bytes against the pinned commit on every run",
+      "pin": "{commit:MINT_TEST_TOKENS_REF@effectstream/mint-test-tokens}",
+      "pinnedIn": "{files:MINT_TEST_TOKENS_REF}"
+    },
+    {
       "component": "Shielded NIGHT dApp",
-      "source": "[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) branch `ledger-v9` ([PR #10](https://github.com/effectstream/shielded-night/pull/10)); contract recompiled in-image with compactc 0.34.0, byte-identical to the committed artifacts",
+      "source": "[`effectstream/shielded-night`](https://github.com/effectstream/shielded-night) branch `main` — since upstream PR #16 its 2.x profile carries the `undeployed` lane (`MN_ENV=undeployed`, page switch `UNDEPLOYED_PROTOCOL=midnight-2.x`), which retired the `ledger-v9` branch this profile used to track; the v2 contract is recompiled in-image with compactc 0.34.0, byte-identical to the committed `contracts/v2/managed/`",
       "pin": "{commit:SHIELDED_NIGHT_REF@effectstream/shielded-night}",
       "pinnedIn": "{files:SHIELDED_NIGHT_REF}"
     },
