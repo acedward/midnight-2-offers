@@ -55,7 +55,7 @@ ARG NODE_BASE=node:24.15.0-trixie-slim@sha256:291be77873bc04731968cacf82f0fcef17
 ARG MINT_TEST_TOKENS_REPO=https://github.com/effectstream/mint-test-tokens.git
 # effectstream/mint-test-tokens `main` — the merge of PR #4, the commit that publishes the
 # verified Preprod registry and the v2 (Midnight 2.x) issuer set this stack deploys locally.
-ARG MINT_TEST_TOKENS_REF=7ecad008b07acb2a491d8291e05455cbd638910f
+ARG MINT_TEST_TOKENS_REF=a51cf3ad46520d1ded938fb86db8b7b99373ce56
 # NOT free choices: these are the two revisions `frontend/client-artifacts.json` pins at
 # MINT_TEST_TOKENS_REF, and stage `source` asserts the file still says so.
 ARG MINT_TEST_TOKENS_CLIENT_V1_REV=418cce599bc1f712ba1a0d277765f96e2f693e27

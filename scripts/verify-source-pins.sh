@@ -212,7 +212,7 @@ SHIELDED_NIGHT_EXPECTED="${SHIELDED_NIGHT_REF:-1337afc35ac1e6089dcc5957feafdb2bd
 # matters: the image runs no compiler, so "the right commit" is not a proxy for "the right
 # artifacts" here — it IS them. Upstream's deploy/verify runners re-prove the artifact bytes
 # against that commit on every run, and the image proves it once at build time.
-MINT_TEST_TOKENS_EXPECTED="${MINT_TEST_TOKENS_REF:-7ecad008b07acb2a491d8291e05455cbd638910f}"
+MINT_TEST_TOKENS_EXPECTED="${MINT_TEST_TOKENS_REF:-a51cf3ad46520d1ded938fb86db8b7b99373ce56}"
 
 if present indexer; then
   assert_pin indexer "${INDEXER_IMAGE:-midnight-2-offers/indexer:local}" /opt/indexer-standalone/.indexer-commit "$INDEXER_EXPECTED"

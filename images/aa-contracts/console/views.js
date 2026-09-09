@@ -355,7 +355,7 @@ const REPOS = [
   {
     repo: "effectstream/mint-test-tokens", url: "https://github.com/effectstream/mint-test-tokens",
     role: "the six local test-token issuers, their canonical registry and the mint site (profile faucet) — twBTC 8, twETH 18, twUSDC 6, twUSDM 6, utwUSDC 6, utwBTC 8",
-    ref: "main @ 7ecad008 (sha-pinned)",
+    ref: "main @ a51cf3ad (sha-pinned)",
     notes: [
       ["PR #4", "https://github.com/effectstream/mint-test-tokens/pull/4", "the v2 (Midnight 2.x) issuer set and the verified Preprod registry"],
       ["", "", "NO COMPILER IN THE IMAGE: contracts/v2/managed/ is tracked upstream, and the deploy runner refuses to touch the chain unless those bytes equal the bytes at this commit — so a recompile would make the tool this image runs refuse to deploy"],

@@ -91,7 +91,7 @@ services:
         # must be the same commit or the console would prove against a different
         # verifier-key set than the one this stack deployed.
         MINT_TEST_TOKENS_REPO: '${MINT_TEST_TOKENS_REPO:-https://github.com/effectstream/mint-test-tokens.git}'
-        MINT_TEST_TOKENS_REF: '${MINT_TEST_TOKENS_REF:-7ecad008b07acb2a491d8291e05455cbd638910f}'
+        MINT_TEST_TOKENS_REF: '${MINT_TEST_TOKENS_REF:-a51cf3ad46520d1ded938fb86db8b7b99373ce56}'
         # The Manager's `execute` comes from the MinoCrab port's PUBLISHED RELEASE
         # by default (k=18: half the prover key, ~2x faster proofs; unaudited
         # third-party compiler, equivalence TESTED not proven — dev chains only).
@@ -159,7 +159,7 @@ services:
         # must be the same commit or the console would prove against a different
         # verifier-key set than the one this stack deployed.
         MINT_TEST_TOKENS_REPO: '${MINT_TEST_TOKENS_REPO:-https://github.com/effectstream/mint-test-tokens.git}'
-        MINT_TEST_TOKENS_REF: '${MINT_TEST_TOKENS_REF:-7ecad008b07acb2a491d8291e05455cbd638910f}'
+        MINT_TEST_TOKENS_REF: '${MINT_TEST_TOKENS_REF:-a51cf3ad46520d1ded938fb86db8b7b99373ce56}'
         AA_PRUNE_MANAGER_PROVERS: '0'
         MINOCRAB_REPO: '${MINOCRAB_REPO:-https://github.com/acedward/AA-midnight-evm-experiment-minocrab}'
         MINOCRAB_RELEASE: '${MINOCRAB_RELEASE:-v0.2.0}'

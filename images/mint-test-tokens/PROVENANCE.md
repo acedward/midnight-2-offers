@@ -9,7 +9,7 @@ runs here at all**.
 
 | Thing | Identity | Where |
 |---|---|---|
-| Issuer + site source | `effectstream/mint-test-tokens` @ `7ecad008b07acb2a491d8291e05455cbd638910f` (branch **`main`**, the merge of PR #4) | `MINT_TEST_TOKENS_REF` — Dockerfile ARG default, `.env.example`, `compose/faucet.yml`, `scripts/verify-source-pins.sh`, baked into both runtime images as `/.mint-test-tokens-commit` |
+| Issuer + site source | `effectstream/mint-test-tokens` @ `a51cf3ad46520d1ded938fb86db8b7b99373ce56` (branch **`main`**, the merge of PR #4) | `MINT_TEST_TOKENS_REF` — Dockerfile ARG default, `.env.example`, `compose/faucet.yml`, `scripts/verify-source-pins.sh`, baked into both runtime images as `/.mint-test-tokens-commit` |
 | Client-artifact history | `418cce599bc1f712ba1a0d277765f96e2f693e27` (v1), `fdf0739cf2d342b283187ef8304a1784c7ec6bc2` (v2) | `MINT_TEST_TOKENS_CLIENT_V1_REV` / `_V2_REV` — Dockerfile ARG defaults, asserted against `frontend/client-artifacts.json` at the pin |
 | Base images | `debian:trixie-slim`, `node:24.15.0-trixie-slim` — both by index digest | `DEBIAN_BASE`, `NODE_BASE` |
 | npm dependencies | `package-lock.json` at the pinned commit for each of the five install contexts, installed with `npm ci` | the pinned tree |

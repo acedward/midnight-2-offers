@@ -116,7 +116,7 @@ services:
         # effectstream/mint-test-tokens `main` — the merge of PR #4, which publishes the
         # verified Preprod registry and the v2 (Midnight 2.x) issuer set. `main` is a LIVE
         # branch, so the pin is a full 40-hex commit and the image refuses anything shorter.
-        MINT_TEST_TOKENS_REF: '${MINT_TEST_TOKENS_REF:-7ecad008b07acb2a491d8291e05455cbd638910f}'
+        MINT_TEST_TOKENS_REF: '${MINT_TEST_TOKENS_REF:-a51cf3ad46520d1ded938fb86db8b7b99373ce56}'
         # NOT free choices: the two revisions frontend/client-artifacts.json pins at that
         # commit, which the frontend build reads history at. The image asserts the manifest
         # still names exactly these, so the args and the tree cannot drift apart silently.

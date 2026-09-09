@@ -44,7 +44,7 @@ Work down the list and stop at the first route that applies.
 | Compact (kernel + AA builds) | current compatible pin | direct official LFDT | unchanged by this policy |
 | Compact (shielded-night only) | `0.34.0` | official release asset, SHA-256 per arch | amd64 `775ccddf…`, arm64 `d3e292c4…` |
 | kernel, batcher, solver, AA, frontend, umbra-evm, Postgres, shielded-night | — | `source-build` | unchanged by this policy |
-| mint-test-tokens issuers + faucet site | commit `7ecad008…` | `source-build`, **no compiler** | the tracked `contracts/v2/managed/` at that commit |
+| mint-test-tokens issuers + faucet site | commit `a51cf3ad…` | `source-build`, **no compiler** | the tracked `contracts/v2/managed/` at that commit |
 | AA Manager `execute` ZKIR + keys | minocrab release `v0.2.0` | `published-release-asset` (`sources[]`) | `sha256(SHA256SUMS)` `4a8c0183…` |
 
 Full digests, asset ids, member hashes, and per-platform manifest/config/layer digests live

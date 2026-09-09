@@ -90,7 +90,7 @@ ARG KERNEL_REF=5d794f9a27f6d65529bf176650405f740531d430
 # them on the PLAIN proof server (they are zkir-v2 / [v6], like the offer-files
 # artifact they replace).
 ARG MINT_TEST_TOKENS_REPO=https://github.com/effectstream/mint-test-tokens.git
-ARG MINT_TEST_TOKENS_REF=7ecad008b07acb2a491d8291e05455cbd638910f
+ARG MINT_TEST_TOKENS_REF=a51cf3ad46520d1ded938fb86db8b7b99373ce56
 # EMPTY ON PURPOSE — see the TOOLCHAIN FIDELITY note above.
 ARG COMPACT_VERSION=
 
