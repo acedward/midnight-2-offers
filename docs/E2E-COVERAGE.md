@@ -177,16 +177,34 @@ Every step's console output is also written to `.ci-logs/<project>/NN-<step>.log
 
 ## What each new step buys, and what it costs
 
+Measured on one cold `--all` run (Apple silicon, every image rebuilt, 2 257 s end to end):
+
 | Step | Why it exists | Measured cost |
 |---|---|---|
-| `verify-e2e-coverage.sh` (step 1) | the whole point: a new service, or a renamed assertion, cannot silently un-cover anything | < 2 s, offline |
-| `verify-oneshots.sh` (step 4d) | 13 one-shots were asserted by exit code alone | a few seconds — it only reads `docker logs` |
-| `verify-aa.sh --mint` (step 4a) | PR-B's claim that the AA console mints through the **local mint-test-tokens issuers** was proven by hand in a browser and by nothing else. This drives the console's own HTTP API — the exact path the page uses — and then reads the **Manager's ledger balances** back | ~4–6 min (one `execute` proof to register, then two mint+deposit cycles) |
-| `verify-faucet.sh --mint` (step 4a) | `faucet-mint-test` never ran in the gate, and with it nothing ever asked the plain `proof-server` for a proof | ~60 s |
-| `verify-spa-roundtrip.sh` (step 4e) | the batcher's **`midnight-balancer`** target — the sponsored take — is reachable from no other step. The poster only exercises the `celestia` target | ~4–8 min |
-| `aa-e2e.sh` (step 4f) | the EVM-signed `execute` path had no gate at all | ~6–9 min (plus one `:e2e` image build on a cold host) |
-| the `prices` anti-skip gate (step 2) | `up.sh --all` drops `prices` with no key and `verify.sh` then skips the section, so a whole profile could vanish from a green run (infra issue 00013 produced exactly that) | free |
-| the `fund` compose one-shot (step 3b) | `fund-wallet.sh` reaches the toolkit through `docker run`, so the `fund` **service** had no caller anywhere | ~40–60 s (one wallet) |
+| `verify-e2e-coverage.sh` (step 1) | the whole point: a new service, or a renamed assertion, cannot silently un-cover anything | **< 2 s**, offline (step 1 is 20 s in total) |
+| `verify-oneshots.sh` (step 4d) | 13 one-shots were asserted by exit code alone | **2 s** — it only reads `docker logs` |
+| `verify-aa.sh --mint` (step 4a) | PR-B's claim that the AA console mints through the **local mint-test-tokens issuers** was proven by hand in a browser and by nothing else. This drives the console's own HTTP API — the exact path the page uses — and then reads the **Manager's ledger balances** back | **156 s** (64 s of it is the one `execute` proof to register; then two mint+deposit cycles) |
+| `verify-faucet.sh --mint` (step 4a) | `faucet-mint-test` never ran in the gate, and with it nothing ever asked the plain `proof-server` for a proof | **~60 s** |
+| `verify-spa-roundtrip.sh` (step 4e) | the batcher's **`midnight-balancer`** target — the sponsored take — is reachable from no other step. The poster only exercises the `celestia` target | **54 s** (a warm chain; two proving rounds and a Celestia round trip) |
+| `aa-e2e.sh` (step 4f) | the EVM-signed `execute` path had no gate at all | **331 s**, including the `:e2e` image build. Four `execute` proofs at ~59 s each |
+| the `prices` anti-skip gate (step 2) | `up.sh --all` drops `prices` with no key and `verify.sh` then skips the section, so a whole profile could vanish from a green run (infra issue 00013 produced exactly that) | **free** |
+| the `fund` compose one-shot (step 3b) | `fund-wallet.sh` reaches the toolkit through `docker run`, so the `fund` **service** had no caller anywhere | **34 s** (one probe wallet) |
+
+Whole-run step table from that run:
+
+| step | result | seconds | what ran |
+|---|---|---|---|
+| 1 | pass | 20 | offline artifact gates + e2e coverage matrix |
+| 2 | pass | 666 | `up --build --all` |
+| 3 | pass | 256 | fund the demo and mnemonic wallets |
+| 3b | pass | 34 | the `fund` compose one-shot (one probe wallet) |
+| 4a | pass | 841 | `verify.sh --aa-mint --faucet-mint` (every profile section) |
+| 4b | pass | 9 | verify exact baked source pins |
+| 4c | pass | 30 | `verify-wallets.sh --include-script-funded` |
+| 4d | pass | 2 | one-shot output assertions |
+| 4e | pass | 54 | spa round trip: take through the batcher, then make |
+| 4f | pass | 331 | `aa-e2e.sh` |
+| | | **2 257** | TOTAL, cold, every image rebuilt |
 
 ## Deliberate non-coverage
 
