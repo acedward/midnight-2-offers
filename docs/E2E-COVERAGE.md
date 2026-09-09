@@ -154,12 +154,12 @@ Every step's console output is also written to `.ci-logs/<project>/NN-<step>.log
 | Service | Kind | Gate step | Script | Assertion |
 |---|---|---|---|---|
 | `shielded-night-fund` | one-shot | 4d | `scripts/verify-oneshots.sh` | OUTPUT: `/both shielded-night wallets are funded and fee-capable/` in its own logs, after `exited 0` |
-| `shielded-night-deploy` | one-shot | 4d | `scripts/verify-oneshots.sh` | OUTPUT: `/published .*/contract\.json/` in its own logs, after `exited 0` |
+| `shielded-night-deploy` | one-shot | 4d | `scripts/verify-oneshots.sh` | OUTPUT: `/(published\|JOIN:) .*/contract\.json/` in its own logs, after `exited 0` |
 | ↳ |  | 4a verify.sh | `scripts/verify-shielded-night.sh` | `deploy volume carries contract` **·B** |
 | `shielded-night` | service | 4a verify.sh | `scripts/verify-shielded-night.sh` | `/config.js selects the 2.x adapter for the local network (UNDEPLOYED_PROTOCOL)` **·B** |
 | ↳ |  | 4a verify.sh | `scripts/verify-shielded-night.sh` | `artifacts served as non-empty binary` **·B** |
 | ↳ |  | 4a verify.sh | `scripts/verify-shielded-night.sh` | `both round trips completed with exact balance assertions` **·B** |
-| `shielded-night-register` | one-shot | 4d | `scripts/verify-oneshots.sh` | OUTPUT: `/OK: SNIGHT = [0-9a-f]{64}/` in its own logs, after `exited 0` |
+| `shielded-night-register` | one-shot | 4d | `scripts/verify-oneshots.sh` | OUTPUT: `/OK: SNIGHT (=\|already names) [0-9a-f]{64}/` in its own logs, after `exited 0` |
 | ↳ |  | 4a verify.sh | `scripts/verify-shielded-night.sh` | `GET /v1/known-tokens names SNIGHT` **·B** |
 | `shielded-night-verify` | on-demand | 4a verify.sh | `scripts/verify-shielded-night.sh` | `11/11 circuits verified on chain against the served keys` **·B** |
 
