@@ -43,6 +43,7 @@ import { Transaction } from "@midnightntwrk/ledger-v9";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
 import { MidnightBech32m, ShieldedAddress, UnshieldedAddress } from "@midnightntwrk/wallet-sdk-address-format";
+import { parseMidnightBech32m } from "./midnight-bech32m.ts";
 
 import { deriveAccountId, buildEthSignTypedDataV4Request, computeDigest } from "/aa/aalib/codec.js";
 import { prepareEvmExecute } from "/aa/aalib/manager.js";
@@ -781,7 +782,7 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     let coinPk: string, encPk: unknown, coinPkRaw: unknown, label: string;
     if (to) {
       if (!to.startsWith("mn_shield-addr")) throw new Error("recipient must be a mn_shield-addr… address for a shielded withdraw");
-      const dec: any = MidnightBech32m.parse(to).decode(ShieldedAddress as any, midnightNetworkConfig.id as any);
+      const dec: any = parseMidnightBech32m(to).decode(ShieldedAddress as any, midnightNetworkConfig.id as any);
       coinPk = String(dec.coinPublicKeyString()).toLowerCase();
       coinPkRaw = coinPk;
       encPk = String(dec.encryptionPublicKeyString()).toLowerCase();
@@ -860,7 +861,7 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     } else if (/^0x?[0-9a-f]{64}$/i.test(r)) {
       recipient32 = r.replace(/^0x/, "").toLowerCase();
     } else {
-      const parsed = MidnightBech32m.parse(r);
+      const parsed = parseMidnightBech32m(r);
       recipient32 = toHex(Uint8Array.prototype.slice.call(parsed.data, 0, 32));
     }
     const wdToken = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
@@ -1106,10 +1107,10 @@ function sendJob(tokenNameArg: string | undefined, amount: bigint, to: string): 
     let receiver: any;
     if (token.family === "shielded") {
       if (!to.startsWith("mn_shield-addr")) throw new Error(`${token.name} is SHIELDED — the recipient must be a mn_shield-addr… address`);
-      receiver = MidnightBech32m.parse(to).decode(ShieldedAddress as any, netId);
+      receiver = parseMidnightBech32m(to).decode(ShieldedAddress as any, netId);
     } else {
       if (!to.startsWith("mn_addr")) throw new Error(`${token.name} is UNSHIELDED — the recipient must be a mn_addr… address`);
-      receiver = MidnightBech32m.parse(to).decode(UnshieldedAddress as any, netId);
+      receiver = parseMidnightBech32m(to).decode(UnshieldedAddress as any, netId);
     }
     await withProveRetry(j, "send", () => session("send", async (walletResult) => {
       // 1. mint to the funder wallet itself…
