@@ -75,16 +75,16 @@
       "pinnedIn": "{files:SHIELDED_NIGHT_REF}"
     },
     {
-      "component": "**AA-v3** — Manager + Minter contracts, relay",
-      "source": "[`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3) `main`; compiled in-image with the kernel's compactc 0.34.0",
-      "pin": "{commit:AA_REF@acedward/AA-midnight-evm-experiment-v3}",
-      "pinnedIn": "{files:AA_REF}"
+      "component": "**Passport accounts** — account contract, ERC20 vault, client",
+      "source": "[`acedward/passport`](https://github.com/acedward/passport) `00034-passport-evm-account-zswap`; the whole call tree compiled in-image with the kernel's compactc 0.34.0",
+      "pin": "{commit:PASSPORT_REF@acedward/passport}",
+      "pinnedIn": "{files:PASSPORT_REF}"
     },
     {
-      "component": "AA `execute` circuit (MinoCrab, k=18)",
-      "source": "[`acedward/AA-midnight-evm-experiment-minocrab`](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release `{full:MINOCRAB_RELEASE}`; default `AA_ZKIR_SOURCE=minocrab`, unaudited compiler, dev chains only",
-      "pin": "{commit:MINOCRAB_REF@acedward/AA-midnight-evm-experiment-minocrab} · `sha256(SHA256SUMS)` {ref:MINOCRAB_SUMS_SHA256}",
-      "pinnedIn": "{files:MINOCRAB_REF,MINOCRAB_SUMS_SHA256}"
+      "component": "Signet protocol module (two `.compact` sources)",
+      "source": "[`@sig-net/midnight`](https://www.npmjs.com/package/@sig-net/midnight) `{full:SIGNET_PKG_VERSION}` — the npm tarball, fetched by URL and verified by SHA-256; no npm runs in the compile stage",
+      "pin": "`sha256(tarball)` {ref:SIGNET_PKG_SHA256}",
+      "pinnedIn": "{files:SIGNET_PKG_VERSION,SIGNET_PKG_SHA256}"
     },
     {
       "component": "AA web console",

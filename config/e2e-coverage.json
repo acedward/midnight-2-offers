@@ -141,7 +141,6 @@
         }
       ]
     },
-
     {
       "service": "evm-migrate",
       "fragment": "compose/evm.yml",
@@ -205,7 +204,6 @@
         }
       ]
     },
-
     {
       "service": "celestia",
       "fragment": "compose/offerfiles.yml",
@@ -271,7 +269,6 @@
         }
       ]
     },
-
     {
       "service": "poster-fund",
       "fragment": "compose/poster.yml",
@@ -313,7 +310,6 @@
         }
       ]
     },
-
     {
       "service": "price-feed",
       "fragment": "compose/prices.yml",
@@ -342,26 +338,26 @@
         }
       ]
     },
-
     {
       "service": "aa-proof-server",
       "fragment": "compose/aa.yml",
       "profile": "aa",
       "kind": "service",
-      "why": "the EXPERIMENTAL zkir-v3 [v7] prover. Only the AA contract circuits go here; the wallet's own pieces go to the plain one.",
+      "why": "the EXPERIMENTAL zkir-v3 [v7] prover. Every PASSPORT circuit is compiled --feature-zkir-v3, so every account, vault and singleton call is proved here; the wallet's own standard-lane pieces go to the plain one.",
       "checks": [
         {
           "step": "4a verify.sh",
           "script": "scripts/verify-aa.sh",
-          "assertion": "artifact complete: addresses + both colours + both mint txs",
+          "assertion": "deploy receipt complete: vault + singleton + test faucet, initialised, fingerprinted",
           "behavioural": true,
-          "note": "both mints were proved through this server; a colour and a tx id are what that leaves behind."
+          "note": "the vault's `initialise` and both faucet mints were proved through this server; an initialise tx id and two colours are what that leaves behind."
         },
         {
           "step": "4f aa-e2e.sh",
           "script": "scripts/aa-e2e.sh",
-          "assertion": "four execute proofs",
-          "behavioural": true
+          "assertion": "register → fund → offer → settle → spend",
+          "behavioural": true,
+          "note": "five proofs, the heaviest the k=18 open-swap circuit."
         }
       ]
     },
@@ -370,7 +366,7 @@
       "fragment": "compose/aa.yml",
       "profile": "aa",
       "kind": "one-shot",
-      "why": "deploys the AA Manager and the test-support Minter on this chain and records them in /aa/out/aa-contracts.json.",
+      "why": "deploys the SHARED pieces every account needs before it can exist — the Signet singleton, the ERC20 vault (and its one-shot initialise) and the fork's test faucet — and records them, with each compiled bundle's artefact fingerprint, in /aa/out/aa-contracts.json.",
       "logPattern": "wrote /aa/out/aa-contracts.json",
       "checks": [
         {
@@ -381,8 +377,8 @@
         {
           "step": "4a verify.sh",
           "script": "scripts/verify-aa.sh",
-          "assertion": "manager zkir source",
-          "note": "WHICH compiler produced the circuits that are live, read out of the deploy receipt."
+          "assertion": "k recorded per circuit (measured at build time with the pinned zkir)",
+          "note": "k per proof-bearing circuit, measured in the image with the same zkir that produced the artefacts (spec User Story 4)."
         }
       ]
     },
@@ -391,8 +387,13 @@
       "fragment": "compose/aa.yml",
       "profile": "aa",
       "kind": "service",
-      "why": "browser EVM wallet -> relay -> Manager.execute. Its faucet buttons mint through the six LOCAL mint-test-tokens issuers.",
+      "why": "browser EVM wallet -> relay -> the user's OWN account contract. `register` deploys one; the faucet buttons mint through the six LOCAL mint-test-tokens issuers.",
       "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-aa.sh",
+          "assertion": "aa-console runs the per-user Passport account model"
+        },
         {
           "step": "4a verify.sh",
           "script": "scripts/verify-aa.sh",
@@ -401,13 +402,12 @@
         {
           "step": "4a verify.sh --aa-mint",
           "script": "scripts/verify-aa.sh",
-          "assertion": "console mint: one shielded and one unshielded token minted through the local issuers and deposited",
+          "assertion": "console: an account registered, one shielded and one unshielded token deposited into it",
           "behavioural": true,
-          "note": "drives the console's OWN HTTP API — /api/prepare, /api/submit, /api/fund, /api/fund-shielded — and then asserts the Manager's ledger balances through /api/pure."
+          "note": "drives the console's OWN HTTP API — /api/prepare (an EIP-191 enrolment), /api/submit, /api/fund, /api/fund-shielded — and then asserts the account's ledger and this console's coin store through /api/accounts."
         }
       ]
     },
-
     {
       "service": "faucet-fund",
       "fragment": "compose/faucet.yml",
@@ -588,7 +588,6 @@
         }
       ]
     },
-
     {
       "service": "frontend",
       "fragment": "compose/frontend.yml",
@@ -617,7 +616,6 @@
         }
       ]
     },
-
     {
       "service": "shielded-night-fund",
       "fragment": "compose/shielded-night.yml",
@@ -718,7 +716,6 @@
         }
       ]
     },
-
     {
       "service": "solver-sink",
       "fragment": "compose/solver.yml",

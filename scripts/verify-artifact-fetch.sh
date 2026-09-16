@@ -136,25 +136,18 @@ for c in celestia-appd celestia-node; do
   done
 done
 
-# The AA image's MinoCrab release pins. Same rule as the warehouse images: the ARG
-# default is what a clean clone builds with, so it — not the matrix alone, and not a
-# comment — is what has to agree. `MINOCRAB_SUMS_SHA256` is the load-bearing one: it is
-# the SHA-256 of the release's SHA256SUMS, and therefore the identity of all 38 files.
-MINOCRAB_URL_TEMPLATE="$(pin 'sources[minocrab-release].downloadUrlTemplate')"
-expect "aa MINOCRAB_RELEASE"     "$(pin 'sources[minocrab-release].releaseTag')" \
-                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_RELEASE)"
-expect "aa MINOCRAB_REF"         "$(pin 'sources[minocrab-release].commit')" \
-                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_REF)"
-expect "aa MINOCRAB_SUMS_SHA256" "$(pin 'sources[minocrab-release].checksums.assetSha256')" \
-                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_SUMS_SHA256)"
-expect "aa MINOCRAB_REPO"        "${MINOCRAB_URL_TEMPLATE%%/releases/download/*}" \
-                                 "$(dockerarg "$AA_DIR/Dockerfile" MINOCRAB_REPO)"
-# The release's manifest states which CONTRACT its keys are for, and the build asserts it
-# equals AA_REF. If the matrix and the Dockerfile disagreed about AA_REF, that assertion
-# would be checking one repository's claim against the other's typo.
-expect "aa AA_REF vs the release's contract pin" \
-                                 "$(pin 'sources[minocrab-release].contractCommit')" \
-                                 "$(dockerarg "$AA_DIR/Dockerfile" AA_REF)"
+# ⚠ NOTHING TO CHECK FOR THE aa IMAGE HERE SINCE PROJECT 00034, and that is a real change
+# rather than a deletion. This block used to compare the aa Dockerfile's MinoCrab ARG
+# defaults against `sources[minocrab-release]` in the matrix — a published release of
+# PRE-BUILT ZK key material for the AA-v3 Manager, taken by hash because rebuilding it was
+# impossible without the pinned compactc archive, the SRS for each k and a keygen run.
+#
+# The Manager is retired and the image COMPILES every contract it deploys, so there is no
+# pre-built key material left in this repository to take by hash. The one external artefact
+# the aa image still downloads is the `@sig-net/midnight` npm tarball, and only for two
+# `.compact` SOURCE files — which makes it a SOURCE pin, like PASSPORT_REF, not a matrix
+# entry. `scripts/verify-pin-defaults.sh` owns it (HASH_PINS), the image verifies the
+# download against it, and the matrix's `sources[]` is empty with its note saying why.
 
 # ── static: the Celestia official-equality record ────────────────────────────
 log "static: images/celestia/official-equality.tsv vs the matrix"
