@@ -92,7 +92,9 @@ ARG SIGNET_PKG_SHA256=0e7414d52b225e31def3d776cae376ff1e6c2bf7b592f02dc422b5bb6f
 #   mint_shielded / mint_unshielded        the fork's TEST FAUCET, which replaces AA-v3's
 #                                          test Minter as the source of the e2e's colours
 # `AA_WITH_BRIDGE=1` adds the five bridge circuits and the vault's flow circuits.
-ARG AA_PROVER_KEYS="activate_initial_device_with_evm deposit_shielded deposit_unshielded withdraw_shielded_with_evm withdraw_unshielded_with_evm withdraw_shielded_to_contract_with_evm append_inbox_with_evm open_swap_shielded_with_evm initialise mint_shielded mint_unshielded mint_unshielded_to_contract"
+# EMPTY means "the default list", which lives in the prune step below rather than here so
+# that compose can pass `${AA_PROVER_KEYS:-}` without silently pruning everything.
+ARG AA_PROVER_KEYS=
 ARG AA_WITH_BRIDGE=0
 
 # ── stage 1: the sources ─────────────────────────────────────────────────────
@@ -302,7 +304,11 @@ RUN set -eux; \
 ARG AA_PROVER_KEYS
 ARG AA_WITH_BRIDGE
 RUN set -eux; \
-    keep="${AA_PROVER_KEYS}"; \
+    DEFAULT_KEYS="activate_initial_device_with_evm deposit_shielded deposit_unshielded \
+withdraw_shielded_with_evm withdraw_unshielded_with_evm withdraw_shielded_to_contract_with_evm \
+append_inbox_with_evm open_swap_shielded_with_evm initialise \
+mint_shielded mint_unshielded mint_unshielded_to_contract"; \
+    keep="${AA_PROVER_KEYS:-$DEFAULT_KEYS}"; \
     if [ "${AA_WITH_BRIDGE:-0}" = "1" ]; then \
       keep="$keep bridge_deposit_start_with_evm bridge_deposit_complete bridge_withdraw_start_with_evm bridge_withdraw_complete bridge_withdraw_refund"; \
       keep="$keep startDeposit completeDeposit abandonDeposit startWithdraw completeWithdraw refundWithdraw signBidirectional"; \
@@ -452,6 +458,58 @@ RUN bun -e ' \
   } \
   writeFileSync("/aa/.artefact-fingerprints.json", JSON.stringify(out, null, 2) + "\n"); \
   for (const [n, v] of Object.entries(out)) console.log(`${n} fingerprint ${v.fingerprint} (${v.verifierKeys} verifier keys, ${v.provers.length} prover keys kept)`);'
+
+# ── k per proof-bearing circuit, measured with the compiler's OWN zkir ───────
+# `k` is the log2 of a circuit's constraint domain and decides the proving-key size: a
+# circuit that crosses a power of two doubles its key, and at k=20 a key passes 2 GiB and
+# Node's readFile refuses it outright. Spec User Story 4 asks for it to be RECORDED, and the
+# only honest place to measure it is here, in the image, with the same pinned `zkir-v3` that
+# produced these artefacts — measuring one compiler's output with another compiler's zkir is
+# meaningless. `mock-compile` generates no key and touches nothing: each `.zkir` is copied to
+# a scratch directory first.
+#
+# It runs LAST so that a re-measure never invalidates the 33-circuit compile above.
+RUN set -eux; \
+    out=/aa/.circuit-k.json; \
+    tmp=$(mktemp -d); \
+    printf '{\n  "measuredBy": "zkir-v3 mock-compile",\n  "compiler": "%s",\n  "bundles": {' \
+      "$(cat /opt/compactc-version)" > "$out"; \
+    first_bundle=1; \
+    for bundle in /aa/passport/contracts/managed/account \
+                  /aa/passport/contracts/managed/faucet \
+                  /aa/passport/contracts/erc20-vault/managed/Erc20Vault \
+                  /aa/passport/contracts/erc20-vault/managed/SignetSigner; do \
+      [ -d "$bundle/zkir" ] || continue; \
+      name=$(basename "$bundle"); \
+      [ "$first_bundle" = "1" ] || printf ',' >> "$out"; first_bundle=0; \
+      printf '\n    "%s": {' "$name" >> "$out"; \
+      first=1; \
+      for f in "$bundle"/zkir/*.zkir; do \
+        [ -e "$f" ] || continue; \
+        c=$(basename "$f" .zkir); \
+        cp "$f" "$tmp/"; \
+        m=$(cd "$tmp" && /opt/compactc/zkir-v3 mock-compile "$c.zkir" 2>&1 | grep -oE '\(k=[0-9]+, rows=[0-9]+\)' | head -1); \
+        k=$(printf '%s' "$m" | sed -E 's/.*k=([0-9]+).*/\1/'); \
+        rows=$(printf '%s' "$m" | sed -E 's/.*rows=([0-9]+).*/\1/'); \
+        prover=0; [ -f "$bundle/keys/$c.prover" ] && prover=$(stat -c %s "$bundle/keys/$c.prover"); \
+        verifier=0; [ -f "$bundle/keys/$c.verifier" ] && verifier=$(stat -c %s "$bundle/keys/$c.verifier"); \
+        [ "$first" = "1" ] || printf ',' >> "$out"; first=0; \
+        printf '\n      "%s": { "k": %s, "rows": %s, "proverBytes": %s, "verifierBytes": %s }' \
+          "$c" "${k:-0}" "${rows:-0}" "$prover" "$verifier" >> "$out"; \
+        rm -f "$tmp/$c.zkir"; \
+      done; \
+      printf '\n    }' >> "$out"; \
+    done; \
+    printf '\n  }\n}\n' >> "$out"; \
+    rm -rf "$tmp"; \
+    # ONE flat view for consumers that do not care which bundle a circuit came from.
+    bun -e 'const j = await Bun.file("/aa/.circuit-k.json").json(); \
+      const flat = {}; for (const b of Object.values(j.bundles)) Object.assign(flat, b); \
+      j.circuits = flat; await Bun.write("/aa/.circuit-k.json", JSON.stringify(j, null, 2) + "\n"); \
+      const rows = Object.entries(flat).sort((a, b) => b[1].k - a[1].k); \
+      console.log(`${rows.length} proof-bearing circuits; heaviest ${rows[0][0]} k=${rows[0][1].k} rows=${rows[0][1].rows}`); \
+      console.log(`prover keys kept: ${rows.filter((r) => r[1].proverBytes > 0).length}, ` + \
+        `${(rows.reduce((a, r) => a + r[1].proverBytes, 0) / 1e9).toFixed(2)} GB`);'
 
 RUN printf '%s\n' \
       '#!/bin/bash' \

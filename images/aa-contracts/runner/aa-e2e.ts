@@ -1,382 +1,425 @@
-// aa-e2e.ts — end-to-end test of the EVM-signed AA path on the demo stack:
+// aa-e2e.ts — the headless end-to-end proof that this stack runs on PASSPORT ACCOUNTS.
 //
-//   EVM wallet (MetaMask's real V4 signer) → relay (this runner: proves, submits,
-//   pays fees from a Midnight wallet) → AA Manager `execute` → Midnight chain.
+//   an Ethereum key (the code path MetaMask executes, minus the extension)
+//     → register   deploy + activate ONE ACCOUNT CONTRACT for that key
+//     → fund       mint a shielded coin, deposit it with its inbox entry, capture it
+//     → offer      prove `open_swap_shielded_with_evm` and STOP (the offer is the artefact)
+//     → settle     a taker with no maker key funds the want leg and submits — the solver
+//                  when the kernel is up, our own taker wallet otherwise
+//     → spend      the account spends the coin it received, from its own custody
 //
-// Flow, against the ALREADY-DEPLOYED contracts from aa-contracts.json:
-//   1. register two EVM accounts (selector 1) — authorized purely by EIP-712
-//      signatures from their EOAs; the relay wallet has no authority of its own.
-//   2. mint fresh unshielded tokens to the relay wallet (Minter).
-//   3. depositUnshielded — credit alice's AA account inside the Manager.
-//   4. transferInternalUnshielded alice → bob (selector 5), signed by alice.
-//   5. assert every step from LEDGER STATE read through the indexer.
+// Spec User Story 3, SC-005. Run it with `scripts/aa-e2e.sh` against a stack brought up
+// with the `aa` profile.
 //
-// Signing fidelity: payloads, frozen hashes and digests come from the AA repo's
-// own tests/lib (baked at /aa/aalib); signatures from @metamask/eth-sig-util's
-// signTypedData V4 — the code path a real MetaMask executes.
+// ⚠ WHAT THIS REPLACED. The previous version drove the AA-v3 Manager: register ×2 → mint →
+// deposit → INTERNAL TRANSFER → withdraw, four proofs of one `execute` gateway. Two of
+// those steps no longer exist. There is no shared Manager to register INTO (register now
+// DEPLOYS a contract, Q40), and there are no internal transfers, because both accounts used
+// to be rows in one contract's balance map and are now separate contracts (Q41). What
+// replaced them is the thing this stack is actually for: an offer a stranger settles.
 //
-// THREE OPERATIONAL RULES, each measured live (see the master plan's T7.5):
-//   * DEADLINE HORIZON — an EVM action's validUntil may sit at most 3600 s past
-//     block time; the e2e uses now+1800 s.
-//   * ONE FACADE PER TRANSACTION — a facade that has signed several txs in one
-//     session eventually attaches a piece the aa profile's experimental proof
-//     server rejects at /check ("zswap-cc[v1] inputs did not match alignment",
-//     runs 2–7: always the session's 5th tx, never the first four; the deploy
-//     runner — fresh wallet per operation — never failed once). Fresh facades
-//     also sidestep the stale-DUST error-170 class the kernel e2e met.
-//   * SHIELDED-FREE RELAY — the relay seed is faucet-funded with unshielded
-//     NIGHT + DUST only (scripts/aa-e2e.sh), so wallet balancing can never
-//     select a standard-lane shielded coin into an experimental-checked tx.
+// FIVE PROPERTIES THIS RUN ASSERTS, each of which failed at least once while it was written:
+//   1. the account id is the CONTRACT ADDRESS, and it exists only after wave 1 lands;
+//   2. a deposited coin is discoverable ONLY through its inbox entry — the walk is run
+//      against chain state, not against what the depositor happened to remember;
+//   3. the offer artefact carries no DUST and all its legs in ONE segment (Q39), which is
+//      what makes a stranger able to settle it;
+//   4. the settlement is submitted by a wallet that holds no key of the account's;
+//   5. afterwards the account can SPEND what it received — the coin is real custody, not a
+//      number in a map.
 //
-// Needs the :e2e image variant (AA_PRUNE_MANAGER_PROVERS=0): calling `execute`
-// proves it locally, so the Manager's proving key must be in the image.
-//
-// WHICH `execute` — and how long it took — is recorded, not assumed. The report
-// carries the zkir-source receipt (which compiler, which release, which k) and the
-// wall time of every `execute` proof, so a run with the MinoCrab default and a run
-// with `AA_ZKIR_SOURCE=compactc` are directly comparable and each number says which
-// artifact produced it.
+// THREE OPERATIONAL RULES, each measured live (master plan T7.5) and all still in force:
+//   * ONE FACADE PER TRANSACTION — every step opens and closes its own wallet;
+//   * a SHIELDED-FREE relay wallet for the fee-paying side (scripts/aa-e2e.sh funds it with
+//     unshielded NIGHT + DUST only), so balancing can never pull a standard-lane shielded
+//     coin into a transaction the experimental proof server checks;
+//   * short transaction TTLs, because node 2.1.0 dismisses a fee calculation made too far
+//     ahead of the block it lands in.
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { zkirSourceReceipt, zkirSourceLine } from "/aa/runner/zkir-source.ts";
-import { resolve } from "node:path";
+import "./passport-env.ts";
+
+import { writeFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import * as Rx from "rxjs";
-import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
-import { CompiledContract } from "@midnight-ntwrk/compact-js";
-import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import {
-  buildWalletFacade,
-  registerNightForDust,
-  configureMidnightNodeProviders,
-} from "@effectstream/midnight-contracts";
-import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
-import { MidnightBech32m } from "@midnightntwrk/wallet-sdk-address-format";
 
-import { deriveAccountId } from "/aa/aalib/codec.js";
-import { prepareEvmExecute } from "/aa/aalib/manager.js";
-import { metamaskSign } from "/aa/aalib/metamask.js";
-import { addressForPrivateKey } from "/aa/aalib/signature.js";
-import type { Hex20, Hex32 } from "/aa/aalib/bytes.js";
-import type { RegisterEvmAccount, TransferAction } from "/aa/aalib/schema.js";
+import { CompiledContract } from "@midnight-ntwrk/compact-js";
+import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
+import { Transaction } from "@midnightntwrk/ledger-v9";
+import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
+
+import * as FaucetModule from "../passport/contracts/managed/faucet/contract/index.js";
+import { CustodyAccount, deployEvmAccount } from "../passport/src/wallet/account.js";
+import { EvmDevice } from "../passport/src/wallet/signer.js";
+import { generateEncKeyPair, sealInboxEntry } from "../passport/src/wallet/inbox.js";
+import { depositAsThirdParty, inboxWalkPortable } from "../passport/src/wallet/deposit.js";
+import { candidateIndices } from "../passport/src/wallet/capture.js";
+import {
+  freshWantNonce,
+  offerAuthArgs,
+  offerInboxEntries,
+  predictChangeCoin,
+  signOpenSwapOffer,
+  RECIPIENT_OPEN,
+  type OfferCallArgs,
+} from "../passport/src/wallet/offer.js";
+
+import { buildKernelOffer } from "./aa-offer.ts";
+import {
+  ARTEFACTS,
+  BUILD,
+  CONFIG,
+  PASSPORT_ROOT,
+  SWAP_CIRCUIT,
+  consoleAccountCircuits,
+  consoleCompiledAccount,
+  consoleWaves,
+  createWallet,
+  hexToBytes,
+  providersFor,
+  randomBytes32,
+  readArtifact,
+  toHex,
+  zkConfigPath,
+} from "./passport.ts";
 
 const TAG = "[aa-e2e]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
-(globalThis as any).WebSocket = WebSocket;
 
-const AA_ROOT = "/aa";
-const WALLET_PROOF = process.env["AA_WALLET_PROOF_SERVER_URL"] ?? "http://proof-server:6300";
-const E2E_SEED = process.env["AA_E2E_SEED"] ?? midnightNetworkConfig.walletSeed;
-const artifact = JSON.parse(readFileSync("/aa/out/aa-contracts.json", "utf-8"));
-const MANAGER = artifact.manager.address as string;
-const MINTER = artifact.minter.address as string;
+const KERNEL_URL = process.env["AA_KERNEL_URL"] ?? "http://kernel:9999";
+const OUT = "/aa/out/aa-e2e.json";
+const FAUCET_ZK_PATH = `${PASSPORT_ROOT}/contracts/managed/faucet`;
 
-const toHex = (u: Uint8Array): string =>
-  Array.from(u, (x) => x.toString(16).padStart(2, "0")).join("");
-const hexToBytes = (h: string): Uint8Array => {
-  const c = h.replace(/^0x/, "");
-  return new Uint8Array(c.match(/.{2}/g)!.map((x) => parseInt(x, 16)));
-};
-const manager32 = (`0x` + MANAGER.replace(/^0x/, "").slice(0, 64)) as Hex32;
+// The fee-paying wallet (funded unshielded-only by scripts/aa-e2e.sh) and the TAKER, a
+// second wallet that holds the want colour and no key of the account's.
+const E2E_SEED = process.env["AA_E2E_SEED"]
+  ?? "e2ee2e0000000000000000000000000000000000000000000000000000e2ee2e";
+const TAKER_SEED = process.env["AA_TAKER_SEED"]
+  ?? "7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e";
+// A deterministic Ethereum key: the e2e's "MetaMask". Public by design, like every seed here.
+const OWNER_KEY = hexToBytes(
+  process.env["AA_E2E_OWNER_KEY"]?.replace(/^0x/, "") ?? `${"a11ce".padStart(60, "0")}beef`,
+);
 
-// Two dev EOAs — the "frontend EVM wallets". Public dev keys, throwaway chain.
-const ALICE_KEY = ("0x" + "a11ce".padStart(64, "1")) as Hex32;
-const BOB_KEY = ("0x" + "b0b".padStart(64, "2")) as Hex32;
-const ALICE = addressForPrivateKey(ALICE_KEY) as Hex20;
-const BOB = addressForPrivateKey(BOB_KEY) as Hex20;
-// Random salts per run: account id = hash(tag, manager, owner, salt), so fresh
-// salts give each run fresh accounts on a living chain (fixed salts trip the
-// Manager's duplicate-registration assert on the second run).
-const randSalt = (): Hex32 => {
-  const b = crypto.getRandomValues(new Uint8Array(32));
-  return ("0x" + toHex(b)) as Hex32;
-};
-const ALICE_SALT = randSalt();
-const BOB_SALT = randSalt();
-const ALICE_ID = deriveAccountId(manager32, ALICE, ALICE_SALT);
-const BOB_ID = deriveAccountId(manager32, BOB, BOB_SALT);
-// Deadline horizon rule — see header.
-const DEADLINE = BigInt(Math.floor(Date.now() / 1000) + 1800);
+const GIVE = BigInt(process.env["AA_E2E_GIVE"] ?? "4");
+const WANT = BigInt(process.env["AA_E2E_WANT"] ?? "7");
+const MINT = BigInt(process.env["AA_E2E_MINT"] ?? "1000");
 
-const DEPOSIT = 600_000n;
-const TRANSFER = 250_000n;
-const WITHDRAW = 50_000n;
+const artifact = readArtifact();
+if (!artifact) throw new Error("/aa/out/aa-contracts.json is missing — bring the stack up with ./up.sh --with aa");
+const VAULT_ADDRESS: string | undefined = artifact.vault?.address;
+const FAUCET_ADDRESS: string = artifact.testFaucet?.address;
+const COLOURS = artifact.testFaucet?.colours ?? {};
+if (!FAUCET_ADDRESS || !COLOURS["shielded-a"] || !COLOURS["shielded-b"]) {
+  throw new Error("the deploy receipt carries no test-faucet colours — is this an old aa-contracts.json?");
+}
+const GIVE_COLOUR = String(COLOURS["shielded-a"].color);
+const GIVE_DOMAIN = hexToBytes(String(COLOURS["shielded-a"].domain));
+const WANT_COLOUR = String(COLOURS["shielded-b"].color);
+const WANT_DOMAIN = hexToBytes(String(COLOURS["shielded-b"].domain));
 
-const DEV_OWNER_SECRET = (() => {
-  const b = new TextEncoder().encode("demo-infra:aa:dev-owner-secret");
-  const o = new Uint8Array(32);
-  o.set(b);
-  return o;
-})();
-const managerWitnesses = {
-  localOwnerSecret: ({ privateState }: { privateState: unknown }) => [privateState, DEV_OWNER_SECRET],
-};
+const steps: Record<string, unknown> = {};
+const t0 = Date.now();
+let stepStart = Date.now();
+function step(name: string) {
+  log("");
+  log(`── ${name} ──`);
+  stepStart = Date.now();
+}
+const took = () => Math.round((Date.now() - stepStart) / 1000);
 
-const loadContract = async (name: string) =>
-  await import(resolve(AA_ROOT, name, "src", "managed", "contract", "index.js"));
-
-/** One facade per transaction — see the header. Builds, syncs, runs, stops. */
-async function session<T>(label: string, fn: (walletResult: any) => Promise<T>): Promise<T> {
-  const walletResult = await buildWalletFacade(
-    {
-      id: midnightNetworkConfig.id,
-      indexer: midnightNetworkConfig.indexer,
-      indexerWS: midnightNetworkConfig.indexerWS,
-      node: midnightNetworkConfig.node,
-      proofServer: WALLET_PROOF,
-    } as any,
-    E2E_SEED,
-    midnightNetworkConfig.id as any,
-  );
-  const wallet = walletResult.wallet as any;
+async function session<T>(label: string, seed: string, fn: (ctx: any) => Promise<T>, requireFunds = true): Promise<T> {
+  const walletCtx: any = await createWallet(seed);
   try {
     await Rx.firstValueFrom(
-      wallet.state().pipe(
+      (walletCtx.wallet as any).state().pipe(
         Rx.filter((st: any) => {
-          const synced = st.isSynced ?? false;
-          const sh = st.shielded?.state?.progress?.isStrictlyComplete?.() ?? synced;
-          const un = st.unshielded?.progress?.isStrictlyComplete?.() ?? synced;
+          if (st.isSynced !== true) return false;
+          if (!requireFunds) return true;
           const bal = st.unshielded?.balances;
-          const total = bal
-            ? (bal instanceof Map ? [...bal.values()] : Object.values(bal)).reduce(
-                (a: bigint, v: any) => a + (v ?? 0n), 0n)
-            : 0n;
-          return sh && un && total > 0n;
+          const vals = bal ? (bal instanceof Map ? [...bal.values()] : Object.values(bal)) : [];
+          return (vals as any[]).reduce((a: bigint, v: any) => a + (v ?? 0n), 0n) > 0n;
         }),
-        Rx.timeout({ each: 180_000, with: () => Rx.throwError(() => new Error(`${label}: wallet sync timeout`)) }),
+        Rx.timeout({ each: 240_000, with: () => Rx.throwError(() => new Error(`${label}: wallet sync timeout`)) }),
       ),
     );
-    try { await registerNightForDust(walletResult as any); } catch { /* already registered */ }
-    return await fn(walletResult);
+    return await fn(walletCtx);
   } finally {
-    await wallet.stop?.().catch(() => {});
+    await (walletCtx.wallet as any).stop?.().catch(() => {});
   }
 }
 
-/** Join a deployed contract with a fresh providers set inside a session. */
-async function join(walletResult: any, name: string, address: string, witnesses: any, stateId: string) {
-  const Mod = await loadContract(name);
-  const zkPath = resolve(AA_ROOT, name, "src", "managed");
-  const compiled = CompiledContract.make(name, Mod.Contract as any).pipe(
-    CompiledContract.withWitnesses(witnesses as never),
-    CompiledContract.withCompiledFileAssets(zkPath),
+/** The fork's test faucet: `mint_shielded(domainSep, amount, nonce, recipientCoinPk)`. The
+ *  minted COLOUR is `tokenType(domainSep, faucetAddress)`, which the deploy receipt already
+ *  derived — this call only has to name the same domain separator. */
+async function mintShielded(walletCtx: any, domain: Uint8Array, amount: bigint, coinPk: Uint8Array) {
+  const providers = await providersFor(walletCtx, FAUCET_ZK_PATH);
+  const compiled = CompiledContract.make("faucet", (FaucetModule as any).Contract).pipe(
+    CompiledContract.withVacantWitnesses,
+    CompiledContract.withCompiledFileAssets(FAUCET_ZK_PATH),
   );
-  const providers = (await configureMidnightNodeProviders(
-    walletResult.wallet,
-    walletResult.zswapSecretKeys,
-    walletResult.walletZswapSecretKeys,
-    walletResult.dustSecretKey,
-    walletResult.walletDustSecretKey,
-    {
-      indexer: midnightNetworkConfig.indexer,
-      indexerWS: midnightNetworkConfig.indexerWS,
-      node: midnightNetworkConfig.node,
-      proofServer: midnightNetworkConfig.proofServer,
-    },
-    `${stateId}-store`,
-    zkPath,
-    walletResult.unshieldedKeystore,
-  )) as any;
-  const handle = await findDeployedContract(providers, {
-    contractAddress: address,
-    compiledContract: compiled as any,
-    privateStateId: stateId,
+  const handle: any = await (findDeployedContract as any)(providers, {
+    contractAddress: FAUCET_ADDRESS,
+    compiledContract: compiled,
+    privateStateId: `faucet-${Date.now().toString(36)}`,
     initialPrivateState: {},
   });
-  return { Mod, handle, providers };
+  const r: any = await handle.callTx.mint_shielded(domain, amount, randomBytes32(), { bytes: coinPk });
+  return r?.public?.txId ?? r?.public?.transactionHash ?? null;
 }
 
-async function readManagerLedger() {
-  return await session("ledger-read", async (walletResult) => {
-    const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-    const state = await (mgr.providers.publicDataProvider as any).queryContractState(MANAGER);
-    if (!state) throw new Error("manager contract state not found via indexer");
-    return { ledger: (mgr.Mod as any).ledger(state.data), Mod: mgr.Mod };
+const coinPkOf = (st: any): Uint8Array => hexToBytes(String(st.shielded.coinPublicKey.toHexString()));
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+log(`passport ${String(BUILD.passportCommit).slice(0, 12)}… / compactc ${BUILD.compactcVersion}`);
+log(`network ${CONFIG.networkId}; vault ${VAULT_ADDRESS?.slice(0, 18) ?? "(none)"}…; faucet ${FAUCET_ADDRESS.slice(0, 18)}…`);
+log(`give ${GIVE} of ${GIVE_COLOUR.slice(0, 12)}… / want ${WANT} of ${WANT_COLOUR.slice(0, 12)}…`);
+
+// ── 1. register ──────────────────────────────────────────────────────────────
+step("1/5 register — deploy and activate ONE account contract for an Ethereum key");
+const device = EvmDevice.fromPrivateKey(OWNER_KEY);
+const encKeys = generateEncKeyPair();
+const waves = consoleWaves();
+log(`owner 0x${device.addressHex}`);
+log(`waves: ${waves.waveOne.length} operations in wave 1, ${waves.waveTwo.length} in wave 2 (then the authority is retired)`);
+
+const accountAddress = await session("register", E2E_SEED, async (walletCtx) => {
+  const providers = await providersFor(walletCtx, zkConfigPath);
+  const account = await deployEvmAccount({
+    providers, device, encKeys,
+    compiledContract: consoleCompiledAccount(),
+    waveOneCircuits: waves.waveOne,
+    waveTwoCircuits: waves.waveTwo,
+    armsInWaveTwo: [],
+    retireAuthority: true,
+    ...(VAULT_ADDRESS ? { vaultAddress: hexToBytes(VAULT_ADDRESS) } : {}),
+  } as any);
+  return account.address;
+});
+log(`✅ account ${accountAddress} (the account id IS this address)`);
+steps.register = {
+  owner: `0x${device.addressHex}`,
+  accountAddress,
+  circuits: consoleAccountCircuits(),
+  waveOne: waves.waveOne,
+  waveTwo: waves.waveTwo,
+  vaultAddress: VAULT_ADDRESS ?? null,
+  artefactFingerprints: ARTEFACTS,
+  seconds: took(),
+};
+
+// The console's own private state, rebuilt here rather than shared: this driver is a second
+// client of the same account, which is exactly the situation the coin store and the roster
+// exist for.
+let coins: Record<string, { nonceHex: string; colorHex: string; value: string; mtIndex: string }> = {};
+const connect = async (walletCtx: any): Promise<CustodyAccount> =>
+  CustodyAccount.connect(
+    await providersFor(walletCtx, zkConfigPath),
+    consoleCompiledAccount(),
+    accountAddress,
+    { encSecretKeyHex: toHex(encKeys.secretKey), coins },
+  );
+
+// ── 2. fund ──────────────────────────────────────────────────────────────────
+step("2/5 fund — mint a shielded coin and deposit it WITH its inbox entry");
+const depositCoin = { nonce: randomBytes32(), color: hexToBytes(GIVE_COLOUR), value: MINT };
+const fund = await session("fund", E2E_SEED, async (walletCtx) => {
+  const st: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
+  const mintTx = await mintShielded(walletCtx, GIVE_DOMAIN, MINT, coinPkOf(st));
+  log(`minted ${MINT} of the give colour to the e2e wallet — tx=${mintTx}`);
+  const account = await connect(walletCtx);
+  const { txId } = await depositAsThirdParty(account as any, depositCoin, { encKey: encKeys.publicKey });
+  log(`deposit_shielded + a 192-byte entry sealed to the account's enc_key — tx=${txId}`);
+  const { candidates } = await candidateIndices(txId);
+  // Discovery is the assertion, not the bookkeeping: the walk reads the CHAIN, decrypts what
+  // it can with the account's viewing key, and must find this coin without being told.
+  const found = await inboxWalkPortable(await account.ledgerState(), encKeys.secretKey);
+  const mine = found.filter((c) => toHex(c.color) === GIVE_COLOUR && c.value === MINT);
+  if (mine.length === 0) throw new Error("the inbox walk did not recover the deposited coin — it would be unspendable");
+  log(`inbox walk: ${found.length} entries readable, the deposit among them`);
+  return { mintTx, txId, candidates: candidates.map(String) };
+});
+coins = {
+  [GIVE_COLOUR]: {
+    nonceHex: toHex(depositCoin.nonce), colorHex: GIVE_COLOUR,
+    value: MINT.toString(), mtIndex: fund.candidates[0]!,
+  },
+};
+log(`✅ funded: ${MINT} of ${GIVE_COLOUR.slice(0, 12)}… held by the account`);
+steps.fund = { ...fund, colour: GIVE_COLOUR, amount: MINT.toString(), seconds: took() };
+
+// ── 3. offer ─────────────────────────────────────────────────────────────────
+step("3/5 offer — prove open_swap_shielded_with_evm and STOP");
+const offer = await session("offer", E2E_SEED, async (walletCtx) => {
+  const account = await connect(walletCtx);
+  const ctx = await account.callContext();
+  const counter = await account.resolveUseCounter(device);
+  const held = await account.heldCoin(hexToBytes(GIVE_COLOUR));
+  const want = { nonce: freshWantNonce(), color: hexToBytes(WANT_COLOUR), value: WANT };
+  const change = predictChangeCoin(held, GIVE);
+  const { wantEntry, changeEntry } = offerInboxEntries(encKeys.publicKey, want, change);
+  const call: OfferCallArgs = {
+    giveColor: hexToBytes(GIVE_COLOUR), giveAmount: GIVE,
+    recipientKind: RECIPIENT_OPEN, recipient: new Uint8Array(32),
+    want, wantEntry, changeEntry, validUntil: 0n,
+  };
+  const auth = await signOpenSwapOffer(device, ctx, call, held, counter);
+  const built = await buildKernelOffer({
+    providers: (account as any).providers,
+    compiledContract: consoleCompiledAccount(),
+    accountAddress,
+    privateStateId: (account as any).privateStateId,
+    circuitId: SWAP_CIRCUIT,
+    call,
+    authArgs: offerAuthArgs(auth),
+  }, (line) => log(`  ${line}`));
+  return { built, want, change };
+});
+log(`✅ offer ${offer.built.sha256.slice(0, 16)}… — ${offer.built.bytes} bytes, legs in segment ${offer.built.legSegment}`);
+steps.offer = {
+  offerId: offer.built.sha256,
+  bytes: offer.built.bytes,
+  legSegment: offer.built.legSegment,
+  imbalances: offer.built.imbalances,
+  terms: offer.built.terms,
+  proveMs: offer.built.proveMs,
+  circuit: SWAP_CIRCUIT,
+  seconds: took(),
+};
+mkdirSync("/aa/out/offers", { recursive: true });
+writeFileSync(`/aa/out/offers/${offer.built.sha256}.swapoffer`, `${offer.built.blob}\n`);
+
+// ── 4. settle ────────────────────────────────────────────────────────────────
+step("4/5 settle — a taker with NO key of the account's funds the want leg and submits");
+// The taker needs the want colour before it can fund the deficit.
+await session("taker-mint", TAKER_SEED, async (walletCtx) => {
+  const st: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
+  const tx = await mintShielded(walletCtx, WANT_DOMAIN, MINT, coinPkOf(st));
+  log(`taker minted ${MINT} of the want colour — tx=${tx}`);
+});
+
+// Publish to the kernel when it is up, so the SOLVER can settle it; fall back to settling
+// with our own taker wallet, which is the same act by a different party and is what makes
+// this driver usable on `./up.sh --with aa` alone.
+let settlement: Record<string, unknown> = {};
+let published = false;
+try {
+  const res = await fetch(`${KERNEL_URL}/v1/offers`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ offer: offer.built.blob }),
+    signal: AbortSignal.timeout(30_000),
   });
+  const out: any = await res.json().catch(() => ({}));
+  published = res.ok;
+  log(published
+    ? `published to the kernel — offerId ${out.offerId ?? offer.built.sha256}`
+    : `the kernel refused the offer (${res.status}): ${JSON.stringify(out).slice(0, 200)}`);
+} catch (e) {
+  log(`kernel not reachable (${e instanceof Error ? e.message : e}) — settling directly`);
 }
 
-function artifactDomain(): Hex32 {
-  // Same padding rule the deploy runner used for the constructor argument.
-  const b = new TextEncoder().encode(artifact.manager.domain);
-  const o = new Uint8Array(32);
-  o.set(b);
-  return ("0x" + toHex(o)) as Hex32;
-}
-
-async function main() {
-  setNetworkId(midnightNetworkConfig.id as any);
-  log(`manager=${MANAGER.slice(0, 16)}… minter=${MINTER.slice(0, 16)}…`);
-  log(`alice EOA=${ALICE} account=${ALICE_ID.slice(0, 18)}…`);
-  log(`bob   EOA=${BOB} account=${BOB_ID.slice(0, 18)}…`);
-  const results: Record<string, unknown> = {};
-  // Every `execute` proof's wall time, keyed by step. SC-002 is a comparison, and a
-  // comparison needs both sides recorded the same way by the same code.
-  const executeTimings: Record<string, number> = {};
-  const zkirSource = zkirSourceReceipt(AA_ROOT);
-  log(`manager circuits: ${zkirSourceLine(zkirSource)}`);
-
-  // ── 1. register alice + bob (one session per register) ─────────────────────
-  const registerAction = (owner: Hex20, salt: Hex32, id: Hex32): RegisterEvmAccount => ({
-    primaryType: "RegisterEvmAccount",
-    manager: manager32,
-    accountId: id,
-    owner,
-    validUntil: DEADLINE,
-    accountSalt: salt,
-  });
-  for (const [who, key, owner, salt, id] of [
-    ["alice", ALICE_KEY, ALICE, ALICE_SALT, ALICE_ID],
-    ["bob", BOB_KEY, BOB, BOB_SALT, BOB_ID],
-  ] as const) {
-    await session(`register-${who}`, async (walletResult) => {
-      const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      const action = registerAction(owner, salt, id);
-      const sig = metamaskSign(key, action as any, artifactDomain());
-      const prep = prepareEvmExecute(action as any, artifactDomain(), sig);
-      if (prep.signer.toLowerCase() !== owner.toLowerCase())
-        throw new Error(`${who}: recovered signer ${prep.signer} != ${owner}`);
-      log(`register ${who}: proving execute — ${zkirSourceLine(zkirSource)}…`);
-      const t0 = Date.now();
-      const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
-      executeTimings[`register-${who}`] = (Date.now() - t0) / 1000;
-      log(`✅ ${who} registered — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-    });
+let solverSettled = false;
+if (published) {
+  const waitSeconds = Number(process.env["AA_E2E_SOLVER_WAIT"] ?? "120");
+  log(`waiting up to ${waitSeconds}s for the solver to settle it…`);
+  for (let i = 0; i * 5 < waitSeconds; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    try {
+      const s: any = await (await fetch(`${KERNEL_URL}/v1/offers/${offer.built.sha256}/status`)).json();
+      if (s.status === "consumed") { solverSettled = true; break; }
+      if (["cancelled", "expired"].includes(s.status)) throw new Error(`offer ended ${s.status}`);
+    } catch { /* keep waiting */ }
   }
-  {
-    const { ledger } = await readManagerLedger();
-    for (const [who, id, owner] of [["alice", ALICE_ID, ALICE], ["bob", BOB_ID, BOB]] as const) {
-      if (!ledger.accounts.member(hexToBytes(id))) throw new Error(`${who} not in accounts set`);
-      const rec = ledger.evmOwners.lookup(hexToBytes(id));
-      if (("0x" + toHex(rec)).toLowerCase() !== owner.toLowerCase())
-        throw new Error(`${who} evmOwner mismatch: ${toHex(rec)}`);
+  log(solverSettled ? "✅ the SOLVER settled it" : "the solver did not take it in time — settling with the e2e taker");
+}
+
+if (!solverSettled) {
+  const takeTx = await session("take", TAKER_SEED, async (walletCtx) => {
+    const wallet = walletCtx.wallet as any;
+    const keys = { shieldedSecretKeys: walletCtx.shieldedSecretKeys, dustSecretKey: walletCtx.dustSecretKey };
+    const offerTx = (Transaction as any).deserialize(
+      "signature", "proof", "binding", OfferFiles.decode(offer.built.blob),
+    );
+    const recipe = await wallet.balanceFinalizedTransaction(offerTx, keys, {
+      ttl: new Date(Date.now() + Number(process.env["TX_TTL_MS"] ?? "60000")),
+    });
+    const settleTx = await wallet.finalizeRecipe(recipe);
+    await wallet.submitTransaction(settleTx);
+    return String(settleTx.transactionHash?.().toString?.() ?? settleTx.transactionHash ?? "");
+  });
+  log(`✅ settled by the e2e taker — tx=${takeTx}`);
+  settlement = { by: "e2e-taker-wallet", txId: takeTx };
+} else {
+  settlement = { by: "solver", offerId: offer.built.sha256 };
+}
+steps.settle = { published, ...settlement, seconds: took() };
+
+// ── 5. the account spends what it received ───────────────────────────────────
+step("5/5 spend — the account spends the coin it received from the settlement");
+const spend = await session("spend", E2E_SEED, async (walletCtx) => {
+  const account = await connect(walletCtx);
+  // The settlement created the want coin and the change; both are discoverable only through
+  // the inbox entries the offer sealed BEFORE it was proved.
+  const found = await inboxWalkPortable(await account.ledgerState(), encKeys.secretKey);
+  const received = found.find((c) => toHex(c.color) === WANT_COLOUR && c.value === WANT);
+  if (!received) {
+    throw new Error(
+      `the settlement's want coin (${WANT} of ${WANT_COLOUR.slice(0, 12)}…) is not in the inbox — ` +
+      `entries readable: ${found.map((c) => `${c.value}/${toHex(c.color).slice(0, 8)}`).join(", ")}`,
+    );
+  }
+  log(`inbox walk after settlement: ${found.length} entries, the want coin among them`);
+  // Its mt_index comes from the settlement transaction, which the taker submitted — so this
+  // client resolves it by candidate retry, the honest cost of not having been the submitter.
+  const st: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
+  const recipient = coinPkOf(st);
+  const contractState = await (account as any).providers.publicDataProvider.queryContractState(accountAddress);
+  void contractState;
+  let lastError: unknown = null;
+  for (let idx = 0n; idx < 64n; idx++) {
+    await account.putCoin({ nonce: received.nonce, color: received.color, value: received.value, mtIndex: idx });
+    try {
+      const r = await account.withdrawShielded(device, recipient, received.color, received.value);
+      return { txId: r.txId, mtIndex: idx.toString(), colour: WANT_COLOUR, value: String(received.value) };
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      // A wrong index fails while PROVING, before a transaction exists. Anything else is a
+      // real failure and must not be retried 64 times.
+      if (!/merkle|mt_index|proof|prove|witness|commitment/i.test(msg)) throw e;
+      if (idx % 8n === 0n) log(`  mt_index ${idx} rejected — continuing the scan`);
     }
-    log("✅ ledger: both accounts registered with the right EOAs");
-    results["register"] = { alice: ALICE_ID, bob: BOB_ID };
   }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+});
+log(`✅ the account spent ${spend.value} of the received colour — tx=${spend.txId} (mt_index ${spend.mtIndex})`);
+steps.spend = { ...spend, seconds: took() };
 
-  // ── 2. mint fresh unshielded tokens to the relay wallet ────────────────────
-  const colour = hexToBytes(artifact.mints.unshielded.color);
-  await session("mint", async (walletResult) => {
-    const mnt = await join(walletResult, "contract-minter", MINTER, {}, "aaMinterPrivateState");
-    const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-    const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-    log(`minting ${DEPOSIT * 2n} unshielded to the relay wallet…`);
-    const tx = await (mnt.handle.callTx as any).mintUnshieldedTo(DEPOSIT * 2n, {
-      is_left: false, left: { bytes: new Uint8Array(32) }, right: { bytes: userAddr },
-    });
-    log(`✅ minted — tx=${tx.public?.txId ?? "?"}`);
-    results["mint"] = { amount: String(DEPOSIT * 2n), colour: artifact.mints.unshielded.color };
-  });
-
-  // ── 3. deposit into alice's AA account ─────────────────────────────────────
-  await session("deposit", async (walletResult) => {
-    const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-    log(`depositUnshielded(${DEPOSIT}) → alice…`);
-    const t0 = Date.now();
-    const tx = await (mgr.handle.callTx as any).depositUnshielded(colour, DEPOSIT, hexToBytes(ALICE_ID));
-    log(`✅ deposited — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-  });
-  const balanceOf = async (id: Hex32) => {
-    const { ledger, Mod } = await readManagerLedger();
-    const key = (Mod as any).pureCircuits.unshieldedKey(hexToBytes(id), colour);
-    return ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n;
-  };
-  {
-    const a = await balanceOf(ALICE_ID);
-    if (a !== DEPOSIT) throw new Error(`alice balance ${a} != deposit ${DEPOSIT}`);
-    log(`✅ ledger: alice credited ${a}`);
-    results["deposit"] = { alice: String(a) };
-  }
-
-  // ── 4. SEND — internal transfer alice → bob (selector 5), DEFAULT flow ─────
-  // The proving-layer blocker (a change-coin pool underflow in the Manager,
-  // zswap-cc /check alignment refusal) was FIXED upstream in AA PR #9; the
-  // internal transfer now proves and LANDS. Nonce 0: first EVM action after
-  // registration for this account.
-  await session("transfer", async (walletResult) => {
-    const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-    const action: TransferAction<"TransferInternalUnshielded"> = {
-      primaryType: "TransferInternalUnshielded",
-      manager: manager32,
-      accountId: ALICE_ID,
-      owner: ALICE,
-      validUntil: DEADLINE,
-      nonce: 0n,
-      color: ("0x" + artifact.mints.unshielded.color) as Hex32,
-      amount: TRANSFER,
-      toAccountId: BOB_ID,
-    } as any;
-    const sig = metamaskSign(ALICE_KEY, action as any, artifactDomain());
-    const prep = prepareEvmExecute(action as any, artifactDomain(), sig);
-    log(`transfer ${TRANSFER} alice→bob: proving execute — ${zkirSourceLine(zkirSource)}…`);
-    const t0 = Date.now();
-    const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
-    executeTimings["transfer"] = (Date.now() - t0) / 1000;
-    log(`✅ transferred — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-    results["transfer"] = { amount: String(TRANSFER), tx: tx.public?.txId ?? null };
-  });
-  {
-    const a = await balanceOf(ALICE_ID);
-    const b = await balanceOf(BOB_ID);
-    if (a !== DEPOSIT - TRANSFER) throw new Error(`alice ${a} != ${DEPOSIT - TRANSFER}`);
-    if (b !== TRANSFER) throw new Error(`bob ${b} != ${TRANSFER}`);
-    log(`✅ ledger: alice=${a} bob=${b} — transfer exact`);
-    (results["transfer"] as any).balances = { alice: String(a), bob: String(b) };
-  }
-
-  // ── 5. SEND — withdraw to an address (selector 3), DEFAULT flow ────────────
-  // The node's 214 rejection (recipient Either arms inverted in the claim —
-  // the 00016 investigation's confirmed root cause) was FIXED upstream in
-  // AA PR #10 ("Fix WithdrawUnshielded's 214 … BREAKING: execute keys
-  // regenerate"); withdraw is now a fatal assert like every other step.
-  // recipientKind 0 (a 32-byte user address) is the ONLY supported withdraw
-  // recipient — the contract now refuses contract-recipient payout shapes.
-  await session("withdraw", async (walletResult) => {
-    const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-    const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-    const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-    const action = {
-      primaryType: "WithdrawUnshielded",
-      manager: manager32,
-      accountId: ALICE_ID,
-      owner: ALICE,
-      validUntil: DEADLINE,
-      nonce: 1n, // after the transfer
-      color: ("0x" + artifact.mints.unshielded.color) as Hex32,
-      amount: WITHDRAW,
-      recipientKind: 0n,
-      recipient: ("0x" + toHex(userAddr)) as Hex32,
-    } as any;
-    const sig = metamaskSign(ALICE_KEY, action, artifactDomain());
-    const prep = prepareEvmExecute(action, artifactDomain(), sig);
-    log(`withdraw ${WITHDRAW} alice→relay (selector 3): proving execute — ${zkirSourceLine(zkirSource)}…`);
-    const t0 = Date.now();
-    const tx = await (mgr.handle.callTx as any).execute(prep.payload, prep.signature, prep.point);
-    executeTimings["withdraw"] = (Date.now() - t0) / 1000;
-    log(`✅ withdrawn — tx=${tx.public?.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
-    results["withdraw"] = { amount: String(WITHDRAW), tx: tx.public?.txId ?? null };
-  });
-  {
-    const a = await balanceOf(ALICE_ID);
-    if (a !== DEPOSIT - TRANSFER - WITHDRAW) throw new Error(`alice ${a} != ${DEPOSIT - TRANSFER - WITHDRAW} after withdraw`);
-    log(`✅ ledger after withdraw: alice=${a} — withdraw exact`);
-  }
-
-  const report = {
-    path: "EVM wallet (MetaMask V4) → relay → Manager.execute → Midnight",
-    network: midnightNetworkConfig.id,
-    manager: MANAGER, minter: MINTER,
-    actors: { alice: { eoa: ALICE, account: ALICE_ID }, bob: { eoa: BOB, account: BOB_ID } },
-    steps: results,
-    zkirSource,
-    // Seconds, prove-and-submit, per `execute` call. Host-specific by nature — the
-    // number that matters is the RATIO between two runs on the same host.
-    executeSeconds: executeTimings,
-    finishedAt: new Date().toISOString(),
-  };
-  writeFileSync("/aa/out/aa-e2e.json", JSON.stringify(report, null, 2) + "\n");
-  log("E2E PASSED — report at /aa/out/aa-e2e.json");
-  console.log(JSON.stringify(report, null, 2));
-}
-
-await main();
+// ── the report ───────────────────────────────────────────────────────────────
+const report = {
+  kind: "aa-passport-e2e",
+  version: 1,
+  ranAtUtc: new Date().toISOString(),
+  network: CONFIG.networkId,
+  build: BUILD,
+  deployReceipt: {
+    vault: artifact.vault ?? null,
+    signet: artifact.signet ?? null,
+    testFaucet: FAUCET_ADDRESS,
+    artefacts: artifact.artefacts ?? null,
+  },
+  steps,
+  totalSeconds: Math.round((Date.now() - t0) / 1000),
+  pass: true,
+};
+mkdirSync("/aa/out", { recursive: true });
+writeFileSync(OUT, `${JSON.stringify(report, null, 2)}\n`);
+log("");
+log(`✅ PASS in ${report.totalSeconds}s — wrote ${OUT}`);
+log(`   account   ${accountAddress}`);
+log(`   offer     ${offer.built.sha256}`);
+log(`   settled   ${JSON.stringify(settlement)}`);
+log(`   spend tx  ${spend.txId}`);
+void createHash;
 process.exit(0);

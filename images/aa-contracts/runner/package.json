@@ -33,7 +33,12 @@
     "Those two are unchanged by this migration: the offer artefact's SHAPE is the same",
     "proven, unbalanced, DUST-free transaction it always was — only the circuit that",
     "produces it changed (Manager `execute` selector 6 -> account",
-    "`open_swap_shielded_with_evm`), which is why the kernel and the solver need no change."
+    "`open_swap_shielded_with_evm`), which is why the kernel and the solver need no change.",
+    "",
+    "@metamask/eth-sig-util is kept for ONE consumer: runner/aa-console-mint.ts, the verify",
+    "gate that drives the console's HTTP surface exactly as the page does. It signs with the",
+    "library a real MetaMask uses, rather than with this project's own EIP-712 codec, so the",
+    "gate cross-checks the frozen byte contract instead of re-deriving it (spec SC-006)."
   ],
   "dependencies": {
     "@midnight-ntwrk/compact-js": "2.5.5-rc.8",
@@ -57,6 +62,7 @@
     "@scure/base": "2.4.0",
     "@sig-net/midnight": "0.22.0-rc.1",
     "@effectstream/mip-zswap-offer": "0.4.0-v9.0",
+    "@metamask/eth-sig-util": "8.2.0",
     "ethers": "6.17.0",
     "rxjs": "7.8.2",
     "ws": "8.19.0"

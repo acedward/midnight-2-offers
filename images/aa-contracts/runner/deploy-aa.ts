@@ -51,6 +51,7 @@ import { createHash } from "node:crypto";
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import { deployContract } from "@midnight-ntwrk/midnight-js-contracts";
 import { encodeContractAddress } from "@midnight-ntwrk/compact-runtime";
+import { encodeRawTokenType, rawTokenType } from "@midnightntwrk/ledger-v9";
 import { secp256k1PublicKeyOf, signAttestationDigest } from "@sig-net/midnight/testing";
 
 import * as VaultModule from "../passport/contracts/erc20-vault/managed/Erc20Vault/contract/index.js";
@@ -230,27 +231,35 @@ const walletState: any = await (await import("rxjs")).firstValueFrom(
 const coinPk = coinPublicKeyBytes(walletState);
 const userAddr = userAddressBytes(walletCtx);
 
-const shieldedColour = toHex(pad32(`${DOMAIN}:shielded`));
-const shieldedNonce = randomBytes32();
-log(`minting ${MINT_AMOUNT} shielded to the deploy wallet…`);
-const sMint = await faucet.call(
-  "mint_shielded",
-  hexToBytes(shieldedColour),
-  MINT_AMOUNT,
-  shieldedNonce,
-  { bytes: coinPk },
-);
-log(`  shielded colour ${shieldedColour.slice(0, 16)}… tx=${sMint.txId}`);
+// A faucet mint's COLOUR is not the argument: `mint_shielded(color, …)` passes its first
+// argument to `mintShieldedToken` as the DOMAIN SEPARATOR, and the ledger derives the real
+// colour as `tokenType(domain, <the minting contract>)`. Deriving it client-side with the
+// ledger's own `rawTokenType` is what the fork's suites do; calling the contract's
+// `unshielded_color` circuit would be a zero-effect call whose finalisation watch has been
+// observed to hang the wallet SDK.
+const colourOf = (label: string): { domain: Uint8Array; colour: string } => {
+  const domain = pad32(`${DOMAIN}:${label}`);
+  return { domain, colour: toHex(encodeRawTokenType(rawTokenType(domain, faucet.address))) };
+};
+// TWO shielded colours, because an offer needs two: same-colour legs net out and the kernel
+// refuses the offer as NOT_A_SWAP. The `faucet` profile's six issuers are the demo's real
+// token set; these exist so `aa-e2e.sh` needs no profile but its own, exactly as the
+// retired Minter's TOKA colours did.
+const shieldedA = colourOf("shielded-a");
+const shieldedB = colourOf("shielded-b");
+const unshielded = colourOf("unshielded");
 
-const unshieldedDomain = pad32(`${DOMAIN}:unshielded`);
+log(`minting ${MINT_AMOUNT} of shielded-a to the deploy wallet…`);
+const sMint = await faucet.call(
+  "mint_shielded", shieldedA.domain, MINT_AMOUNT, randomBytes32(), { bytes: coinPk },
+);
+log(`  shielded-a colour ${shieldedA.colour.slice(0, 16)}… tx=${sMint.txId}`);
+
 log(`minting ${MINT_AMOUNT} unshielded to the deploy wallet…`);
-const uMint = await faucet.call("mint_unshielded", unshieldedDomain, MINT_AMOUNT, {
+const uMint = await faucet.call("mint_unshielded", unshielded.domain, MINT_AMOUNT, {
   bytes: userAddr,
 });
-const unshieldedColour = toHex(
-  (FaucetModule as any).pureCircuits.unshielded_color(unshieldedDomain),
-);
-log(`  unshielded colour ${unshieldedColour.slice(0, 16)}… tx=${uMint.txId}`);
+log(`  unshielded colour ${unshielded.colour.slice(0, 16)}… tx=${uMint.txId}`);
 
 // ── 4. the receipt ───────────────────────────────────────────────────────────
 mkdirSync(OUT_DIR, { recursive: true });
@@ -286,10 +295,18 @@ const artifact = {
       ? "LOCAL STUB: the private half is sha256('demo-infra:aa:mpc-root:' + AA_DOMAIN) and is therefore public. No MPC runs on this stack unless the `signet` profile is up; the vault is initialised so accounts can be constructed, not so funds can cross a bridge."
       : "supplied by the operator (the `signet` profile passes the fakenet responder's own root secret)",
   },
-  testFaucet: { address: faucet.address },
+  testFaucet: {
+    address: faucet.address,
+    note: "the fork's contracts/faucet.compact — the retired AA-v3 Minter's replacement. mint_shielded/mint_unshielded take a DOMAIN SEPARATOR; the colour below is the ledger's tokenType(domain, faucet) derivation.",
+    colours: {
+      "shielded-a": { domain: toHex(shieldedA.domain), color: shieldedA.colour },
+      "shielded-b": { domain: toHex(shieldedB.domain), color: shieldedB.colour },
+      unshielded: { domain: toHex(unshielded.domain), color: unshielded.colour },
+    },
+  },
   mints: {
-    shielded: { color: shieldedColour, tx: sMint.txId, recipient: "deploy wallet (coin public key)" },
-    unshielded: { color: unshieldedColour, tx: uMint.txId, recipient: "deploy wallet (user address)" },
+    shielded: { color: shieldedA.colour, tx: sMint.txId, recipient: "deploy wallet (coin public key)" },
+    unshielded: { color: unshielded.colour, tx: uMint.txId, recipient: "deploy wallet (user address)" },
   },
   // What the console will deploy on every account it registers, so `verify-aa.sh` can
   // check a live account against the set this build intends rather than against a guess.

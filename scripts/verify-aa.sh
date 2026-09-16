@@ -3,30 +3,42 @@
 # Assertions for the `aa` profile — the `aa` section of ./verify.sh.
 #
 #   ./scripts/verify-aa.sh
-#   ./scripts/verify-aa.sh --mint    …plus a REAL mint through the LOCAL issuers
+#   ./scripts/verify-aa.sh --mint    …plus a REAL register + mint + deposit through the
+#                                    console's own API
+#
+# ⚠ WHAT THIS PROFILE IS SINCE PROJECT 00034. There is no shared AA-v3 Manager and no test
+# Minter. An account is ONE CONTRACT PER USER (a fork of the Midnight Passport account) and
+# the console's `register` deploys it; what `aa-deploy` puts on chain is the three SHARED
+# things that must exist before any account can: the Signet singleton, the ERC20 bridge
+# vault (deployed AND initialised, because an account's constructor seals a reference to it)
+# and the fork's test faucet.
 #
 # What it proves:
 #
-#   deployed     the one-shot finished (exit 0) and wrote aa-contracts.json — which it
-#                only does after BOTH deploys finalized and BOTH mint calls proved and
-#                landed. The artifact is the receipt, read back from the aa-out volume.
-#   addresses    manager + minter addresses present and hex-shaped.
-#   minted       both mint entries carry a 64-hex colour and a transaction id — the
-#                actual "we can mint a token" evidence, proven through the profile's
-#                own experimental proof server (zkir-v3 verifier keys).
-#   zkir source  WHICH compiler produced the Manager circuits that are live on this
-#                chain, read out of the DEPLOY RECEIPT rather than out of a build
-#                argument: the receipt was written by the process that registered the
-#                verifier keys, and it records the hash of the key file that process
-#                actually read. On the default (`AA_ZKIR_SOURCE=minocrab`) this asserts
-#                that the deployed `execute` verifier is byte-for-byte the one the
-#                pinned MinoCrab release published, that k is 18, and that the release
-#                identity in the receipt equals the one this repository pins. It also
-#                PRINTS the unaudited-compiler statement, because a gate that proves a
-#                third-party artifact is live should say so out loud every time.
+#   deployed     the one-shot finished (exit 0) and wrote aa-contracts.json — which it only
+#                does after all three deploys finalized, `initialise` landed and read back,
+#                and both faucet mints proved. The artifact is the receipt, read back from
+#                the aa-out volume.
+#   vault        the vault's address, its EVM account, the chain id it is pinned to, and
+#                whether its MPC root key is a real one or the LOCAL STUB (printed either
+#                way — a stub must never be mistaken for a key somebody chose).
+#   artefacts    the artefact FINGERPRINT of every compiled bundle (spec FR-022): the
+#                SHA-256 over the bundle's verifier keys, computed at build time from the
+#                bytes in the image and recorded by the deploy. An account is compiled
+#                against one exact vault build, so a rebuilt vault under a running stack is
+#                a verification failure rather than a mystery on the first bridge call.
+#   account plan what the console will deploy on every account it registers: the circuit
+#                list, the two waves, and `retireAuthority`. This is the deploy-budget
+#                claim of spec User Story 4 stated where an operator reads it.
+#   k per circuit  measured at BUILD time with the same pinned zkir the compiler used, and
+#                baked into the image — so the number next to `open_swap_shielded_with_evm`
+#                is the one that produced the artefact this stack proves with.
+#   console      it serves, its relay wallet is funded, its token set comes from the local
+#                registry with the registry's real decimals, and it agrees with the deploy
+#                receipt about the vault.
 #
-# The artifact is read via `docker compose run` against the same image, mounting the
-# same volume — no host jq needed (the image ships bun).
+# The artifact is read via `docker compose run` against the same image, mounting the same
+# volume — no host jq needed (the image ships bun).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,6 +57,7 @@ done
 load_env
 
 FAILURES=0
+AA_IMG="${AA_IMAGE:-midnight-2-offers/aa-contracts:local}"
 
 # Exit code of the (kept, exited) one-shot container.
 cid=$(docker ps -aq \
@@ -63,10 +76,9 @@ else
   FAILURES=$(( FAILURES + 1 ))
 fi
 
-# The artifact, from the volume, validated in-container (bun ships in the image).
-# --env-file only when the file exists: on the ordinary clean-clone path there
-# is no .env, and compose hard-fails on a missing --env-file even though every
-# value has a built-in default (the same no-.env class dc() already handles).
+# The artifact, from the volume. --env-file only when the file exists: on the ordinary
+# clean-clone path there is no .env, and compose hard-fails on a missing --env-file even
+# though every value has a built-in default.
 aa_env_args=()
 [[ -f "${ENV_FILE:-}" ]] && aa_env_args=(--env-file "$ENV_FILE")
 artifact=$(docker compose ${aa_env_args[@]+"${aa_env_args[@]}"} \
@@ -76,39 +88,104 @@ if [[ -z "$artifact" ]]; then
   err "aa-contracts.json missing from the aa-out volume"
   FAILURES=$(( FAILURES + 1 ))
 else
+  # ONE in-container pass over the receipt, printing a human line per claim and exiting
+  # non-zero if any of them is unsatisfied. Parsed, never grepped: a grep over one-line
+  # JSON matches across object boundaries and has passed while asserting nothing here
+  # before (the `tr '}' '}\n'` defect below).
   summary=$(printf '%s' "$artifact" | docker run --rm -i \
-    --entrypoint bun "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" 2>/dev/null -e '
+    --entrypoint bun "$AA_IMG" 2>&1 -e '
       const j = JSON.parse(await new Response(Bun.stdin.stream()).text());
-      const hex = (s) => typeof s === "string" && /^[0-9a-f]{64,}$/i.test(s.replace(/^0x/, ""));
-      const checks = {
-        manager: hex(j.manager?.address),
-        minter: hex(j.minter?.address),
-        shieldedColour: hex(j.mints?.shielded?.color),
-        unshieldedColour: hex(j.mints?.unshielded?.color),
-        shieldedTx: !!j.mints?.shielded?.tx,
-        unshieldedTx: !!j.mints?.unshielded?.tx,
-      };
-      console.log(JSON.stringify(checks));
-      process.exit(Object.values(checks).every(Boolean) ? 0 : 1);
+      const hex = (s, n) => typeof s === "string" && new RegExp(`^[0-9a-f]{${n}}$`, "i").test(String(s).replace(/^0x/, ""));
+      const bad = [];
+      const say = (line) => console.log("      " + line);
+
+      if (j.kind !== "aa-passport-deploy-receipt") {
+        bad.push(`this is not a Passport deploy receipt (kind=${j.kind ?? "absent"}). A stack ` +
+                 "brought up from the AA-v3 image writes a different artifact: ./down.sh -v and up again");
+      }
+      if (!hex(j.vault?.address, 64)) bad.push("no vault address");
+      if (!hex(j.signet?.address, 64)) bad.push("no Signet singleton address");
+      if (!hex(j.testFaucet?.address, 64)) bad.push("no test-faucet address");
+      if (!j.vault?.initialiseTxId) bad.push("the vault was never initialised (no initialise tx)");
+      if (!/^0x[0-9a-fA-F]{40}$/.test(String(j.vault?.evmAddress ?? ""))) bad.push("no vault EVM address");
+      if (!j.vault?.evmChainId) bad.push("the vault is pinned to no EVM chain id");
+      say(`vault      ${j.vault?.address?.slice(0, 20)}… evm ${j.vault?.evmAddress} chain ${j.vault?.evmChainId}`);
+      say(`singleton  ${j.signet?.address?.slice(0, 20)}…   initialise tx ${String(j.vault?.initialiseTxId).slice(0, 18)}…`);
+      say(`mpc        ${String(j.mpc?.rootPublicKey ?? "").slice(0, 20)}… (${j.mpc?.provenance})`);
+
+      // FR-022: an account is compiled against ONE vault build. Print the fingerprints, and
+      // require the account bundle to have one at all.
+      for (const [name, a] of Object.entries(j.artefacts ?? {})) {
+        say(`artefact   ${name.padEnd(13)} ${a.fingerprint?.slice(0, 24)}… (${a.verifierKeys} verifier keys, ${a.provers?.length ?? 0} prover keys)`);
+      }
+      if (!j.artefacts?.account?.fingerprint) bad.push("the receipt records no account artefact fingerprint (FR-022)");
+      if (!j.artefacts?.Erc20Vault?.fingerprint) bad.push("the receipt records no vault artefact fingerprint (FR-022)");
+
+      const plan = j.accountPlan ?? {};
+      say(`plan       ${(plan.circuits ?? []).length} circuits per account; wave 1 = ${(plan.waveOne ?? []).length}, ` +
+          `wave 2 = ${(plan.waveTwo ?? []).length}; authority retired: ${plan.retireAuthority}`);
+      if (!(plan.circuits ?? []).includes("open_swap_shielded_with_evm")) {
+        bad.push("the account plan carries NO offer circuit — this stack exists to make offers (Q35)");
+      }
+      if ((plan.waveOne ?? []).length !== 8) {
+        bad.push(`wave 1 carries ${(plan.waveOne ?? []).length} operations; the node was measured refusing nine (Q28)`);
+      }
+      if (plan.retireAuthority !== true) {
+        bad.push("the account plan does NOT retire the maintenance authority — an authority sits ABOVE the MIP-0013 seam");
+      }
+
+      for (const fam of ["shielded", "unshielded"]) {
+        if (!hex(j.mints?.[fam]?.color, 64)) bad.push(`${fam} mint: no 64-hex colour`);
+        if (!j.mints?.[fam]?.tx) bad.push(`${fam} mint: no transaction id`);
+      }
+      say(`mints      shielded ${String(j.mints?.shielded?.color).slice(0, 16)}… / unshielded ${String(j.mints?.unshielded?.color).slice(0, 16)}…`);
+      say(`build      passport ${String(j.build?.passportCommit).slice(0, 12)}… compactc ${j.build?.compactcVersion} ` +
+          `runtime ${j.build?.compactRuntimeVersion} signet ${j.build?.signetPkgVersion}`);
+      say(`prover keys kept: ${(j.build?.proverKeys ?? []).length}${j.build?.withBridge ? " (+ bridge)" : ""}`);
+
+      if (bad.length) { console.log("FAIL " + bad.join("; ")); process.exit(1); }
+      console.log("OK");
     ' ) && aok=1 || aok=0
-  # Fallback shape check without bun if the docker run path failed for tooling reasons.
+  printf '%s\n' "$summary" | grep -v '^OK$' | grep -v '^FAIL ' || true
   if [[ "$aok" == "1" ]]; then
-    ok "artifact complete: addresses + both colours + both mint txs ($summary)"
+    ok "deploy receipt complete: vault + singleton + test faucet, initialised, fingerprinted"
   else
-    if printf '%s' "$artifact" | grep -q '"address"' \
-       && printf '%s' "$artifact" | grep -q '"shielded"' \
-       && printf '%s' "$artifact" | grep -q '"unshielded"' \
-       && printf '%s' "$artifact" | grep -qE '"tx": *"[^"]+"'; then
-      ok "artifact carries addresses, both mint families and tx ids (grep-level check)"
-    else
-      err "artifact incomplete: $(printf '%s' "$artifact" | head -c 300)"
-      FAILURES=$(( FAILURES + 1 ))
-    fi
+    err "deploy receipt incomplete: $(printf '%s' "$summary" | grep '^FAIL ' | head -c 500)"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+
+  # The LOCAL-STUB warning, said out loud every time rather than left in a doc. A vault
+  # whose MPC root key is derived from a public string can be initialised by anybody who
+  # reads this repository, which is correct for a disposable localnet and wrong anywhere
+  # else — exactly the class of statement the retired MinoCrab warning occupied.
+  if printf '%s' "$artifact" | grep -q '"provenance": *"derived-from-AA_DOMAIN"'; then
+    info "  the vault's MPC root key is a LOCAL STUB derived from AA_DOMAIN: its private half is"
+    info "  public, no MPC runs on this stack, and the bridge circuits are deployed but cannot"
+    info "  move funds. AA_MPC_ROOT_SECRET overrides it. docs/KNOWN-LIMITATIONS.md."
   fi
 fi
 
-# The web console, presence-detected: only asserted when the aa-console service
-# has a container (older bring-ups of the profile predate it).
+# ── k per proof-bearing circuit, measured at build time ─────────────────────
+# `k` is the log2 of a circuit's constraint domain and decides the proving-key size; it is
+# what spec User Story 4's acceptance scenario asks to be recorded. Measured in the image
+# with the SAME pinned zkir that produced the artefacts (measuring one compiler's output
+# with another's is meaningless) and baked in as /aa/.circuit-k.json.
+if k=$(docker run --rm --entrypoint cat "$AA_IMG" /aa/.circuit-k.json 2>/dev/null); then
+  printf '%s' "$k" | docker run --rm -i --entrypoint bun "$AA_IMG" 2>/dev/null -e '
+    const j = JSON.parse(await new Response(Bun.stdin.stream()).text());
+    const rows = Object.entries(j.circuits ?? {}).sort((a, b) => (b[1].k ?? 0) - (a[1].k ?? 0));
+    for (const [name, c] of rows.slice(0, 8)) {
+      console.log(`      k=${String(c.k).padStart(2)} rows=${String(c.rows).padStart(7)} ${name}`);
+    }
+    const max = rows[0];
+    console.log(`      (${rows.length} proof-bearing circuits; heaviest ${max?.[0]} at k=${max?.[1]?.k})`);
+  ' || true
+  ok "k recorded per circuit (measured at build time with the pinned zkir)"
+else
+  info "the image carries no /aa/.circuit-k.json — k was not measured at build time"
+fi
+
+# The web console, presence-detected.
 console_cid=$(docker ps -q \
   --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
   --filter "label=com.docker.compose.service=aa-console" | head -1)
@@ -127,46 +204,42 @@ if [[ -n "$console_cid" ]]; then
     err "aa-console relay wallet UNFUNDED — operations will fail (./scripts/fund-wallet.sh with the aa-console seed)"
     FAILURES=$(( FAILURES + 1 ))
   fi
-  # RETRIED, bounded (infra issue 00016): one 10s curl at a single-threaded Bun server that is
-  # mid-wallet-sync is a coin flip, and 00015 P5 lost it once while every other aa assertion in
-  # the same run passed. `curl_retry_match` keeps the assertion exactly as strict — the page
-  # must contain "AA Console" — and only stops calling a slow page a broken one.
+  # RETRIED, bounded (infra issue 00016): one 10s curl at a single-threaded Bun server that
+  # is mid-wallet-sync is a coin flip.
   if curl_retry_match "$CONSOLE_URL/" "AA Console" "aa-console page" >/dev/null; then
     ok "aa-console page serves"
   else
     err "aa-console page did not serve HTML"
     FAILURES=$(( FAILURES + 1 ))
   fi
-  # The console and the deploy artifact must agree on the Manager address.
+
   INFO="$(curl -fsS --max-time 10 "$CONSOLE_URL/api/info" 2>/dev/null || true)"
-  mgr=$(printf '%s' "$artifact" | grep -oE '"address": *"[0-9a-fx]+"' | head -1 | grep -oE '[0-9a-f]{32,}' | head -1) || mgr=""
-  if [[ -n "$mgr" ]] && printf '%s' "$INFO" | grep -q "$mgr"; then
-    ok "aa-console reports the deployed Manager (${mgr:0:16}…)"
+  # The console and the deploy receipt must agree about the VAULT — which is the one address
+  # that binds them, because every account the console registers seals it at construction.
+  vault=$(printf '%s' "$artifact" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("vault") or {}).get("address",""))' 2>/dev/null || true)
+  if [[ -n "$vault" ]] && printf '%s' "$INFO" | grep -q "$vault"; then
+    ok "aa-console reports the deployed vault (${vault:0:16}…)"
   else
-    err "aa-console /api/info does not match the deployed Manager address"
+    err "aa-console /api/info does not match the deployed vault address"
+    info "  every account this console registers seals THAT address in its constructor, and the"
+    info "  compiler embeds a fingerprint of that vault's verifier keys — a disagreement here"
+    info "  means accounts would be deployed against a vault this chain does not have."
+    FAILURES=$(( FAILURES + 1 ))
+  fi
+  # The model, stated by the console itself: a stack still running the AA-v3 console would
+  # answer with a manager address and no model field, and every other assertion here could
+  # still pass.
+  if printf '%s' "$INFO" | grep -q '"model":"passport-per-user-account"'; then
+    ok "aa-console runs the per-user Passport account model"
+  else
+    err "aa-console /api/info does not report the passport-per-user-account model"
     FAILURES=$(( FAILURES + 1 ))
   fi
 
   # ── the console's TOKEN SET comes from the local faucet registry ───────────
-  #
-  # This is the US4 assertion, and it is worth making from the outside because
-  # every way it can break is silent. The console used to DERIVE three colours
-  # from the offer-files contract address it read out of the kernel; that
-  # contract is gone at KERNEL_REF 5d794f9 and `/v1/midnight/config` no longer
-  # carries an address, so a console still on the old path would come up
-  # perfectly healthy, serve its page, and answer `tokens: []` with a
-  # `tokensError` nobody reads until a mint button fails.
-  #
-  # Three things are checked, and the third is the one that used to be wrong:
-  #   * the tokens resolved at all, and say where from (`mint-test-tokens`);
-  #   * they are the local issuers' six, not three invented names;
-  #   * their DECIMALS are the registry's. The console registered every token
-  #     with a hardcoded `decimals: 6` before this change, which was wrong for
-  #     four of the six and is exactly the class of error that only shows up as
-  #     a price off by a factor of 10^n.
-  #
-  # CONDITIONAL on the faucet profile: `./up.sh --with aa` alone is legal, and
-  # then there is no registry to read and the console says so.
+  # Unchanged by 00034: the six issuers are external to the account model, and the console
+  # still reads the registry rather than deriving anything. CONDITIONAL on the faucet
+  # profile — `./up.sh --with aa` alone is legal and then there is no registry to read.
   if docker ps -aq \
        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
        --filter "label=com.docker.compose.service=faucet-deploy" 2>/dev/null | grep -q .; then
@@ -174,17 +247,13 @@ if [[ -n "$console_cid" ]]; then
       ok "aa-console takes its token set from the local mint-test-tokens registry"
     else
       err "aa-console /api/info does not report tokensSource=mint-test-tokens"
-      info "  a console still deriving colours from the deleted offer-files contract answers"
-      info "  tokens:[] with a tokensError — it will serve every page and mint nothing."
       info "  answer was: $(printf '%s' "$INFO" | head -c 300)"
       FAILURES=$(( FAILURES + 1 ))
     fi
-    # PARSED, NOT GREPPED, and for a measured reason: the first version of this
-    # split `/api/info` with `tr '}' '}\n'` and matched name and decimals on the
-    # result. `tr` cannot expand one character into two — SET2 is truncated to
-    # SET1's length, so it replaced `}` with `}` — the JSON stayed on one line,
-    # and the regex matched across object boundaries. It passed while asserting
-    # nothing: any `twBTC` anywhere followed by any `"decimals":8` anywhere.
+    # PARSED, NOT GREPPED, and for a measured reason: the first version of this split
+    # `/api/info` with `tr '}' '}\n'` and matched name and decimals on the result. `tr`
+    # cannot expand one character into two — the JSON stayed on one line and the regex
+    # matched across object boundaries. It passed while asserting nothing.
     AA_TOKENS_MISSING="$(printf '%s' "$INFO" | python3 -c '
 import json, sys
 want = {"twBTC": 8, "twETH": 18, "twUSDC": 6, "twUSDM": 6, "utwUSDC": 6, "utwBTC": 8}
@@ -212,93 +281,47 @@ print(", ".join(missing))
   else
     info "faucet profile not in this stack — skipping the aa-console token-set assertions"
   fi
-fi
 
-# ── the zkir-source receipt ─────────────────────────────────────────────────
-# Read from the SAME artifact the assertions above read, so there is no second
-# source for "what is deployed". `AA_ZKIR_SOURCE` here is the CONFIGURED value; the
-# receipt is what the deploy actually did, and the two disagreeing is the defect
-# this exists to catch (a stale image, or an `.env` changed without a redeploy).
-AA_ZKIR_SOURCE_EXPECTED="${AA_ZKIR_SOURCE:-minocrab}"
-MINOCRAB_RELEASE_EXPECTED="${MINOCRAB_RELEASE:-v0.2.0}"
-MINOCRAB_REF_EXPECTED="${MINOCRAB_REF:-7cdfa5b0c994a70502ab2b564b509c8abe2f7efb}"
-MINOCRAB_SUMS_EXPECTED="${MINOCRAB_SUMS_SHA256:-4a8c0183cd887e3ca2d3446f196fab1102540e09d6e0e8ae9c1859532d8dd7ac}"
-
-if [[ -n "$artifact" ]]; then
-  # The expectations travel as CONTAINER env, not as shell interpolation into the
-  # script body: a value with a quote in it would otherwise be code.
-  zk=$(printf '%s' "$artifact" | docker run --rm -i \
-    -e WANT_SOURCE="$AA_ZKIR_SOURCE_EXPECTED" \
-    -e WANT_RELEASE="$MINOCRAB_RELEASE_EXPECTED" \
-    -e WANT_REF="$MINOCRAB_REF_EXPECTED" \
-    -e WANT_SUMS="$MINOCRAB_SUMS_EXPECTED" \
-    --entrypoint bun "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" 2>/dev/null \
-    -e '
-      const j = JSON.parse(await new Response(Bun.stdin.stream()).text());
-      const z = j.zkirSource;
-      const want = { source: Bun.env.WANT_SOURCE, release: Bun.env.WANT_RELEASE,
-                     ref: Bun.env.WANT_REF, sums: Bun.env.WANT_SUMS };
-      if (!z) { console.log("MISSING"); process.exit(1); }
-      if (z.source !== want.source) {
-        console.log(`SOURCE_MISMATCH receipt=${z.source} configured=${want.source}`);
-        process.exit(1);
-      }
-      if (z.source === "compactc") { console.log("OK compactc"); process.exit(0); }
-      const bad = [];
-      if (z.release !== want.release) bad.push(`release ${z.release} != ${want.release}`);
-      if (z.portCommit !== want.ref)  bad.push(`portCommit ${z.portCommit} != ${want.ref}`);
-      if (z.sumsSha256 !== want.sums) bad.push(`SHA256SUMS ${z.sumsSha256} != ${want.sums}`);
-      if (z.contractCommit !== j.aaCommit)
-        bad.push(`the release keys are for contract ${z.contractCommit}, the image is ${j.aaCommit}`);
-      for (const [name, c] of Object.entries(z.circuits ?? {})) {
-        if (!c.verifierMatches)
-          bad.push(`${name}: deployed verifier ${c.deployed?.verifier?.sha256 ?? "absent"} is not the published ${c.published?.verifier?.sha256}`);
-        if (c.proverMatches === false)
-          bad.push(`${name}: the prover key in the image is not the published one`);
-      }
-      if (bad.length) { console.log("BAD " + bad.join("; ")); process.exit(1); }
-      const names = Object.keys(z.circuits ?? {});
-      const ks = names.map((n) => `${n} k=${z.circuits[n].k}`).join(", ");
-      console.log(`OK ${z.source} ${z.release} (${z.portCommit.slice(0, 12)}…) — ${names.length} circuit(s): ${ks}`);
-    ' ) && zkok=1 || zkok=0
-  if [[ "$zkok" == "1" ]]; then
-    ok "manager zkir source: ${zk#OK }"
-    if [[ "$AA_ZKIR_SOURCE_EXPECTED" != "compactc" ]]; then
-      # Not decoration. A gate that proves an UNAUDITED third-party compiler's
-      # artifact is live on this chain has to say that where the operator reads it,
-      # not only in a doc they may never open.
-      info "  MinoCrab is an UNAUDITED third-party compiler; equivalence is TESTED, NOT PROVEN"
-      info "  (59 differential tests, 5,128 tamper probes, 0 acceptance disagreements) — dev chains only."
-      info "  docs/KNOWN-LIMITATIONS.md · AA_ZKIR_SOURCE=compactc opts out (redeploy: keys change)."
-    fi
-  else
-    err "manager zkir source: ${zk:-unreadable} (configured ${AA_ZKIR_SOURCE_EXPECTED})"
+  # ── the accounts this console has registered ──────────────────────────────
+  # Zero is the correct answer on a fresh stack: nothing registers an account until somebody
+  # asks. What is asserted is that the endpoint ANSWERS in the per-account shape — a console
+  # still iterating a Manager's ledger map would answer differently or fail.
+  ACCOUNTS="$(curl -fsS --max-time 15 "$CONSOLE_URL/api/accounts" 2>/dev/null || true)"
+  N="$(printf '%s' "$ACCOUNTS" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("accounts",[])))' 2>/dev/null || echo "?")"
+  if [[ "$N" == "?" ]]; then
+    err "aa-console /api/accounts did not answer with an account list"
     FAILURES=$(( FAILURES + 1 ))
+  else
+    ok "aa-console registry: ${N} account(s) (the console's OWN roster — one account is one contract, Q40)"
+    if [[ "$N" != "0" ]]; then
+      printf '%s' "$ACCOUNTS" | python3 -c '
+import json,sys
+for a in json.load(sys.stdin).get("accounts", []):
+    print("      {}  owner {}  authNonce {}  inbox {}".format(
+        str(a.get("address"))[:22] + "…", str(a.get("owner"))[:12] + "…",
+        a.get("authNonce"), a.get("inboxCount")))
+' 2>/dev/null || true
+    fi
   fi
 fi
 
-# ── the mint, through the console's OWN API (opt-in) ────────────────────────
+# ── a real register + mint + deposit through the console's OWN API (opt-in) ──
 #
-# THE GAP THIS CLOSES. Everything above about the token set is CONFIGURATION: `/api/info`
-# says where the six names came from and what their decimals are. None of it calls a mint.
-# PR-B's actual claim — the console's faucet buttons mint through the six LOCAL
-# mint-test-tokens issuers, because the offer-files contract they used to derive colours from
-# is gone — was proved once, by hand, in a browser.
+# THE GAP THIS CLOSES. Everything above is CONFIGURATION: the receipt says what was
+# deployed and `/api/info` says what the console believes. None of it registers an account
+# or moves a token. So this drives the same HTTP surface the page drives — `/api/prepare` →
+# sign → `/api/submit` for the enrolment, then `/api/fund` and `/api/fund-shielded` — and
+# reads the ACCOUNT'S OWN LEDGER back through `/api/pure`. A job that says "done" only
+# proves the relay did not throw; the ledger read is what proves the value landed.
 #
-# So this drives the same HTTP surface the page drives (`/api/prepare` -> sign ->
-# `/api/submit` -> `/api/fund` -> `/api/fund-shielded`) and then reads the MANAGER'S LEDGER
-# back through `/api/pure`. A job that says "done" only proves the relay did not throw; the
-# ledger read is what proves the value landed, on the right account, under the right colour.
+# Opt-in because registering an account is two transactions and minutes of proving on a cold
+# devnet. `./verify.sh --aa-mint` turns it on; scripts/ci-check.sh passes that by default.
 #
-# Opt-in because it is one `execute` proof plus two mint+deposit cycles on a cold devnet
-# (minutes). `./verify.sh --aa-mint` turns it on; scripts/ci-check.sh passes that by default.
-#
-# It runs INSIDE the console container (`docker exec`), which is where the driver, the aalib
-# signer and the pinned dependency tree already are — and where `http://127.0.0.1:8090` is
-# unambiguously THIS console rather than whatever a compose DNS name resolves to.
+# It runs INSIDE the console container, which is where the client and the pinned dependency
+# tree already are — and where `http://127.0.0.1:8090` is unambiguously THIS console.
 if (( WITH_MINT )); then
   echo
-  log "aa: a real mint through the local mint-test-tokens issuers, driven over the console's API"
+  log "aa: register an account and fund it through the console's API, then read its ledger back"
   if [[ -z "${console_cid:-}" ]]; then
     err "--mint needs a running aa-console container for project '${COMPOSE_PROJECT_NAME}'"
     FAILURES=$(( FAILURES + 1 ))
@@ -309,21 +332,21 @@ if (( WITH_MINT )); then
     info "  ./up.sh --with aa --with faucet"
     FAILURES=$(( FAILURES + 1 ))
   else
-    info "expect several minutes: one execute proof to register, then two mint+deposit cycles"
+    info "expect several minutes: a two-wave account deploy, then two mint+deposit cycles"
     MINT_OUT="$(docker exec "$console_cid" bun /aa/runner/aa-console-mint.ts 2>&1)" && MINT_RC=0 || MINT_RC=$?
     printf '%s\n' "$MINT_OUT" | sed 's/^/      /'
     if (( MINT_RC == 0 )) && printf '%s' "$MINT_OUT" | grep -q '\[aa-console-mint\] RESULT '; then
-      ok "console mint: one shielded and one unshielded token minted through the local issuers and deposited"
+      ok "console: an account registered, one shielded and one unshielded token deposited into it"
       info "  $(printf '%s' "$MINT_OUT" | grep '\[aa-console-mint\] RESULT ' | head -1)"
     else
-      err "the console mint failed (exit ${MINT_RC})"
+      err "the console register+mint failed (exit ${MINT_RC})"
       FAILURES=$(( FAILURES + 1 ))
     fi
   fi
 else
   echo
-  dim "console mint not attempted — pass --mint (or ./verify.sh --aa-mint) to run one"
-  dim "  it is an execute proof plus two mint+deposit cycles: minutes on a cold devnet"
+  dim "console register+mint not attempted — pass --mint (or ./verify.sh --aa-mint) to run one"
+  dim "  it is a two-wave account deploy plus two mint+deposit cycles: minutes on a cold devnet"
 fi
 
 if (( FAILURES == 0 )); then
