@@ -85,7 +85,11 @@ ARG SIGNET_PKG_SHA256=0e7414d52b225e31def3d776cae376ff1e6c2bf7b592f02dc422b5bb6f
 #   deposit_shielded / deposit_unshielded  funding (permissionless, any wallet)
 #   withdraw_shielded_with_evm             withdraw to a wallet
 #   withdraw_unshielded_with_evm           withdraw unshielded
-#   withdraw_shielded_to_contract_with_evm account -> account send (Q41)
+#   withdraw_shielded_to_contract_with_evm the DIRECT account -> account transfer the client
+#                                          exposes. The console's Send uses the one-hop instead
+#                                          (Q53), so this is the one key kept for a circuit the
+#                                          console does not itself prove — it is deployed in
+#                                          wave 1 either way, and the key is 570 MB
 #   append_inbox_with_evm                  the change entry after a spend
 #   open_swap_shielded_with_evm            the offer (Q35: the console carries it)
 #   initialise                             the VAULT's one-shot, proved by aa-deploy

@@ -64,10 +64,12 @@ EVM_IMAGE=midnight-2-offers/umbra-evm:${IMAGE_TAG_SUFFIX}
 CELESTIA_IMAGE=midnight-2-offers/celestia:${IMAGE_TAG_SUFFIX}
 KERNEL_IMAGE=midnight-2-offers/offerfiles-kernel:${IMAGE_TAG_SUFFIX}
 FRONTEND_IMAGE=midnight-2-offers/zswap-da:${IMAGE_TAG_SUFFIX}
-# ONE aa-contracts image since project 00034. It used to be three tags — `:local`,
-# `:console` and `:e2e` — which differed only in whether the AA-v3 Manager's execute.prover
-# was pruned. The prover keys an image keeps are NAMED now (AA_PROVER_KEYS), and the named
-# set is what the deploy, the console and the e2e all prove, so one tag serves all three.
+# ONE aa-contracts image since project 00034. It used to be three tags (local, console and
+# e2e) differing only in whether the AA-v3 Manager's execute.prover was pruned. The prover
+# keys an image keeps are NAMED now (AA_PROVER_KEYS), and the named set is what the deploy,
+# the console and the e2e all prove, so one tag serves all three.
+# NOTE: this block is inside an UNQUOTED heredoc — a backtick here is command substitution,
+# which is how the first version of this comment printed ":local: command not found".
 AA_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}
 SOLVER_IMAGE=midnight-2-offers/cow-solver:${IMAGE_TAG_SUFFIX}
 SOLVER_SINK_IMAGE=midnight-2-offers/cow-solver-sink:${IMAGE_TAG_SUFFIX}

@@ -271,6 +271,12 @@ async function session<T>(
   try {
     await Rx.firstValueFrom(
       (walletCtx.wallet as any).state().pipe(
+        // THE THROTTLE IS LOAD-BEARING, not politeness: `isSynced` flaps true → false → true
+        // early in a sync, so a filter on the raw stream can fire on a wallet that is about to
+        // un-sync itself — and the transaction built against that view fails minutes later,
+        // inside proving, with a message about dust. Sampling every 5 s waits for a state that
+        // has stayed synced. (The fork's own `syncWallet` does the same, for the same reason.)
+        Rx.throttleTime(5_000),
         Rx.filter((st: any) => {
           if (st.isSynced !== true) return false;
           return requireFunds ? unshieldedTotal(st) > 0n : true;
