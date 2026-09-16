@@ -622,6 +622,20 @@ const ownerOf = (body: any): string => {
   return owner;
 };
 
+/**
+ * A device object good enough for a ledger READ.
+ *
+ * `resolveUseCounter` derives the device's rolling entry from its ADDRESS, its epoch and a
+ * candidate counter — it never needs a key or a point. So the prepare step, which has only
+ * the 20 bytes the page sent, can still find where the device sits.
+ */
+function deviceForRead(owner: string): EvmDevice {
+  return EvmDevice.fromBackend({
+    address: hexToBytes(owner),
+    async signTypedData() { throw new Error("read-only device"); },
+  } as any);
+}
+
 /** A device that signs with a signature somebody else already produced. */
 function deferredDevice(owner: string, signature: Uint8Array, point?: { x: bigint; y: bigint }): EvmDevice {
   return EvmDevice.fromBackend({
@@ -656,7 +670,7 @@ async function buildAction(body: any): Promise<Prepared> {
   const prep = await session("prepare", async (walletCtx) => {
     const account = await connectAccount(walletCtx, record);
     const ctx = await account.callContext();
-    const useCounter = await account.resolveUseCounter(EvmDevice.fromPublicPointless?.(owner) ?? deviceForRead(owner));
+    const useCounter = await account.resolveUseCounter(deviceForRead(owner));
     return { account, ctx, useCounter, walletCtx };
   }, { requireFunds: false });
 
@@ -843,14 +857,6 @@ async function buildAction(body: any): Promise<Prepared> {
   }
 
   throw new Error(`unknown kind '${kind}' (register | withdraw | withdraw-shielded | swap)`);
-}
-
-/** A device object good enough for a ledger READ (entry derivation binds the address only). */
-function deviceForRead(owner: string): EvmDevice {
-  return EvmDevice.fromBackend({
-    address: hexToBytes(owner),
-    async signTypedData() { throw new Error("read-only device"); },
-  } as any);
 }
 
 // ── the job queue (single worker: one facade per transaction) ────────────────
