@@ -42,7 +42,6 @@ import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
 import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
-import { nodeZkConfigRegistry } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
 import { Transaction } from "@midnightntwrk/ledger-v9";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 import {
@@ -69,7 +68,6 @@ import {
   consoleWaves,
   createWallet,
   hexToBytes,
-  managedPath,
   openWallet,
   providersFor,
   randomBytes32,
@@ -340,11 +338,16 @@ async function joinIssuer(walletCtx: any, token: TokenInfo) {
     CompiledContract.withCompiledFileAssets(zkPath),
   );
   const providers: any = await providersFor(walletCtx, zkPath);
-  // …and back to the PLAIN server for this one contract.
-  providers.proofProvider = httpClientProofProvider(
-    WALLET_PROOF_SERVER,
-    await nodeZkConfigRegistry(managedPath),
-  );
+  // …and back to the PLAIN server for this one contract — with ITS OWN bundle, not a
+  // registry. A registry exists to prove a CALL TREE: it spans the artefact root so a
+  // caller's proof can reach every callee's keys. An issuer is a leaf — one standalone
+  // contract, no callees — and the only root this image has is the Passport fork's, which
+  // contains no issuer bundle at all. Handing that registry to the issuer's proof provider
+  // is what produced `ZKArtifactNotFoundError: No ZK artifact bundle matches the deployed
+  // verifier key … circuit 'mint'` on 2026-09-16: the message says "missing or stale
+  // artifacts", but the artifacts were neither — the provider was looking in the wrong tree.
+  // `createProviders` already built the leaf provider over `zkPath`; reuse it.
+  providers.proofProvider = httpClientProofProvider(WALLET_PROOF_SERVER, providers.zkConfigProvider);
   const handle = await (findDeployedContract as any)(providers, {
     contractAddress: token.issuer,
     compiledContract: compiled,
