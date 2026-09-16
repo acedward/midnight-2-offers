@@ -1,161 +1,167 @@
 // aa-console.ts — the AA web console's relay service (compose service `aa-console`):
 //
-//   browser EVM wallet (EIP-1193, signs EIP-712 only) → THIS relay (builds the
-//   payload, recovers the signer's secp256k1 point, proves through the compose
-//   aa-proof-server, submits, pays fees) → AA Manager `execute` → Midnight.
+//   browser EVM wallet (EIP-1193, signs EIP-712 only) → THIS relay (builds the typed data,
+//   recovers the signer's secp256k1 point from the signature, proves through the compose
+//   aa-proof-server, submits, pays fees) → the user's own PASSPORT ACCOUNT → Midnight.
 //
-// The browser deliberately holds NO Midnight wallet and NO prover: it signs
-// `eth_signTypedData_v4` requests this server builds with the AA repo's own
-// codec (/aa/aalib — the digest scheme is never reimplemented), and everything
-// Midnight-side happens here, where the `execute` proof (MinoCrab k=18 by default,
-// a 544 MiB key upload per call; compactc k=19 and 1.14 GB with
-// AA_ZKIR_SOURCE=compactc) and the wallet machinery belong. `execute(payload, sig, pk)` needs
-// the signer's PUBLIC KEY, which no EVM wallet exposes — aalib's `recoverSigner`
-// recovers the affine point from the signature, which is the whole reason a
-// relay (not the page) talks to the contract.
+// ⚠ PROJECT 00034 CHANGED WHAT IS ON THE OTHER SIDE OF THE ARROW. It used to be one shared
+// AA-v3 Manager contract and one `execute` gateway carrying a selector. It is now ONE
+// CONTRACT PER USER — a fork of the Midnight Passport account — and one circuit per
+// operation. Four consequences a reader of this file needs up front:
 //
-// Session machinery is lifted from aa-e2e.ts (the proven path) and follows the
-// same three measured rules from the master plan's T7.5: deadlines now+1800 s,
-// ONE FACADE PER TRANSACTION (a single-worker job queue enforces it), and a
-// SHIELDED-FREE relay wallet (fund with scripts/fund-wallet.sh — unshielded
-// NIGHT + DUST only; up.sh does this when the profile comes up).
+//   1. REGISTER DEPLOYS A CONTRACT (Q40). The account id IS the contract address, and a
+//      contract address does not exist until its deploy transaction is built, so there is
+//      no id to sign over in advance. Registration is two transactions and minutes of
+//      proving, not one `execute`. The console keeps the owner → address map itself
+//      (./aa-store.ts) because nothing on chain does.
+//   2. THE SIGNATURE IS NEVER CARRIED ALONE. A gated circuit takes `(…args, pk,
+//      use_counter, sig)`: the PUBLIC POINT, which no EVM wallet exposes, is recovered from
+//      the signature itself, and `use_counter` is the device's rolling position, which the
+//      chain stores only as an entry HASH (MIP-0013 S11) — so the console keeps a roster
+//      and re-verifies it against ledger membership on every call.
+//   3. CUSTODY IS STATELESS (MIP-0012 §6.5). A shielded coin the account holds is NOT in
+//      ledger state; it lives in the owner's private coin store, and the chain carries only
+//      an encrypted inbox entry. So a deposit is coin + entry, and the console has to walk
+//      the inbox and capture the coin's `mt_index` afterwards or the coin is unspendable.
+//   4. THE INTERNAL TRANSFERS ARE GONE (Q41). Both accounts used to be rows in one
+//      contract's balance map; they are now separate contracts, and an account never calls
+//      another account. The console's send is withdraw → deposit through a wallet.
 //
-// Needs the unpruned image variant (AA_PRUNE_MANAGER_PROVERS=0): every operation
-// but fund/deposit proves the Manager's `execute` circuit HERE, reading the proving
-// key out of this image — which is exactly why the image must carry it. Which
-// artifact that is, and its k, is read off the image at start-up (zkir-source.ts)
-// and printed on every job rather than written into a comment that can go stale.
+// Session machinery keeps the three measured rules from the master plan's T7.5: short
+// transaction TTLs, ONE FACADE PER TRANSACTION (a single-worker job queue enforces it), and
+// a SHIELDED-FREE relay wallet (fund with scripts/fund-wallet.sh — unshielded NIGHT + DUST
+// only; up.sh does it when the profile comes up).
 
-import { readFileSync, existsSync } from "node:fs";
+import "./passport-env.ts";
+
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import * as Rx from "rxjs";
-import { findDeployedContract, createUnprovenCallTx } from "@midnight-ntwrk/midnight-js-contracts";
+
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
-import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
+import { findDeployedContract } from "@midnight-ntwrk/midnight-js-contracts";
+import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
 import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
-import {
-  buildWalletFacade,
-  buildWalletAndWaitForFunds,
-  registerNightForDust,
-  configureMidnightNodeProviders,
-} from "@effectstream/midnight-contracts";
+import { nodeZkConfigRegistry } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
 import { Transaction } from "@midnightntwrk/ledger-v9";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
-import { midnightNetworkConfig } from "@effectstream/midnight-contracts/midnight-env";
-import { MidnightBech32m, ShieldedAddress, UnshieldedAddress } from "@midnightntwrk/wallet-sdk-address-format";
-import { parseMidnightBech32m } from "./midnight-bech32m.ts";
+import {
+  MidnightBech32m,
+  ShieldedAddress,
+  UnshieldedAddress,
+} from "@midnightntwrk/wallet-sdk-address-format";
 
-import { deriveAccountId, buildEthSignTypedDataV4Request, computeDigest } from "/aa/aalib/codec.js";
-import { prepareEvmExecute } from "/aa/aalib/manager.js";
-import { recoverSigner, addressForPrivateKey } from "/aa/aalib/signature.js";
-import { metamaskSign } from "/aa/aalib/metamask.js";
-import type { Hex20, Hex32 } from "/aa/aalib/bytes.js";
-import { buildOpenSwapOffer } from "/aa/runner/aa-offer.ts";
-import { zkirSourceReceipt, zkirSourceLine } from "/aa/runner/zkir-source.ts";
-import { shieldedUserRecipient, unshieldedUserRecipient } from "/aa/runner/mint-recipient.ts";
+import { parseMidnightBech32m } from "./midnight-bech32m.ts";
+import { shieldedUserRecipient, unshieldedUserRecipient } from "./mint-recipient.ts";
+import { buildKernelOffer } from "./aa-offer.ts";
+import {
+  ARTIFACT_PATH,
+  BUILD,
+  CONFIG,
+  ROSTER_PATH,
+  SWAP_CIRCUIT,
+  WALLET_PROOF_SERVER,
+  CONTRACT_PROOF_SERVER,
+  bytes32,
+  coinPublicKeyBytes,
+  consoleAccountCircuits,
+  consoleCompiledAccount,
+  consoleWaves,
+  createWallet,
+  hexToBytes,
+  managedPath,
+  openWallet,
+  providersFor,
+  randomBytes32,
+  readArtifact,
+  toHex,
+  userAddressBytes,
+  zkConfigPath,
+} from "./passport.ts";
+import {
+  coinStoreOf,
+  findByAddress,
+  findByOwner,
+  loadStore,
+  saveStore,
+  upsert,
+  type AccountRecord,
+} from "./aa-store.ts";
+
+import { CustodyAccount, deployEvmAccount } from "../passport/src/wallet/account.js";
+import {
+  EvmDevice,
+  authorise,
+  evmChallengeFor,
+  evmTypedMessage,
+  type AuthRequest,
+  type CallContext,
+} from "../passport/src/wallet/signer.js";
+import { buildTypedData, computeDigest } from "../passport/src/wallet/eip712.js";
+import { generateEncKeyPair } from "../passport/src/wallet/inbox.js";
+import { depositAsThirdParty, inboxWalkPortable } from "../passport/src/wallet/deposit.js";
+import { candidateIndices } from "../passport/src/wallet/capture.js";
+import {
+  buildOpenSwapTypedData,
+  freshWantNonce,
+  offerAuthArgs,
+  offerInboxEntries,
+  openSwapChallenge,
+  openSwapDigest,
+  openSwapMessage,
+  predictChangeCoin,
+  signOpenSwapOffer,
+  RECIPIENT_OPEN,
+  type OfferCallArgs,
+} from "../passport/src/wallet/offer.js";
 
 const TAG = "[aa-console]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
-(globalThis as any).WebSocket = WebSocket;
 
-const AA_ROOT = "/aa";
-// Read ONCE at start-up: the answer is a property of the image and cannot change
-// while this process runs, and a deposit's log line must not depend on a file read
-// succeeding mid-proof.
-const ZKIR_SOURCE = zkirSourceReceipt(AA_ROOT);
 const PORT = Number(process.env["AA_CONSOLE_PORT"] ?? 8090);
-const WALLET_PROOF = process.env["AA_WALLET_PROOF_SERVER_URL"] ?? "http://proof-server:6300";
 const RELAY_SEED = process.env["AA_CONSOLE_SEED"]
   ?? "aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0aac0";
-const DEV_SIGNER = /^(1|true|yes)$/i.test(process.env["AA_CONSOLE_DEV_SIGNER"] ?? "");
-// A throwaway dev key for the env-gated built-in signer (automated verification
-// without a wallet extension). Public by design, like every seed in this repo.
-const DEV_KEY = ("0x" + "c0de".padStart(64, "d")) as Hex32;
-const DEV_ADDR = addressForPrivateKey(DEV_KEY) as Hex20;
-
-// The offer-files kernel (profile `offerfiles`), feature-detected: the swap
-// panel publishes there and degrades gracefully when the profile is down.
-const KERNEL_URL = process.env["AA_KERNEL_URL"] ?? "http://kernel:9999";
-// The cow-solver sink (profile `solver`), feature-detected. INTERNAL ONLY: it
-// publishes nothing to the host since its feed page was retired, so this
-// compose-network URL is the only way to reach it and the only reader here is
-// the infra probe below. Nothing is proxied to the browser any more.
-const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
-// The COW solver's read-only MONITOR SITE, as the BROWSER must reach it — a
-// HOST url, because the console embeds it in an iframe and a compose hostname
-// would resolve to nothing. This is the one page about the solver.
-const SOLVER_FRONTEND_PUBLIC_URL =
-  process.env["AA_SOLVER_FRONTEND_PUBLIC_URL"] ?? "http://127.0.0.1:10802";
-// …and as THIS PROCESS reaches it, over the compose network, for the infra probe.
-const SOLVER_FRONTEND_URL = process.env["AA_SOLVER_FRONTEND_URL"] ?? "http://solver-frontend:8080";
-// The solver's own status listener. Never published to the host: /status/* is
-// the solver's entire internal state and is bearer-gated. The console probes
-// only GET /health, which is OPEN by design and carries no internal data — so
-// the console needs no bearer and is given none.
-const SOLVER_STATUS_URL = process.env["AA_SOLVER_STATUS_URL"] ?? "http://solver:9100";
-// The offer poster's own read-only surface.
-const OFFER_POSTER_URL = process.env["AA_OFFER_POSTER_URL"] ?? "http://offer-poster:9977";
-// The local test-token faucet (profile `faucet`). TWO variables, and they are different
-// things: the first is what the RELAY dials over the compose network to probe it, the second
-// is what the BROWSER is told to open — a container hostname is not reachable from a browser,
-// and a published host port is not reachable from this container. Same split as the solver
-// monitor's two variables above.
-const FAUCET_URL = process.env["AA_FAUCET_URL"] ?? "http://faucet-site:14119";
-const FAUCET_PUBLIC_URL = process.env["AA_FAUCET_PUBLIC_URL"] ?? "http://127.0.0.1:10950";
-// The registry document name is per NETWORK, and the faucet site serves
-// `/metadata.<network>.json` out of the mounted directory by path. This stack is
-// `undeployed` and the profile's entrypoints refuse anything else, so the
-// variable exists to keep the one spelling in one place rather than to be
-// changed.
-const NETWORK_KEY = process.env["AA_FAUCET_NETWORK"] ?? "undeployed";
-// Shielded funding runs on the aa-deploy wallet (genesis-3): prefunded, and it
-// already holds the shielded colour minted at bring-up. The RELAY wallet stays
-// shielded-free (T7.5 rule) — that is the entire reason for the second seed.
+const TAKER_SEED = process.env["AA_TAKER_SEED"]
+  ?? "7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e";
+// Shielded funding runs on the aa-deploy wallet (genesis-3): prefunded, and it already
+// holds the colour minted at bring-up. The RELAY wallet stays shielded-free (T7.5 rule) —
+// that is the entire reason for the second seed.
 const FUNDER_SEED = process.env["MIDNIGHT_WALLET_SEED"]
   ?? "0000000000000000000000000000000000000000000000000000000000000003";
-// ── THE TOKEN SET IS THE LOCAL FAUCET'S REGISTRY (PR-B) ─────────────────────
-// It used to be three colours this console DERIVED:
-// `rawTokenType(domainSepFromName("WBTC"), offerFilesContractAddress)`, with the
-// address read from the kernel's `GET /v1/midnight/config`. Both halves of that
-// are gone at KERNEL_REF 5d794f9. Kernel PRs #69/#70 deleted the offer-files
-// contract, so there is no address to derive from — `/v1/midnight/config` now
-// answers four fields and `contractAddress` is not one of them, asserted by
-// upstream's own `api.test.ts` (`expect(body.contractAddress).toBeUndefined()`).
-//
-// The tokens are EXTERNAL now, and this stack issues them with the `faucet`
-// profile: six mint-test-tokens issuers, one contract each. So the console reads
-// the registry those issuers publish instead of computing anything —
-// `GET ${AA_FAUCET_URL}/metadata.<network>.json`, the same document its infra
-// probe already reads, served by `faucet-site` out of the shared volume and
-// re-opened by path on every request so a redeploy is picked up with no restart.
-//
-// WHAT THAT BUYS, beyond working at all:
-//   * REAL DECIMALS. The old code registered every token as `decimals: 6`. The
-//     six are 8/18/6/6/6/8, and a wrong scale is off by a factor of 10^n in
-//     every price, quote and sponsorship verdict. They now come from the
-//     registry, which is also where `registry-bridge` gets the ones it writes
-//     into the kernel — one source, so the two cannot disagree.
-//   * THE ISSUER ADDRESS PER TOKEN. Each token has its OWN contract, so a mint
-//     joins that token's issuer rather than one shared faucet.
-//   * NO NAME REGISTRATION HERE. `registry-bridge` owns `known_tokens` now, and
-//     it writes the kernel's own upper-case spelling with the seeded `asset_id`
-//     intact. A second writer racing it could only get in the way.
-//
-// `domainSepFromName` and the `rawTokenType` import went with the derivation:
-// the issuers' colours are `tokenType(_domain, kernel.self())` computed ON CHAIN
-// at deploy time and published as `tokenId`, so re-deriving them here would be
-// re-implementing a fact the registry already states.
+const DEV_SIGNER = /^(1|true|yes)$/i.test(process.env["AA_CONSOLE_DEV_SIGNER"] ?? "");
+// A throwaway dev key for the env-gated built-in signer (automated verification without a
+// wallet extension). Public by design, like every seed in this repo.
+const DEV_KEY = hexToBytes("d".repeat(60) + "c0de");
+const DEV_DEVICE = EvmDevice.fromPrivateKey(DEV_KEY);
+const DEV_ADDR = `0x${DEV_DEVICE.addressHex}`;
+
+const KERNEL_URL = process.env["AA_KERNEL_URL"] ?? "http://kernel:9999";
+const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
+const SOLVER_FRONTEND_PUBLIC_URL =
+  process.env["AA_SOLVER_FRONTEND_PUBLIC_URL"] ?? "http://127.0.0.1:10802";
+const SOLVER_FRONTEND_URL = process.env["AA_SOLVER_FRONTEND_URL"] ?? "http://solver-frontend:8080";
+const SOLVER_STATUS_URL = process.env["AA_SOLVER_STATUS_URL"] ?? "http://solver:9100";
+const OFFER_POSTER_URL = process.env["AA_OFFER_POSTER_URL"] ?? "http://offer-poster:9977";
+const FAUCET_URL = process.env["AA_FAUCET_URL"] ?? "http://faucet-site:14119";
+const FAUCET_PUBLIC_URL = process.env["AA_FAUCET_PUBLIC_URL"] ?? "http://127.0.0.1:10950";
+const NETWORK_KEY = process.env["AA_FAUCET_NETWORK"] ?? "undeployed";
+
+const artifact = readArtifact();
+if (!artifact) throw new Error(`${ARTIFACT_PATH} is missing — bring the stack up with ./up.sh --with aa`);
+const VAULT_ADDRESS = artifact?.vault?.address as string | undefined;
+const TEST_FAUCET = artifact?.testFaucet?.address as string | undefined;
+
+// ── the token set: the LOCAL FAUCET's registry (unchanged by 00034) ─────────
+// Six mint-test-tokens issuers, one contract each, published as a registry document by
+// the `faucet` profile. The console reads it rather than deriving anything: the colours
+// are `tokenType(_domain, kernel.self())` computed ON CHAIN at deploy time, and the
+// decimals are 8/18/6/6/6/8 rather than the 6 this console used to assume.
 type TokenInfo = {
-  /** The registry symbol, verbatim — `twBTC`, `utwUSDC`, … */
   name: string;
   family: "shielded" | "unshielded";
-  /** 64-hex, lower-case: the registry's `tokenId` for the ACTIVE deployment. */
   color: string;
-  /** Base units per coin, from the registry. NOT 6 for every token. */
   decimals: number;
-  /** The issuer contract this token is minted by. */
   issuer: string;
-  /** Human name, for the UI. */
   label: string;
 };
 const tokens: { list: TokenInfo[]; registryRevision: string | null; error: string | null } = {
@@ -171,21 +177,8 @@ const tokenByName = (name: string): TokenInfo => {
   }
   return t;
 };
-// ── DEFAULTS ARE POSITIONAL NOW, NOT NAMED ──────────────────────────────────
-// Every `?? "wBTC"` in this file used to name a token this console itself
-// invented. The six now come from the registry, and hard-coding `"twBTC"` here
-// would only move the coupling: a later registry with different symbols would
-// break every default at once, at request time, with "unknown token".
-//
-// So a default is "the Nth token of this family, in registry order". Registry
-// order is stable (upstream's `TOKEN_DEFINITIONS` is a frozen array) and today
-// gives shielded[0]=twBTC, shielded[1]=twETH, unshielded[0]=utwUSDC — the same
-// three roles wBTC / wETH / wUSD played. The API still accepts an explicit
-// `token` by name, which is what the browser sends once `/api/info` has told it
-// what exists.
 const ofFamily = (family: "shielded" | "unshielded"): TokenInfo[] =>
   tokens.list.filter((t) => t.family === family);
-/** The Nth token of a family, or a legible error naming what IS available. */
 const defaultToken = (family: "shielded" | "unshielded", index = 0): TokenInfo => {
   const candidates = ofFamily(family);
   const hit = candidates[index] ?? candidates[0];
@@ -197,7 +190,8 @@ const defaultToken = (family: "shielded" | "unshielded", index = 0): TokenInfo =
   }
   return hit;
 };
-const defaultTokenName = (family: "shielded" | "unshielded", index = 0): string => defaultToken(family, index).name;
+const defaultTokenName = (family: "shielded" | "unshielded", index = 0): string =>
+  defaultToken(family, index).name;
 
 async function resolveTokens() {
   const url = `${FAUCET_URL}/metadata.${NETWORK_KEY}.json`;
@@ -210,8 +204,6 @@ async function resolveTokens() {
     for (const token of doc.tokens ?? []) {
       const active = (token.deployments ?? []).find(
         (d: any) => d.deploymentId === token.activeDeploymentId && d.status === "active");
-      // A token still deploying is not an error for the console — it simply is
-      // not offered yet. A registry with NO active token is (see below).
       if (!active) continue;
       const color = String(active.tokenId ?? "").toLowerCase().replace(/^0x/, "");
       if (!/^[0-9a-f]{64}$/.test(color)) throw new Error(`${token.symbol}: tokenId is not a 64-hex colour`);
@@ -239,95 +231,23 @@ async function resolveTokens() {
     log(`token resolution FAILED (faucet profile down?): ${tokens.error} — token ops will error until it succeeds`);
   }
 }
-// The TAKER wallet (T9.4/Q14): settles book offers as "a different wallet" —
-// deliberately distinct from the relay so maker account, relay, and taker are
-// three visible parties. Funded by up.sh WITH --shielded-amount (the want leg
-// is shielded NIGHT). `aa-taker` in wallets/wallets.json.
-const TAKER_SEED = process.env["AA_TAKER_SEED"]
-  ?? "7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e";
 
-const ARTIFACT_PATH = "/aa/out/aa-contracts.json";
-const artifact = JSON.parse(readFileSync(ARTIFACT_PATH, "utf-8"));
-const MANAGER = artifact.manager.address as string;
-const MINTER = artifact.minter.address as string;
-// (The AA Minter's own TOKA colours in the artifact are RETIRED from this
-// console — the unified token set comes from the offer-files contract.)
+// ── the console's own state file ─────────────────────────────────────────────
 
-const toHex = (u: Uint8Array): string =>
-  Array.from(u, (x) => x.toString(16).padStart(2, "0")).join("");
-const hexToBytes = (h: string): Uint8Array => {
-  const c = h.replace(/^0x/, "");
-  return new Uint8Array(c.match(/.{2}/g)!.map((x) => parseInt(x, 16)));
-};
-const manager32 = (`0x` + MANAGER.replace(/^0x/, "").slice(0, 64)) as Hex32;
-
-const artifactDomain = (): Hex32 => {
-  const b = new TextEncoder().encode(artifact.manager.domain);
-  const o = new Uint8Array(32);
-  o.set(b);
-  return ("0x" + toHex(o)) as Hex32;
-};
-
-const DEV_OWNER_SECRET = (() => {
-  const b = new TextEncoder().encode("demo-infra:aa:dev-owner-secret");
-  const o = new Uint8Array(32);
-  o.set(b);
-  return o;
-})();
-const managerWitnesses = {
-  localOwnerSecret: ({ privateState }: { privateState: unknown }) => [privateState, DEV_OWNER_SECRET],
-};
-
-const loadContract = async (name: string) =>
-  await import(resolve(AA_ROOT, name, "src", "managed", "contract", "index.js"));
-
-// ── wallet sessions (one facade per transaction — T7.5 rule) ─────────────────
-
-async function session<T>(
-  label: string,
-  fn: (walletResult: any) => Promise<T>,
-  opts: { requireFunds?: boolean; seed?: string } = {},
-): Promise<T> {
-  const requireFunds = opts.requireFunds ?? true;
-  const walletResult = await buildWalletFacade(
-    {
-      id: midnightNetworkConfig.id,
-      indexer: midnightNetworkConfig.indexer,
-      indexerWS: midnightNetworkConfig.indexerWS,
-      node: midnightNetworkConfig.node,
-      proofServer: WALLET_PROOF,
-    } as any,
-    opts.seed ?? RELAY_SEED,
-    midnightNetworkConfig.id as any,
-  );
-  const wallet = walletResult.wallet as any;
-  try {
-    await Rx.firstValueFrom(
-      wallet.state().pipe(
-        Rx.filter((st: any) => {
-          const synced = st.isSynced ?? false;
-          const sh = st.shielded?.state?.progress?.isStrictlyComplete?.() ?? synced;
-          const un = st.unshielded?.progress?.isStrictlyComplete?.() ?? synced;
-          if (!(sh && un)) return false;
-          if (!requireFunds) return true;
-          return unshieldedTotal(st) > 0n;
-        }),
-        Rx.timeout({
-          each: 180_000,
-          with: () => Rx.throwError(() => new Error(
-            `${label}: wallet sync timeout` + (requireFunds ? " (relay wallet unfunded? run scripts/fund-wallet.sh with the aa-console seed)" : ""),
-          )),
-        }),
-      ),
+const readStore = () => loadStore(ROSTER_PATH);
+const writeRecord = (record: AccountRecord) => saveStore(ROSTER_PATH, upsert(readStore(), record));
+const requireRecord = (address: string): AccountRecord => {
+  const r = findByAddress(readStore(), address);
+  if (!r) {
+    throw new Error(
+      `this console has no record of account ${address.slice(0, 18)}… — it holds the coin store and the ` +
+      "encryption secret, so an account registered by another console cannot be driven from here (Q40)",
     );
-    if (requireFunds) {
-      try { await registerNightForDust(walletResult as any); } catch { /* already registered */ }
-    }
-    return await fn(walletResult);
-  } finally {
-    await wallet.stop?.().catch(() => {});
   }
-}
+  return r;
+};
+
+// ── wallet sessions (one facade per transaction — T7.5 rule) ────────────────
 
 const unshieldedTotal = (st: any): bigint => {
   const bal = st.unshielded?.balances;
@@ -336,109 +256,92 @@ const unshieldedTotal = (st: any): bigint => {
   return vals.reduce((a: bigint, v: any) => a + (v ?? 0n), 0n);
 };
 
-async function join(walletResult: any, name: string, address: string, witnesses: any, stateId: string,
-                    proofServer?: string) {
-  const Mod = await loadContract(name);
-  const zkPath = resolve(AA_ROOT, name, "src", "managed");
-  const compiled = CompiledContract.make(name, Mod.Contract as any).pipe(
-    CompiledContract.withWitnesses(witnesses as never),
+/**
+ * Open a wallet, run `fn`, close it. The fork's `createWallet` + a sync that also waits for
+ * funds when the caller needs them, because a facade that is synced but empty fails later,
+ * inside proving, with a message about DUST rather than about funding.
+ */
+async function session<T>(
+  label: string,
+  fn: (ctx: any) => Promise<T>,
+  opts: { requireFunds?: boolean; seed?: string } = {},
+): Promise<T> {
+  const requireFunds = opts.requireFunds ?? true;
+  const walletCtx: any = await createWallet(opts.seed ?? RELAY_SEED);
+  try {
+    await Rx.firstValueFrom(
+      (walletCtx.wallet as any).state().pipe(
+        Rx.filter((st: any) => {
+          if (st.isSynced !== true) return false;
+          return requireFunds ? unshieldedTotal(st) > 0n : true;
+        }),
+        Rx.timeout({
+          each: 240_000,
+          with: () => Rx.throwError(() => new Error(
+            `${label}: wallet sync timeout` +
+            (requireFunds ? " (wallet unfunded? run scripts/fund-wallet.sh with this seed)" : ""),
+          )),
+        }),
+      ),
+    );
+    return await fn(walletCtx);
+  } finally {
+    await (walletCtx.wallet as any).stop?.().catch(() => {});
+  }
+}
+
+// ── the mint-test-tokens issuers ─────────────────────────────────────────────
+// ONE CONTRACT PER TOKEN. The generated modules are COPIED into this image from the pinned
+// mint-test-tokens tree and never recompiled: those exact bytes are the ones whose verifier
+// keys the `faucet` profile registered on chain. They are zkir-v2 / [v6], so they prove on
+// the PLAIN proof server — while every Passport circuit is [v7] and proves on the
+// experimental one. That split is the reason this helper builds its own providers instead
+// of reusing `providersFor`.
+const MTT_MODULE = { shielded: "contract-mtt-shielded", unshielded: "contract-mtt-unshielded" } as const;
+
+async function joinIssuer(walletCtx: any, token: TokenInfo) {
+  if (tokens.list.length === 0) await resolveTokens();
+  if (!token.issuer) throw new Error(`${token.name}: the registry carries no issuer address (${tokens.error ?? "?"})`);
+  const name = MTT_MODULE[token.family];
+  const zkPath = resolve("/aa", name, "src", "managed");
+  const Mod: any = await import(resolve(zkPath, "contract", "index.js"));
+  const compiled = CompiledContract.make(name, Mod.Contract).pipe(
+    CompiledContract.withVacantWitnesses,
     CompiledContract.withCompiledFileAssets(zkPath),
   );
-  const providers = (await configureMidnightNodeProviders(
-    walletResult.wallet,
-    walletResult.zswapSecretKeys,
-    walletResult.walletZswapSecretKeys,
-    walletResult.dustSecretKey,
-    walletResult.walletDustSecretKey,
-    {
-      indexer: midnightNetworkConfig.indexer,
-      indexerWS: midnightNetworkConfig.indexerWS,
-      node: midnightNetworkConfig.node,
-      // The AA contracts prove on the experimental server (zkir-v3 / [v7]
-      // keys); the offer-files contract is a plain zkir-v2 / [v6] artifact and
-      // proves on the PLAIN server — the caller picks.
-      proofServer: proofServer ?? midnightNetworkConfig.proofServer,
-    },
-    `${stateId}-store`,
-    zkPath,
-    walletResult.unshieldedKeystore,
-  )) as any;
-  const handle = await findDeployedContract(providers, {
-    contractAddress: address,
-    compiledContract: compiled as any,
-    privateStateId: stateId,
+  const providers: any = await providersFor(walletCtx, zkPath);
+  // …and back to the PLAIN server for this one contract.
+  providers.proofProvider = httpClientProofProvider(
+    WALLET_PROOF_SERVER,
+    await nodeZkConfigRegistry(managedPath),
+  );
+  const handle = await (findDeployedContract as any)(providers, {
+    contractAddress: token.issuer,
+    compiledContract: compiled,
+    privateStateId: `mtt-${token.family}-${Date.now().toString(36)}`,
     initialPrivateState: {},
   });
   return { Mod, handle, providers, compiled };
 }
 
-// ── the local issuers: the token mint ───────────────────────────────────────
-// ONE CONTRACT PER TOKEN, not one faucet for all of them. Each mint-test-tokens
-// issuer holds its own `_domain` and its colour is `tokenType(_domain,
-// kernel.self())` — so the contract to join is the token's own
-// `deployments[].contractAddress`, taken from the registry.
-//
-// The generated modules are COPIED into this image from the pinned
-// mint-test-tokens tree (`contracts/v2/managed/{shielded,unshielded}`), never
-// recompiled: those exact bytes are the ones whose verifier keys the `faucet`
-// profile registered on chain. They are zkir-v2 / [v6], so they prove on the
-// PLAIN proof server — WALLET_PROOF — exactly as the offer-files artifact they
-// replace did, while the AA Manager and Minter keep the experimental [v7] one.
-//
-// Witnesses are `{}`: both issuer contracts are witness-free (upstream builds
-// them with `CompiledContract.withVacantWitnesses`).
-const MTT_MODULE = {
-  shielded: "contract-mtt-shielded",
-  unshielded: "contract-mtt-unshielded",
-} as const;
-
-async function joinIssuer(walletResult: any, token: TokenInfo) {
-  if (tokens.list.length === 0) await resolveTokens();
-  if (!token.issuer) throw new Error(`${token.name}: the registry carries no issuer address (${tokens.error ?? "?"})`);
-  return await join(walletResult, MTT_MODULE[token.family], token.issuer, {},
-    `mttPrivateState-${token.family}`, WALLET_PROOF);
-}
-
-/** Mint `amount` base units of a SHIELDED token to the CALLING wallet.
- *
- * `mint(recipient: Either<ZswapCoinPublicKey, ContractAddress>, amount: Uint<64>,
- * nonce: Bytes<32>)` — the same `Either` shape the offer-files circuit took, so
- * `shieldedUserRecipient` is unchanged. The LEFT arm always holds the CALLING
- * wallet's own coin public key: every caller here (`faucetJob`,
- * `fundShieldedJob`, `sendJob`) then deposits or spends those coins from that
- * same wallet, so no third-party encryption-key mapping is needed. The RIGHT arm
- * (a contract) is never used — a contract recipient must claim the coin by
- * running its receive circuit in the SAME transaction, which nothing here does,
- * and ledger-v9 rejects the transaction otherwise.
- *
- * NONCE: `Bytes<32>`, and it must not repeat for one issuer — the coin's
- * identity is derived from it. Random, not a counter: two console instances on
- * one issuer would collide on a counter. */
-async function mintShieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint) {
-  const issuer = await joinIssuer(walletResult, token);
-  const nonce = crypto.getRandomValues(new Uint8Array(32));
-  const coinPublicKey = String(walletResult.zswapSecretKeys.coinPublicKey);
-  jlog(j, `mint ${amount} ${token.name} (${token.decimals}d) → this wallet (${coinPublicKey.replace(/^0x/, "").slice(0, 12)}…) via issuer ${token.issuer.slice(0, 12)}…`);
-  const tx = await (issuer.handle.callTx as any).mint(
-    shieldedUserRecipient(coinPublicKey),
-    amount,
-    nonce,
+async function mintShieldedTo(walletCtx: any, j: Job, token: TokenInfo, amount: bigint) {
+  const issuer = await joinIssuer(walletCtx, token);
+  const nonce = randomBytes32();
+  const state: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
+  const coinPublicKey = String(state.shielded.coinPublicKey.toHexString());
+  jlog(j, `mint ${amount} ${token.name} (${token.decimals}d) → this wallet (${coinPublicKey.replace(/^0x/, "").slice(0, 12)}…)`);
+  const tx: any = await (issuer.handle.callTx as any).mint(
+    shieldedUserRecipient(coinPublicKey), amount, nonce,
   );
   jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
   return tx;
 }
 
-/** Mint `amount` base units of an UNSHIELDED token to a 32-byte user address.
- *
- * `mint(recipient: Either<ContractAddress, UserAddress>, amount: Uint<64>)` —
- * RIGHT arm, and no nonce: an unshielded balance is an account entry, not a coin.
- * Same `Either` shape as before, so `unshieldedUserRecipient` is unchanged. */
-async function mintUnshieldedTo(walletResult: any, j: Job, token: TokenInfo, amount: bigint, userAddr32: Uint8Array) {
-  const issuer = await joinIssuer(walletResult, token);
-  jlog(j, `mint ${amount} ${token.name} (${token.decimals}d) → ${toHex(userAddr32).slice(0, 12)}… via issuer ${token.issuer.slice(0, 12)}…`);
-  const tx = await (issuer.handle.callTx as any).mint(
-    unshieldedUserRecipient(toHex(userAddr32)),
-    amount,
+async function mintUnshieldedTo(walletCtx: any, j: Job, token: TokenInfo, amount: bigint, userAddr32: Uint8Array) {
+  const issuer = await joinIssuer(walletCtx, token);
+  jlog(j, `mint ${amount} ${token.name} (${token.decimals}d) → ${toHex(userAddr32).slice(0, 12)}…`);
+  const tx: any = await (issuer.handle.callTx as any).mint(
+    unshieldedUserRecipient(toHex(userAddr32)), amount,
   );
   jlog(j, `minted ${token.name} — tx=${tx.public?.txId ?? "?"}`);
   return tx;
@@ -446,413 +349,329 @@ async function mintUnshieldedTo(walletResult: any, j: Job, token: TokenInfo, amo
 
 // ── walletless ledger reads (straight from the indexer) ──────────────────────
 
-const publicData = indexerPublicDataProvider(
-  midnightNetworkConfig.indexer,
-  midnightNetworkConfig.indexerWS,
-);
-let managerMod: any = null;
+const publicData = indexerPublicDataProvider(CONFIG.indexer, CONFIG.indexerWS);
+let accountLedgerFn: ((data: unknown) => any) | null = null;
 
-async function readLedger() {
-  managerMod ??= await loadContract("contract-manager");
-  const state = await (publicData as any).queryContractState(MANAGER);
-  if (!state) throw new Error("manager contract state not found via indexer");
-  return { ledger: managerMod.ledger(state.data), Mod: managerMod };
+async function accountLedger(address: string): Promise<any> {
+  if (!accountLedgerFn) {
+    const Mod: any = await import("../passport/src/wallet/contract.js");
+    accountLedgerFn = Mod.ledger;
+  }
+  const state = await (publicData as any).queryContractState(address);
+  if (!state) throw new Error(`no contract state at ${address} — was it deployed on THIS chain?`);
+  return accountLedgerFn!(state.data);
 }
 
-async function listAccounts() {
-  const { ledger, Mod } = await readLedger();
+/** The console's registry (Q40): its own records, enriched with a ledger read each. */
+async function listAccounts(owner?: string) {
+  const store = readStore();
+  const records = owner ? findByOwner(store, owner) : store.accounts;
   if (!tokens.list.length) await resolveTokens();
   const out: Array<Record<string, unknown>> = [];
-  for (const [id, owner] of ledger.evmOwners) {
-    const balances: Record<string, string> = {};
-    for (const t of tokens.list) {
-      const col = hexToBytes(t.color);
-      if (t.family === "unshielded") {
-        const key = Mod.pureCircuits.unshieldedKey(id, col);
-        balances[t.name] = String(ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n);
-      } else {
-        const key = Mod.pureCircuits.shieldedKey(id, col);
-        balances[t.name] = String(ledger.shieldedBalances.member(key) ? ledger.shieldedBalances.lookup(key) : 0n);
+  for (const rec of records) {
+    let ledgerView: Record<string, unknown> = { error: null };
+    try {
+      const l = await accountLedger(rec.address);
+      const unshielded: Record<string, string> = {};
+      for (const t of ofFamily("unshielded")) {
+        const col = hexToBytes(t.color);
+        unshielded[t.name] = String(l.unshielded_balances.member(col) ? l.unshielded_balances.lookup(col) : 0n);
       }
+      ledgerView = {
+        booted: Boolean(l.booted),
+        authNonce: String(l.auth_nonce),
+        round: String(l.round),
+        inboxCount: String(l.inbox_count),
+        deviceEpoch: String(l.device_epoch),
+        encKey: toHex(Uint8Array.from(l.enc_key)),
+        unshielded,
+        error: null,
+      };
+    } catch (e) {
+      ledgerView = { error: e instanceof Error ? e.message : String(e) };
+    }
+    // The SHIELDED holdings are private state: they are in this console's coin store, not
+    // on the ledger. That asymmetry is the custody model, not a gap in the view.
+    const shielded: Record<string, string> = {};
+    for (const [colour, coin] of Object.entries(rec.coins)) {
+      const t = tokens.list.find((x) => x.color === colour);
+      shielded[t?.name ?? `0x${colour.slice(0, 12)}…`] = coin.value;
     }
     out.push({
-      accountId: "0x" + toHex(id),
-      owner: "0x" + toHex(owner),
-      nonce: String(ledger.evmNonces.member(id) ? ledger.evmNonces.lookup(id) : 0n),
-      balances,
+      accountId: rec.address,
+      address: rec.address,
+      owner: `0x${rec.owner}`,
+      registeredAt: rec.registeredAt,
+      liveOffer: rec.liveOffer ?? null,
+      shielded,
+      ...ledgerView,
     });
   }
   return out;
 }
 
-// ── pure / read-only functions against the Manager (no signature, no proof) ──
-// "Pure" ones run the compiled module's pureCircuits locally; "read" ones are
-// ledger lookups through the indexer. Nothing here mutates anything.
-const PURE_FN_DOCS = [
-  { fn: "deriveAccountId", kind: "pure", params: ["owner (0x…20 bytes)", "salt (0x…32 bytes)"], doc: "account id = hash(tag, manager, owner, salt)" },
-  { fn: "shieldedKey", kind: "pure", params: ["accountId (0x…32)", "colour (32-byte hex)"], doc: "the shieldedBalances map key for (account, colour)" },
-  { fn: "unshieldedKey", kind: "pure", params: ["accountId (0x…32)", "colour (32-byte hex)"], doc: "the unshieldedBalances map key for (account, colour)" },
-  { fn: "isRegistered", kind: "read", params: ["accountId (0x…32)"], doc: "accounts set membership" },
-  { fn: "evmOwner", kind: "read", params: ["accountId (0x…32)"], doc: "the EVM address bound to the account" },
-  { fn: "evmNonce", kind: "read", params: ["accountId (0x…32)"], doc: "next EIP-712 action nonce" },
-  { fn: "unshieldedBalance", kind: "read", params: ["accountId (0x…32)", "colour (32-byte hex, default demo token)"], doc: "unshielded credit for (account, colour)" },
-  { fn: "shieldedBalance", kind: "read", params: ["accountId (0x…32)", "colour (32-byte hex, default shielded token)"], doc: "shielded credit for (account, colour)" },
-  { fn: "poolHasColour", kind: "read", params: ["colour (32-byte hex, default shielded token)"], doc: "does the contract custody a pooled coin of this colour" },
-  { fn: "poolValue", kind: "read", params: ["colour (32-byte hex, default shielded token)"], doc: "the pooled coin for this colour (value, nonce, merkle index)" },
-  { fn: "deploymentDomain", kind: "read", params: [], doc: "the Manager's constructor domain (ledger field)" },
-];
+// ── connecting to an account ─────────────────────────────────────────────────
 
-async function runPureFn(fn: string, args: string[]): Promise<unknown> {
-  const b32 = (v: string | undefined, def?: string): Uint8Array => {
-    const h = (v && v.trim() !== "" ? v : def ?? "").replace(/^0x/, "").toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(h)) throw new Error("expected a 32-byte hex value");
-    return hexToBytes(h);
-  };
-  const b20 = (v: string | undefined): Uint8Array => {
-    const h = (v ?? "").replace(/^0x/, "").toLowerCase();
-    if (!/^[0-9a-f]{40}$/.test(h)) throw new Error("expected a 20-byte hex value");
-    return hexToBytes(h);
-  };
-  managerMod ??= await loadContract("contract-manager");
-  const pc = managerMod.pureCircuits;
-  switch (fn) {
-    case "deriveAccountId":
-      return { accountId: deriveAccountId(manager32, ("0x" + toHex(b20(args[0]))) as Hex20, ("0x" + toHex(b32(args[1]))) as Hex32) };
-    case "shieldedKey":
-      return { key: "0x" + toHex(pc.shieldedKey(b32(args[0]), b32(args[1], defaultToken("shielded").color))) };
-    case "unshieldedKey":
-      return { key: "0x" + toHex(pc.unshieldedKey(b32(args[0]), b32(args[1], defaultToken("unshielded").color))) };
-  }
-  const { ledger } = await readLedger();
-  switch (fn) {
-    case "isRegistered":
-      return { registered: ledger.accounts.member(b32(args[0])) };
-    case "evmOwner": {
-      const id = b32(args[0]);
-      return ledger.evmOwners.member?.(id) === false
-        ? { owner: null }
-        : { owner: "0x" + toHex(ledger.evmOwners.lookup(id)) };
-    }
-    case "evmNonce": {
-      const id = b32(args[0]);
-      return { nonce: String(ledger.evmNonces.member(id) ? ledger.evmNonces.lookup(id) : 0n) };
-    }
-    case "unshieldedBalance": {
-      const key = managerMod.pureCircuits.unshieldedKey(b32(args[0]), b32(args[1], defaultToken("unshielded").color));
-      return { balance: String(ledger.unshieldedBalances.member(key) ? ledger.unshieldedBalances.lookup(key) : 0n) };
-    }
-    case "shieldedBalance": {
-      const key = managerMod.pureCircuits.shieldedKey(b32(args[0]), b32(args[1], defaultToken("shielded").color));
-      return { balance: String(ledger.shieldedBalances.member(key) ? ledger.shieldedBalances.lookup(key) : 0n) };
-    }
-    case "poolHasColour":
-      return { pooled: ledger.pools.member(b32(args[0], defaultToken("shielded").color)) };
-    case "poolValue": {
-      const col = b32(args[0], defaultToken("shielded").color);
-      if (!ledger.pools.member(col)) return { pooled: false };
-      const coin = ledger.pools.lookup(col);
-      return { pooled: true, value: String(coin.value), nonce: "0x" + toHex(coin.nonce), mtIndex: String(coin.mt_index) };
-    }
-    case "deploymentDomain":
-      return { domain: "0x" + toHex(ledger.deploymentDomain), utf8: new TextDecoder().decode(ledger.deploymentDomain).replace(/\0+$/, "") };
-  }
-  throw new Error(`unknown function '${fn}'`);
+/**
+ * Connect a client to a registered account, restoring what the chain does not hold.
+ *
+ * The compiled contract MUST be the same circuit list the registration deployed:
+ * `findDeployedContract` verifies every declared circuit's verifier key against the
+ * deployed state, so one extra or one missing circuit is a `ContractTypeError` rather than
+ * a subtle failure later. Both sides come from `consoleAccountCircuits()`.
+ */
+async function connectAccount(walletCtx: any, record: AccountRecord): Promise<CustodyAccount> {
+  const providers = await providersFor(walletCtx, zkConfigPath);
+  const account = await CustodyAccount.connect(
+    providers,
+    consoleCompiledAccount(),
+    record.address,
+    coinStoreOf(record),
+  );
+  account.importRoster(record.roster);
+  return account;
 }
 
-async function nextNonce(accountId: Hex32): Promise<bigint> {
-  const { ledger } = await readLedger();
-  const id = hexToBytes(accountId);
-  return ledger.evmNonces.member(id) ? ledger.evmNonces.lookup(id) : 0n;
+/** Persist the coin store and roster after a call that may have changed either. */
+async function persistAccount(account: CustodyAccount, record: AccountRecord): Promise<AccountRecord> {
+  const store = await account.coinStore();
+  const next: AccountRecord = {
+    ...record,
+    coins: store.coins,
+    roster: account.exportRoster(),
+  };
+  writeRecord(next);
+  return next;
 }
 
-// ── relay wallet status (checked at startup and after every job) ─────────────
+/**
+ * Capture a coin the account now holds: work out its `mt_index` so `held_coin` can serve it.
+ *
+ * A shielded coin is spendable only with the index of its commitment in the ledger's Merkle
+ * tree, and nothing in the deposit's own result carries it. `candidateIndices` returns the
+ * commitments the transaction produced — usually the account's coin AND the depositing
+ * wallet's change — and there is no cheap way to tell them apart from outside, so the
+ * remaining candidates are STORED. A wrong index fails at PROVING, before any transaction
+ * exists, so the first spend can simply try the next one (see `spendWithCandidates`).
+ */
+async function captureCoin(
+  record: AccountRecord,
+  txId: string,
+  coin: { nonce: Uint8Array; color: Uint8Array; value: bigint },
+  j: Job,
+): Promise<AccountRecord> {
+  const { candidates } = await candidateIndices(txId);
+  if (candidates.length === 0) throw new Error(`no commitment was produced by ${txId} — nothing to capture`);
+  const colour = toHex(coin.color);
+  jlog(j, `capturing the coin: mt_index candidates ${candidates.map(String).join(", ")}`);
+  const next: AccountRecord = {
+    ...record,
+    coins: {
+      ...record.coins,
+      [colour]: {
+        nonceHex: toHex(coin.nonce),
+        colorHex: colour,
+        value: coin.value.toString(),
+        mtIndex: candidates[0]!.toString(),
+      },
+    },
+    mtCandidates: { ...(record.mtCandidates ?? {}), [colour]: candidates.map(String) },
+  };
+  writeRecord(next);
+  return next;
+}
+
+/** Run a spend, advancing the coin's mt_index through the stored candidates on a proving
+ *  failure. Nothing is submitted until a candidate proves, so a retry is free of on-chain
+ *  effect — only of time. */
+async function spendWithCandidates<T>(
+  j: Job,
+  record: AccountRecord,
+  colour: string,
+  walletCtx: any,
+  run: (account: CustodyAccount, record: AccountRecord) => Promise<T>,
+): Promise<{ result: T; record: AccountRecord }> {
+  const all = record.mtCandidates?.[colour] ?? [record.coins[colour]?.mtIndex ?? "0"];
+  let current = record;
+  let lastError: unknown = null;
+  for (let i = 0; i < all.length; i++) {
+    const idx = all[i]!;
+    if (current.coins[colour]) {
+      current = { ...current, coins: { ...current.coins, [colour]: { ...current.coins[colour]!, mtIndex: idx } } };
+    }
+    const account = await connectAccount(walletCtx, current);
+    try {
+      const result = await run(account, current);
+      // The index that proved is the right one; drop the alternatives.
+      current = await persistAccount(account, {
+        ...current,
+        mtCandidates: { ...(current.mtCandidates ?? {}), [colour]: [idx] },
+      });
+      return { result, record: current };
+    } catch (e) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (i === all.length - 1) throw e;
+      jlog(j, `mt_index ${idx} did not prove (${msg.slice(0, 120)}) — trying the next candidate`);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+// ── relay / taker wallet status ──────────────────────────────────────────────
 
 const relay = {
   address: null as string | null,
-  userAddress: null as string | null, // 32-byte hex, the deposit/withdraw target form
-  balance: "0",
-  funded: false,
-  checkedAt: null as string | null,
-  error: null as string | null,
+  userAddress: null as string | null,
+  balance: "0", funded: false, checkedAt: null as string | null, error: null as string | null,
 };
+const taker = { ...relay };
 
-const taker = {
-  address: null as string | null,
-  balance: "0",
-  funded: false,
-  checkedAt: null as string | null,
-  error: null as string | null,
-};
-
-async function checkTakerWallet() {
+async function checkWallet(which: "relay" | "taker") {
+  const target = which === "relay" ? relay : taker;
   try {
-    await session("taker-check", async (walletResult) => {
-      const st = await Rx.firstValueFrom((walletResult.wallet as any).state());
-      taker.address = walletResult.unshieldedAddress;
-      taker.balance = String(unshieldedTotal(st));
-      // Unshielded NIGHT is the funding proxy: up.sh funds this seed with
-      // NIGHT + DUST + shielded NIGHT in one fund-wallet.sh run, so a nonzero
-      // unshielded balance implies the whole set arrived.
-      taker.funded = unshieldedTotal(st) > 0n;
-      taker.error = null;
-    }, { requireFunds: false, seed: TAKER_SEED });
+    await session(`${which}-check`, async (walletCtx) => {
+      const st: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
+      target.address = String(walletCtx.unshieldedKeystore.getAddress());
+      target.userAddress = toHex(userAddressBytes(walletCtx));
+      target.balance = String(unshieldedTotal(st));
+      target.funded = unshieldedTotal(st) > 0n;
+      target.error = null;
+    }, { requireFunds: false, seed: which === "relay" ? RELAY_SEED : TAKER_SEED });
   } catch (e) {
-    taker.error = e instanceof Error ? e.message : String(e);
+    target.error = e instanceof Error ? e.message : String(e);
   }
-  taker.checkedAt = new Date().toISOString();
-  log(`taker wallet: funded=${taker.funded} balance=${taker.balance}${taker.error ? ` error=${taker.error}` : ""}`);
+  target.checkedAt = new Date().toISOString();
+  log(`${which} wallet: funded=${target.funded} balance=${target.balance}${target.error ? ` error=${target.error}` : ""}`);
 }
 
-/** T9.4 — settle a live book offer with the TAKER wallet (the Phase-9-proven
- * path: fetch blob by offerId, balance, finalize, submit; the kernel's own
- * nullifier fill-markers then flip the book row to `consumed`). */
-function takeJob(offerId: string): Job {
-  return enqueue("take", async (j) => {
-    jlog(j, `fetching offer ${offerId.slice(0, 16)}… from the kernel`);
-    const res = await fetch(`${KERNEL_URL}/v1/offers/${offerId}`, { signal: AbortSignal.timeout(10_000) });
-    if (!res.ok) throw new Error(`kernel: ${res.status} fetching the offer`);
-    const detail: any = await res.json();
-    const blob = String(detail.offerBech32 ?? "");
-    if (!blob.startsWith("swapoffer1")) throw new Error("offer blob missing from the kernel response");
-    jlog(j, "building the taker wallet (waits for funds — fund aa-taker if this times out)…");
-    const built: any = await buildWalletAndWaitForFunds(
-      {
-        id: midnightNetworkConfig.id,
-        indexer: midnightNetworkConfig.indexer,
-        indexerWS: midnightNetworkConfig.indexerWS,
-        node: midnightNetworkConfig.node,
-        proofServer: WALLET_PROOF,
-      } as any,
-      TAKER_SEED,
-      midnightNetworkConfig.id as any,
-    );
-    const wallet = built.wallet as any;
-    try {
-      const keys = { shieldedSecretKeys: built.zswapSecretKeys, dustSecretKey: built.dustSecretKey };
-      const offerTx = (Transaction as any).deserialize("signature", "proof", "binding", OfferFiles.decode(blob));
-      jlog(j, "balancing the settlement (taker funds the want leg, sweeps the give surplus)…");
-      const t0 = Date.now();
-      const recipe = await wallet.balanceFinalizedTransaction(offerTx, keys, {
-        ttl: new Date(Date.now() + 30 * 60_000),
-      });
-      const settleTx = await wallet.finalizeRecipe(recipe);
-      await wallet.submitTransaction(settleTx);
-      j.txId = settleTx.transactionHash?.().toString?.() ?? null;
-      jlog(j, `settlement submitted in ${((Date.now() - t0) / 1000).toFixed(0)}s — tx=${j.txId ?? "?"}`);
-    } finally {
-      await wallet.stop?.().catch(() => {});
-    }
-    // Confirm on the book — the kernel notices the consumed nullifiers.
-    for (let i = 0; i < 24; i++) {
-      await new Promise((r) => setTimeout(r, 5000));
-      try {
-        const s: any = await (await fetch(`${KERNEL_URL}/v1/offers/${offerId}/status`)).json();
-        if (s.status === "consumed") { jlog(j, "book status: CONSUMED — settlement confirmed"); return; }
-        if (["cancelled", "expired", "unknown", "not_found"].includes(s.status)) {
-          throw new Error(`offer ended with status ${s.status}`);
-        }
-      } catch (e) {
-        if (e instanceof Error && /ended with status/.test(e.message)) throw e;
-      }
-    }
-    jlog(j, "submitted, but the book has not flipped to consumed yet — check the offer status");
-  });
-}
-
-async function checkRelayWallet() {
-  try {
-    await session("wallet-check", async (walletResult) => {
-      const st = await Rx.firstValueFrom((walletResult.wallet as any).state());
-      relay.address = walletResult.unshieldedAddress;
-      const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-      relay.userAddress = toHex(Uint8Array.prototype.slice.call(parsed.data, 0, 32));
-      relay.balance = String(unshieldedTotal(st));
-      relay.funded = unshieldedTotal(st) > 0n;
-      relay.error = null;
-    }, { requireFunds: false });
-  } catch (e) {
-    relay.error = e instanceof Error ? e.message : String(e);
-  }
-  relay.checkedAt = new Date().toISOString();
-  log(`relay wallet: funded=${relay.funded} balance=${relay.balance}${relay.error ? ` error=${relay.error}` : ""}`);
-}
-
-// Resolve a wallet's zswap public keys from its seed (facade build, no funds
-// needed, no session queue — read-only key derivation plus a short sync).
+/** A wallet's zswap public keys, from its seed. Read-only key derivation plus a short sync. */
 async function walletZswapKeys(seed: string) {
-  const wr: any = await buildWalletFacade(
-    {
-      id: midnightNetworkConfig.id,
-      indexer: midnightNetworkConfig.indexer,
-      indexerWS: midnightNetworkConfig.indexerWS,
-      node: midnightNetworkConfig.node,
-      proofServer: WALLET_PROOF,
-    } as any,
-    seed,
-    midnightNetworkConfig.id as any,
-  );
-  try {
-    const cpk = wr.zswapSecretKeys.coinPublicKey;
-    const epk = wr.zswapSecretKeys.encryptionPublicKey;
+  return await session("keys", async (walletCtx) => {
+    const st: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
     return {
-      coinPublicKey: String(cpk).replace(/^0x/, "").toLowerCase(),
-      encryptionPublicKey: String(epk).replace(/^0x/, "").toLowerCase(),
-      coinPublicKeyRaw: cpk,
-      encryptionPublicKeyRaw: epk,
+      coinPublicKey: String(st.shielded.coinPublicKey.toHexString()).replace(/^0x/, "").toLowerCase(),
+      encryptionPublicKey: String(st.shielded.encryptionPublicKey.toHexString()).replace(/^0x/, "").toLowerCase(),
+      coinPublicKeyRaw: st.shielded.coinPublicKey,
+      encryptionPublicKeyRaw: st.shielded.encryptionPublicKey,
+      coinPublicKeyBytes: coinPublicKeyBytes(st),
+      userAddress: toHex(userAddressBytes(walletCtx)),
     };
-  } finally {
-    await wr.wallet?.stop?.().catch(() => {});
-  }
+  }, { requireFunds: false, seed });
 }
 
 // ── prepared actions (built here, signed in the browser) ─────────────────────
+//
+// TWO SHAPES OF SIGNATURE, and the difference matters to the page:
+//
+//   * ENROLMENT (register only) is an EIP-191 `personal_sign` over a fixed sentence. It
+//     authorises NOTHING and names no operation; its only purpose is to reveal the public
+//     point, which no EVM wallet exposes and which `activate_initial_device_with_evm`
+//     carries as an argument (Q30). One per wallet, ever.
+//   * AUTHORISATION is `eth_signTypedData_v4` over the operation's EIP-712 struct, whose
+//     `challenge` field is the MIP-0013 challenge core — it binds the account, the
+//     arguments, the witness coin and `auth_nonce`, so the approved call and the executed
+//     call are provably the same one.
+//
+// The prepared record keeps the exact `ctx`, `request` and `useCounter` the typed data was
+// built from, and the submit step re-derives the digest from those same values rather than
+// from fresh chain reads. If anything had moved in between, the re-derived digest differs,
+// the point recovered from the old signature is a different point, and the client refuses
+// by address — a loud failure instead of a call the circuit would silently reject.
 
-type Prepared = { action: any; owner: Hex20; kind: string; createdAt: number; summary: Record<string, unknown>; encMapping?: [unknown, unknown] };
+type Prepared = {
+  kind: string;
+  owner: string;              // 20-byte hex, no 0x
+  createdAt: number;
+  /** `personal_sign` message, for the enrolment shape. */
+  message?: string;
+  /** The typed data the wallet is asked to sign, for the authorisation shape. */
+  typedData?: unknown;
+  digest?: string;
+  summary: Record<string, unknown>;
+  /** Everything the submit step needs, kept verbatim. */
+  exec?: {
+    address: string;
+    ctx: CallContext;
+    useCounter: bigint;
+    request?: AuthRequest;
+    offer?: { call: OfferCallArgs; coin: any; giveToken: string; wantToken: string };
+  };
+};
 const prepared = new Map<string, Prepared>();
-const PREP_TTL_MS = 30 * 60_000; // the deadline horizon makes older ones useless anyway
+const PREP_TTL_MS = 30 * 60_000;
 const newId = (): string => crypto.randomUUID();
-
 function pruneOld() {
   const now = Date.now();
   for (const [k, v] of prepared) if (now - v.createdAt > PREP_TTL_MS) prepared.delete(k);
 }
 
-const deadline = (): bigint => BigInt(Math.floor(Date.now() / 1000) + 1800);
+const ownerOf = (body: any): string => {
+  const owner = String(body.owner ?? "").toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{40}$/.test(owner)) throw new Error("owner must be a 0x…20-byte EVM address");
+  return owner;
+};
 
-async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex32 }> {
+/** A device that signs with a signature somebody else already produced. */
+function deferredDevice(owner: string, signature: Uint8Array, point?: { x: bigint; y: bigint }): EvmDevice {
+  return EvmDevice.fromBackend({
+    address: hexToBytes(owner),
+    async signTypedData() { return signature; },
+    ...(point ? { publicPoint: () => ({ x: point.x, y: point.y, identity: false as const }) } : {}),
+  } as any);
+}
+
+async function buildAction(body: any): Promise<Prepared> {
   const kind = String(body.kind ?? "");
-  const owner = String(body.owner ?? "").toLowerCase() as Hex20;
-  if (!/^0x[0-9a-f]{40}$/.test(owner)) throw new Error("owner must be a 0x…20-byte EVM address");
+  const owner = ownerOf(body);
+
   if (kind === "register") {
-    const salt = ("0x" + toHex(crypto.getRandomValues(new Uint8Array(32)))) as Hex32;
-    const accountId = deriveAccountId(manager32, owner, salt);
-    const action = {
-      primaryType: "RegisterEvmAccount", manager: manager32, accountId, owner,
-      validUntil: deadline(), accountSalt: salt,
-    };
-    return { prep: { action, owner, kind, createdAt: Date.now(), summary: { accountId } }, accountId };
-  }
-  const accountId = String(body.accountId ?? "") as Hex32;
-  if (!/^0x[0-9a-f]{64}$/i.test(accountId)) throw new Error("accountId must be 0x…32 bytes");
-  const amount = BigInt(body.amount ?? 0);
-  if (amount <= 0n) throw new Error("amount must be a positive integer");
-  const nonce = await nextNonce(accountId);
-  if (kind === "transfer") {
-    const toAccountId = String(body.toAccountId ?? "") as Hex32;
-    if (!/^0x[0-9a-f]{64}$/i.test(toAccountId)) throw new Error("toAccountId must be 0x…32 bytes");
-    const token = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
-    if (token.family !== "unshielded") throw new Error(`transfer (selector 5) moves the UNSHIELDED balance — pick one of ${ofFamily("unshielded").map((t) => t.name).join(", ")}`);
-    const action = {
-      primaryType: "TransferInternalUnshielded", manager: manager32, accountId, owner,
-      validUntil: deadline(), nonce, toAccountId,
-      color: ("0x" + token.color) as Hex32, amount,
-    };
-    return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce), token: token.name } }, accountId };
-  }
-  if (kind === "transfer-shielded") {
-    // Selector 4 — first wired here; moves the SHIELDED in-Manager credit.
-    const toAccountId = String(body.toAccountId ?? "") as Hex32;
-    if (!/^0x[0-9a-f]{64}$/i.test(toAccountId)) throw new Error("toAccountId must be 0x…32 bytes");
-    const token = tokenByName(String(body.token ?? defaultTokenName("shielded")));
-    if (token.family !== "shielded") throw new Error("transfer-shielded (selector 4) moves a SHIELDED credit — pick a shielded token");
-    const action = {
-      primaryType: "TransferInternalShielded", manager: manager32, accountId, owner,
-      validUntil: deadline(), nonce, toAccountId,
-      color: ("0x" + token.color) as Hex32, amount,
-    };
-    return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce), token: token.name } }, accountId };
-  }
-  if (kind === "withdraw-shielded") {
-    // Selector 2 — first wired here. recipientKind 0 = the recipient's zswap
-    // COIN PUBLIC KEY (PR #10 refuses contract recipients). The matching
-    // ENCRYPTION key is resolved at build time (see withdrawShieldedJob) —
-    // the action itself only carries the coin key.
-    const token = tokenByName(String(body.token ?? defaultTokenName("shielded")));
-    if (token.family !== "shielded") throw new Error("withdraw-shielded (selector 2) pays a SHIELDED balance — pick a shielded token");
-    const action = {
-      primaryType: "WithdrawShielded", manager: manager32, accountId, owner,
-      validUntil: deadline(), nonce,
-      color: ("0x" + token.color) as Hex32, amount,
-      recipientKind: 0n, recipient: "0x" + "0".repeat(64), // stamped below
-    } as any;
-    // The recipient's coin + encryption keys come from either a pasted
-    // mn_shield-addr… (the address IS both keys — the general form) or one of
-    // the stack's wallets, whose keys a quick facade build derives from seed.
-    const to = String(body.to ?? "").trim();
-    let coinPk: string, encPk: unknown, coinPkRaw: unknown, label: string;
-    if (to) {
-      if (!to.startsWith("mn_shield-addr")) throw new Error("recipient must be a mn_shield-addr… address for a shielded withdraw");
-      const dec: any = parseMidnightBech32m(to).decode(ShieldedAddress as any, midnightNetworkConfig.id as any);
-      coinPk = String(dec.coinPublicKeyString()).toLowerCase();
-      coinPkRaw = coinPk;
-      encPk = String(dec.encryptionPublicKeyString()).toLowerCase();
-      label = `${to.slice(0, 26)}…`;
-    } else {
-      const target = String(body.target ?? "taker");
-      if (!["taker", "relay", "funder"].includes(target)) throw new Error("target must be taker|relay|funder — or pass `to` with a mn_shield-addr… address");
-      const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
-      const keys = await walletZswapKeys(seed);
-      coinPk = keys.coinPublicKey;
-      coinPkRaw = keys.coinPublicKeyRaw;
-      encPk = keys.encryptionPublicKeyRaw;
-      label = target;
-    }
-    action.recipient = ("0x" + coinPk) as Hex32;
+    // Nothing on chain yet, and nothing to bind: this is the Q30 enrolment signature.
     return {
-      prep: { action, owner, kind, createdAt: Date.now(),
-        summary: { nonce: String(nonce), token: token.name, target: label, recipientCoinPk: coinPk },
-        encMapping: [coinPkRaw, encPk] },
-      accountId,
+      kind, owner, createdAt: Date.now(),
+      message: EvmDevice.enrolmentMessage("a midnight-2-offers demo account"),
+      summary: {
+        what: "reveal this wallet's public key (EIP-191). It authorises nothing and moves no funds.",
+        then: "the console deploys your account contract: two transactions, a few minutes.",
+      },
     };
   }
-  if (kind === "swap") {
-    // Open-shape selector 6 (SHIELDED-ONLY by contract design): give the demo
-    // token, want shielded NIGHT — two distinct colours, so the offer's legs
-    // survive as a real {+give, −want} pair (same-colour legs would net out and
-    // the kernel would reject NOT_A_SWAP). recipientKind 0 = open offer: zero
-    // recipient, the give surplus floats for whoever settles.
-    //
-    // Friendly pre-check: the give leg spends the account's SHIELDED balance,
-    // and "balance 600000, give 1000 → account colour balance too low" has
-    // already confused one demo user whose 600000 was all unshielded.
-    const giveToken = tokenByName(String(body.giveToken ?? defaultTokenName("shielded", 0)));
-    const wantToken = tokenByName(String(body.wantToken ?? defaultTokenName("shielded", 1)));
-    if (giveToken.family !== "shielded" || wantToken.family !== "shielded")
-      throw new Error("open swaps are SHIELDED-only by contract design — pick shielded tokens for both legs");
-    if (giveToken.name === wantToken.name)
-      throw new Error("give and want must be different tokens (same-colour legs net out: NOT_A_SWAP)");
-    {
-      const { ledger, Mod } = await readLedger();
-      const shKey = Mod.pureCircuits.shieldedKey(hexToBytes(accountId), hexToBytes(giveToken.color));
-      const shBal = ledger.shieldedBalances.member(shKey) ? ledger.shieldedBalances.lookup(shKey) : 0n;
-      if (shBal < amount) {
-        throw new Error(
-          `the swap's give leg spends the account's SHIELDED ${giveToken.name} balance, which is ${shBal} ` +
-          `(unshielded balances do not count here) — run "Fund shielded" with ${giveToken.name} first, ` +
-          `then give at most that amount`,
-        );
-      }
-    }
-    const giveAmount = amount;
-    const wantAmount = BigInt(body.wantAmount ?? 0);
-    if (wantAmount <= 0n) throw new Error("wantAmount must be a positive integer");
-    const wantNonce = ("0x" + toHex(crypto.getRandomValues(new Uint8Array(32)))) as Hex32;
-    const action = {
-      primaryType: "OpenSwapShielded", manager: manager32, accountId, owner,
-      validUntil: deadline(), nonce,
-      giveColor: ("0x" + giveToken.color) as Hex32, giveAmount,
-      recipientKind: 0n, recipient: ("0x" + "0".repeat(64)) as Hex32,
-      wantNonce, wantColor: ("0x" + wantToken.color) as Hex32, wantAmount,
-      creditAccountId: accountId,
-    };
+
+  const address = String(body.accountId ?? body.address ?? "");
+  if (!address) throw new Error("accountId (the account's contract address) is required");
+  const record = requireRecord(address);
+  if (record.owner !== owner) throw new Error(`account ${address.slice(0, 18)}… is owned by 0x${record.owner}`);
+
+  // One ledger read serves the challenge, the typed data and the counter.
+  const prep = await session("prepare", async (walletCtx) => {
+    const account = await connectAccount(walletCtx, record);
+    const ctx = await account.callContext();
+    const useCounter = await account.resolveUseCounter(EvmDevice.fromPublicPointless?.(owner) ?? deviceForRead(owner));
+    return { account, ctx, useCounter, walletCtx };
+  }, { requireFunds: false });
+
+  const { ctx, useCounter } = prep;
+  const salt = ctx.evmDomainSalt!;
+  const amount = body.amount === undefined ? 0n : BigInt(body.amount);
+
+  const finish = (request: AuthRequest, summary: Record<string, unknown>): Prepared => {
+    const challenge = evmChallengeFor(ctx, hexToBytes(owner), request);
+    const { op, message } = evmTypedMessage(ctx, hexToBytes(owner), request, challenge);
+    const typedData = buildTypedData(ctx.contractAddress, salt, op, message);
+    const { digest } = computeDigest(ctx.contractAddress, salt, op, message);
     return {
-      prep: { action, owner, kind, createdAt: Date.now(),
-        summary: { nonce: String(nonce), give: `${giveAmount} ${giveToken.name}`, want: `${wantAmount} ${wantToken.name}`, giveToken: giveToken.name, wantToken: wantToken.name, wantNonce } },
-      accountId,
+      kind, owner, createdAt: Date.now(), typedData, digest: toHex(digest),
+      summary: { ...summary, authNonce: String(ctx.authNonce), useCounter: String(useCounter) },
+      exec: { address, ctx, useCounter, request },
     };
-  }
+  };
+
   if (kind === "withdraw") {
-    // Recipient: an mn_addr… bech32m or a raw 32-byte hex; default = the relay's own address.
+    const token = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
+    if (token.family !== "unshielded") {
+      throw new Error(`withdraw pays the UNSHIELDED balance — pick one of ${ofFamily("unshielded").map((t) => t.name).join(", ")}`);
+    }
+    if (amount <= 0n) throw new Error("amount must be a positive integer");
     let recipient32: string;
     const r = String(body.recipient ?? "").trim();
     if (r === "") {
@@ -861,29 +680,135 @@ async function buildAction(body: any): Promise<{ prep: Prepared; accountId: Hex3
     } else if (/^0x?[0-9a-f]{64}$/i.test(r)) {
       recipient32 = r.replace(/^0x/, "").toLowerCase();
     } else {
-      const parsed = parseMidnightBech32m(r);
-      recipient32 = toHex(Uint8Array.prototype.slice.call(parsed.data, 0, 32));
+      recipient32 = toHex(Uint8Array.prototype.slice.call(parseMidnightBech32m(r).data, 0, 32));
     }
-    const wdToken = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
-    if (wdToken.family !== "unshielded") throw new Error(`withdraw (selector 3) pays the UNSHIELDED balance — pick one of ${ofFamily("unshielded").map((t) => t.name).join(", ")}`);
-    const action = {
-      primaryType: "WithdrawUnshielded", manager: manager32, accountId, owner,
-      validUntil: deadline(), nonce,
-      color: ("0x" + wdToken.color) as Hex32, amount,
-      recipientKind: 0n, recipient: ("0x" + recipient32) as Hex32,
-    };
-    return { prep: { action, owner, kind, createdAt: Date.now(), summary: { nonce: String(nonce), recipient: recipient32 } }, accountId };
+    return finish(
+      { op: "withdrawUnshielded", color: hexToBytes(token.color), amount, recipient: hexToBytes(recipient32) },
+      { token: token.name, amount: String(amount), recipient: recipient32 },
+    );
   }
-  throw new Error(`unknown kind '${kind}' (register | transfer | withdraw)`);
+
+  if (kind === "withdraw-shielded") {
+    const token = tokenByName(String(body.token ?? defaultTokenName("shielded")));
+    if (token.family !== "shielded") throw new Error("withdraw-shielded pays a SHIELDED coin — pick a shielded token");
+    if (amount <= 0n) throw new Error("amount must be a positive integer");
+    const held = record.coins[token.color];
+    if (!held) throw new Error(`the account holds no ${token.name} coin — fund it first`);
+    if (BigInt(held.value) < amount) {
+      throw new Error(`the account's ${token.name} coin is ${held.value}; stateless custody has no in-circuit merge, so at most that can be spent in one call`);
+    }
+    const to = String(body.to ?? "").trim();
+    const target = String(body.target ?? "taker");
+    let coinPk: string;
+    let label: string;
+    if (to) {
+      if (!to.startsWith("mn_shield-addr")) throw new Error("recipient must be a mn_shield-addr… address for a shielded withdraw");
+      const dec: any = parseMidnightBech32m(to).decode(ShieldedAddress as any, CONFIG.networkId as any);
+      coinPk = String(dec.coinPublicKeyString()).replace(/^0x/, "").toLowerCase();
+      label = `${to.slice(0, 26)}…`;
+    } else {
+      if (!["taker", "relay", "funder"].includes(target)) {
+        throw new Error("target must be taker|relay|funder — or pass `to` with a mn_shield-addr… address");
+      }
+      const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
+      coinPk = (await walletZswapKeys(seed)).coinPublicKey;
+      label = target;
+    }
+    const coin = {
+      nonce: hexToBytes(held.nonceHex), color: hexToBytes(held.colorHex),
+      value: BigInt(held.value), mt_index: BigInt(held.mtIndex),
+    };
+    return finish(
+      { op: "withdrawShielded", recipient: hexToBytes(coinPk), color: hexToBytes(token.color), amount, coin },
+      { token: token.name, amount: String(amount), target: label, recipientCoinPk: coinPk },
+    );
+  }
+
+  if (kind === "swap") {
+    const giveToken = tokenByName(String(body.giveToken ?? defaultTokenName("shielded", 0)));
+    const wantToken = tokenByName(String(body.wantToken ?? defaultTokenName("shielded", 1)));
+    if (giveToken.family !== "shielded" || wantToken.family !== "shielded") {
+      throw new Error("open swaps are SHIELDED-only by contract design — pick shielded tokens for both legs");
+    }
+    if (giveToken.name === wantToken.name) {
+      throw new Error("give and want must be different tokens (same-colour legs net out: NOT_A_SWAP)");
+    }
+    const giveAmount = amount;
+    const wantAmount = BigInt(body.wantAmount ?? 0);
+    if (giveAmount <= 0n || wantAmount <= 0n) throw new Error("give and want amounts must be positive integers");
+    // Q7: the MIP-0013 seam consumes ONE device entry per call, so a second offer signed
+    // while the first is unsettled makes the first unsettleable — its auth_nonce is stale.
+    // The console serialises rather than letting a user strand an offer.
+    if (record.liveOffer) {
+      throw new Error(
+        `this account already has a live offer (${record.liveOffer.offerId.slice(0, 16)}…, ` +
+        `${record.liveOffer.give} for ${record.liveOffer.want}). One live offer per account (Q7): ` +
+        "settle or cancel it first. The seam consumes one device entry per call, so signing a second " +
+        "offer now would make the first one permanently unsettleable.",
+      );
+    }
+    const held = record.coins[giveToken.color];
+    if (!held) {
+      throw new Error(
+        `the swap's give leg spends a SHIELDED ${giveToken.name} coin this account holds, and it holds none — ` +
+        `run "Fund shielded" with ${giveToken.name} first`,
+      );
+    }
+    if (BigInt(held.value) < giveAmount) {
+      throw new Error(
+        `the account's ${giveToken.name} coin is ${held.value} and the give leg is ${giveAmount}. Stateless ` +
+        "custody has no in-circuit merge: one offer spends exactly one coin",
+      );
+    }
+    const coin = {
+      nonce: hexToBytes(held.nonceHex), color: hexToBytes(held.colorHex),
+      value: BigInt(held.value), mt_index: BigInt(held.mtIndex),
+    };
+    const want = { nonce: freshWantNonce(), color: hexToBytes(wantToken.color), value: wantAmount };
+    const change = predictChangeCoin(coin as any, giveAmount);
+    const { wantEntry, changeEntry } = offerInboxEntries(hexToBytes(record.encPublicKey), want, change);
+    const call: OfferCallArgs = {
+      giveColor: hexToBytes(giveToken.color),
+      giveAmount,
+      recipientKind: RECIPIENT_OPEN,
+      recipient: new Uint8Array(32),
+      want,
+      wantEntry,
+      changeEntry,
+      validUntil: 0n,
+    };
+    const challenge = openSwapChallenge(ctx.contractAddress, hexToBytes(owner), ctx.authNonce, call, coin as any);
+    const message = openSwapMessage(ctx.contractAddress, hexToBytes(owner), ctx.authNonce, call, challenge);
+    const typedData = buildOpenSwapTypedData(salt, message);
+    const { digest } = openSwapDigest(salt, message);
+    return {
+      kind, owner, createdAt: Date.now(), typedData, digest: toHex(digest),
+      summary: {
+        give: `${giveAmount} ${giveToken.name}`, want: `${wantAmount} ${wantToken.name}`,
+        giveToken: giveToken.name, wantToken: wantToken.name,
+        wantNonce: toHex(want.nonce), authNonce: String(ctx.authNonce), useCounter: String(useCounter),
+      },
+      exec: { address, ctx, useCounter, offer: { call, coin, giveToken: giveToken.name, wantToken: wantToken.name } },
+    };
+  }
+
+  throw new Error(`unknown kind '${kind}' (register | withdraw | withdraw-shielded | swap)`);
 }
 
-// ── the job queue (single worker: one facade per transaction, one proof at a time) ──
+/** A device object good enough for a ledger READ (entry derivation binds the address only). */
+function deviceForRead(owner: string): EvmDevice {
+  return EvmDevice.fromBackend({
+    address: hexToBytes(owner),
+    async signTypedData() { throw new Error("read-only device"); },
+  } as any);
+}
+
+// ── the job queue (single worker: one facade per transaction) ────────────────
 
 type Job = {
   id: string; kind: string; state: "queued" | "running" | "done" | "error";
   log: string[]; txId: string | null; error: string | null;
-  data?: unknown; // job-specific result payload (e.g. the built offer blob)
-  createdAt: string; run: (j: Job) => Promise<void>;
+  data?: unknown; createdAt: string; run: (j: Job) => Promise<void>;
 };
 const jobs = new Map<string, Job>();
 const queue: Job[] = [];
@@ -900,17 +825,16 @@ function enqueue(kind: string, run: (j: Job) => Promise<void>): Job {
   return job;
 }
 
-const jlog = (j: Job, line: string) => { j.log.push(`${new Date().toISOString().slice(11, 19)} ${line}`); log(`job ${j.id.slice(0, 8)} ${line}`); };
+const jlog = (j: Job, line: string) => {
+  j.log.push(`${new Date().toISOString().slice(11, 19)} ${line}`);
+  log(`job ${j.id.slice(0, 8)} ${line}`);
+};
 
-// The aa-proof-server gets OOM-killed under host memory pressure (measured when
-// `execute` was compactc's k=19: a 1.14 GB proving key uploaded per call, 19
-// container restarts in one day. The MinoCrab k=18 default halves that key, which
-// is the main reason it is the default; the retry stays because the failure class
-// is memory pressure, not a particular key size) and the SDK surfaces the dropped
-// socket as "'prove' returned an error: The socket connection was closed". Nothing has
-// been submitted at that point, so ONE retry after the server's restart window
-// is safe and has succeeded every time it was tried by hand. Only this exact
-// transient class retries — real failures still surface immediately.
+// The aa-proof-server gets OOM-killed under host memory pressure — an `evm` circuit is
+// k=18 and its 570 MB proving key is uploaded per call — and the SDK surfaces the dropped
+// socket as "'prove' returned an error: The socket connection was closed". Nothing has been
+// submitted at that point, so ONE retry after the server's restart window is safe. Only
+// this exact transient class retries.
 const TRANSIENT_PROVE =
   /socket connection was closed|'prove' returned an error|ConnectionRefused|Failed to connect|fetch failed/i;
 async function withProveRetry<T>(j: Job, what: string, fn: () => Promise<T>): Promise<T> {
@@ -947,163 +871,269 @@ async function work() {
   }
 }
 
-function executeJob(prep: Prepared, signature: string): Job {
+// ── register: DEPLOY an account ──────────────────────────────────────────────
+
+function registerJob(prep: Prepared, signatureHex: string): Job {
+  return enqueue("register", async (j) => {
+    const { recoverPoint, parseSignature, lowS, eip191Digest, ethereumAddress } =
+      await import("../passport/src/wallet/signer.js") as any;
+    jlog(j, "recovering the wallet's public point from the enrolment signature");
+    const sig = lowS(parseSignature(hexToBytes(signatureHex)));
+    const point = recoverPoint(eip191Digest(prep.message!), sig);
+    const derived = toHex(ethereumAddress(point));
+    if (derived !== prep.owner) throw new Error(`the enrolment signature belongs to 0x${derived}, not 0x${prep.owner}`);
+    jlog(j, `point recovered and checked against 0x${prep.owner}`);
+
+    const device = EvmDevice.fromPublicPoint(hexToBytes(prep.owner), point);
+    const encKeys = generateEncKeyPair();
+    const waves = consoleWaves();
+    jlog(j, `deploying: wave 1 = ${waves.waveOne.length} operations, wave 2 = ${waves.waveTwo.length} ` +
+      `(the offer circuit and the authority retirement ride wave 2)`);
+    jlog(j, `vault ${VAULT_ADDRESS ? `${VAULT_ADDRESS.slice(0, 18)}…` : "(none)"} — sealed into the constructor (FR-022)`);
+
+    const t0 = Date.now();
+    const account = await withProveRetry(j, "register", () => session("register", async (walletCtx) => {
+      const providers = await providersFor(walletCtx, zkConfigPath);
+      return await deployEvmAccount({
+        providers,
+        device,
+        encKeys,
+        compiledContract: consoleCompiledAccount(),
+        waveOneCircuits: waves.waveOne,
+        waveTwoCircuits: waves.waveTwo,
+        armsInWaveTwo: [],
+        retireAuthority: true,
+        ...(VAULT_ADDRESS ? { vaultAddress: hexToBytes(VAULT_ADDRESS) } : {}),
+      } as any);
+    }));
+    const secs = ((Date.now() - t0) / 1000).toFixed(0);
+    jlog(j, `account deployed and activated in ${secs}s — ${account.address}`);
+
+    const record: AccountRecord = {
+      address: account.address,
+      owner: prep.owner,
+      encPublicKey: toHex(encKeys.publicKey),
+      encSecretKey: toHex(encKeys.secretKey),
+      roster: account.exportRoster(),
+      coins: {},
+      liveOffer: null,
+      registeredAt: new Date().toISOString(),
+      meta: { network: CONFIG.networkId, vault: VAULT_ADDRESS ?? "", deploySeconds: secs },
+    };
+    writeRecord(record);
+    j.txId = account.address;
+    j.data = { address: account.address, owner: `0x${prep.owner}`, circuits: consoleAccountCircuits().length };
+    jlog(j, `registered — the account id IS the contract address (Q40): ${account.address}`);
+  });
+}
+
+// ── gated calls ──────────────────────────────────────────────────────────────
+
+function gatedJob(prep: Prepared, signatureHex: string): Job {
   return enqueue(prep.kind, async (j) => {
-    jlog(j, `verifying the ${prep.action.primaryType} signature`);
-    const { digest } = computeDigest(prep.action, artifactDomain());
-    const recovered = recoverSigner(digest, signature, { requireLowS: true });
-    if (recovered.address.toLowerCase() !== prep.owner.toLowerCase())
-      throw new Error(`recovered signer ${recovered.address} is not the action owner ${prep.owner}`);
-    const p = prepareEvmExecute(prep.action, artifactDomain(), signature as `0x${string}`);
-    jlog(j, `signer verified (${recovered.address}) — opening a wallet session`);
-    await withProveRetry(j, prep.kind, () => session(prep.kind, async (walletResult) => {
-      const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      // Which artifact is about to be proved, read off THIS image rather than
-      // guessed from a build flag — the whole point of the receipt.
-      jlog(j, `proving execute — ${zkirSourceLine(ZKIR_SOURCE)}`);
+    const exec = prep.exec!;
+    const record = requireRecord(exec.address);
+    const sig = hexToBytes(signatureHex);
+    const device = deferredDevice(prep.owner, sig);
+    jlog(j, `re-deriving the ${prep.kind} authorisation from the prepared context (authNonce ${exec.ctx.authNonce})`);
+    const auth = await authorise(device, exec.ctx, exec.request!, exec.useCounter);
+    jlog(j, `signature verified: the point recovered from it hashes to 0x${prep.owner}`);
+
+    await withProveRetry(j, prep.kind, () => session(prep.kind, async (walletCtx) => {
       const t0 = Date.now();
-      if (prep.encMapping) {
-        // Selector 2 (withdraw shielded): the payout coin is ENCRYPTED to the
-        // recipient, so the builder needs their encryption public key — which
-        // callTx cannot carry. Manual path: build the unproven call with the
-        // mapping, prove, then wallet-balance (DUST fees) and submit — the
-        // exact settle mechanics the taker flow already proved.
-        const built: any = await createUnprovenCallTx(mgr.providers, {
-          compiledContract: mgr.compiled,
-          circuitId: "execute",
-          contractAddress: MANAGER,
-          args: [p.payload, p.signature, p.point],
-          privateStateId: "aaManagerPrivateState",
-          additionalCoinEncPublicKeyMappings: new Map([[prep.encMapping[0], prep.encMapping[1]]]),
-        } as any);
-        const proven: any = await mgr.providers.proofProvider.proveTx(built.private.unprovenTx);
-        const bound: any = typeof proven.bind === "function" ? proven.bind() : proven;
-        jlog(j, `proven (${((Date.now() - t0) / 1000).toFixed(0)}s) — balancing + submitting…`);
-        const wallet = walletResult.wallet as any;
-        const keys = { shieldedSecretKeys: walletResult.zswapSecretKeys, dustSecretKey: walletResult.dustSecretKey };
-        const recipe = await wallet.balanceFinalizedTransaction(bound, keys, { ttl: new Date(Date.now() + 30 * 60_000) });
-        const finalTx = await wallet.finalizeRecipe(recipe);
-        await wallet.submitTransaction(finalTx);
-        j.txId = finalTx.transactionHash?.().toString?.() ?? null;
-        jlog(j, `landed — tx=${j.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s total)`);
-      } else {
-        const tx = await (mgr.handle.callTx as any).execute(p.payload, p.signature, p.point);
-        j.txId = tx.public?.txId ?? null;
-        jlog(j, `landed — tx=${j.txId ?? "?"} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+      if (exec.request!.op === "withdrawUnshielded") {
+        const account = await connectAccount(walletCtx, record);
+        const req = exec.request as Extract<AuthRequest, { op: "withdrawUnshielded" }>;
+        jlog(j, `proving withdraw_unshielded_with_evm (k=18) …`);
+        const r = await account.withdrawUnshieldedWithAuth(req.color, req.amount, req.recipient, auth as any);
+        j.txId = r.txId;
+        await persistAccount(account, record);
+        jlog(j, `landed — tx=${r.txId} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+        return;
+      }
+      // withdrawShielded: the spend consumes the held coin and returns the change, which
+      // has to go back into the coin store or the remainder is lost to the client.
+      const req = exec.request as Extract<AuthRequest, { op: "withdrawShielded" }>;
+      const colour = toHex(req.color);
+      const { result, record: after } = await spendWithCandidates(j, record, colour, walletCtx,
+        async (account) => {
+          jlog(j, "proving withdraw_shielded_with_evm (k=18) …");
+          return await account.withdrawShieldedWithAuth(req.recipient, req.color, req.amount, auth as any);
+        });
+      j.txId = (result as any).txId;
+      jlog(j, `landed — tx=${j.txId} (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+      const change = (result as any).change;
+      let next = { ...after, coins: { ...after.coins } };
+      delete next.coins[colour];
+      writeRecord(next);
+      if (change) {
+        jlog(j, `the spend returned ${change.value} of change — capturing it and sealing its inbox entry`);
+        next = await captureCoin(next, j.txId!, change, j);
+        // The change coin's description is NOT on chain: the circuit returns it and the
+        // owner appends the entry itself, which is a second gated call. Without it the
+        // coin is invisible to anyone rebuilding the store from chain data alone (S3).
+        const { sealInboxEntry } = await import("../passport/src/wallet/inbox.js");
+        const entry = sealInboxEntry(hexToBytes(next.encPublicKey), change);
+        const account2 = await connectAccount(walletCtx, next);
+        const ctx2 = await account2.callContext();
+        const counter2 = await account2.resolveUseCounter(deviceForRead(prep.owner));
+        jlog(j, "the change entry needs a second signature — the console cannot sign for you, so it is queued for the page");
+        j.data = { ...(j.data as any ?? {}), pendingChangeEntry: { entry: toHex(entry), authNonce: String(ctx2.authNonce), useCounter: String(counter2) } };
+        void account2;
       }
     }));
   });
 }
 
-/** Selector-6 open swap: prove the execute, NEVER submit — the proven-unbalanced
- * transaction IS the offer; encode MIP-0005 and publish to the kernel. */
-function offerJob(prep: Prepared, signature: string): Job {
+// ── the open-swap offer ──────────────────────────────────────────────────────
+
+function offerJob(prep: Prepared, signatureHex: string): Job {
   return enqueue("swap-build", async (j) => {
-    jlog(j, `verifying the ${prep.action.primaryType} signature`);
-    const { digest } = computeDigest(prep.action, artifactDomain());
-    const recovered = recoverSigner(digest, signature, { requireLowS: true });
-    if (recovered.address.toLowerCase() !== prep.owner.toLowerCase())
-      throw new Error(`recovered signer ${recovered.address} is not the action owner ${prep.owner}`);
-    const p = prepareEvmExecute(prep.action, artifactDomain(), signature as `0x${string}`);
-    const built = await withProveRetry(j, "swap-offer", () => session("swap-offer", async (walletResult) => {
-      const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      return await buildOpenSwapOffer({
-        providers: mgr.providers,
-        compiledContract: mgr.compiled,
-        managerAddress: MANAGER,
-        args: [p.payload, p.signature, p.point],
-        giveColorHex: String(prep.action.giveColor).replace(/^0x/, ""),
-        giveAmount: prep.action.giveAmount as bigint,
-        wantColorHex: String(prep.action.wantColor).replace(/^0x/, ""),
-        wantAmount: prep.action.wantAmount as bigint,
-        log: (line) => jlog(j, line),
-      });
-    }, { requireFunds: false })); // the maker contributes no coins and pays no fees
-    // Persist the blob BEFORE publishing — it is the product of two minutes of
-    // proving, and it stays reproducible (settle-by-blob, kernel re-post) even
-    // when the kernel rejects or is down.
+    const exec = prep.exec!;
+    const record = requireRecord(exec.address);
+    const offerSpec = exec.offer!;
+    const device = deferredDevice(prep.owner, hexToBytes(signatureHex));
+    jlog(j, "re-deriving the OpenSwapShielded authorisation from the prepared context");
+    const auth = await signOpenSwapOffer(device, exec.ctx, offerSpec.call, offerSpec.coin, exec.useCounter);
+    jlog(j, `signature verified: the point recovered from it hashes to 0x${prep.owner}`);
+
+    const built = await withProveRetry(j, "swap-offer", () => session("swap-offer", async (walletCtx) => {
+      const account = await connectAccount(walletCtx, record);
+      return await buildKernelOffer({
+        providers: (account as any).providers,
+        compiledContract: consoleCompiledAccount(),
+        accountAddress: record.address,
+        privateStateId: (account as any).privateStateId,
+        circuitId: SWAP_CIRCUIT,
+        call: offerSpec.call,
+        authArgs: offerAuthArgs(auth),
+      }, (line) => jlog(j, line));
+      // The maker contributes no coins and pays no fees — hence requireFunds: false.
+    }, { requireFunds: false }));
+
     try {
       const { mkdirSync, writeFileSync } = await import("node:fs");
       mkdirSync("/aa/out/offers", { recursive: true });
-      writeFileSync(`/aa/out/offers/${built.sha256}.swapoffer`, built.blob + "\n");
+      writeFileSync(`/aa/out/offers/${built.sha256}.swapoffer`, `${built.blob}\n`);
+      writeFileSync(`/aa/out/offers/${built.sha256}.terms.json`, `${JSON.stringify(built.terms, null, 2)}\n`);
       jlog(j, `blob saved: /aa/out/offers/${built.sha256}.swapoffer`);
     } catch (e) {
       jlog(j, `blob save failed (continuing): ${e instanceof Error ? e.message : String(e)}`);
     }
-    // Step 1 of the user-directed split ends HERE: the proven-unbalanced
-    // transaction is the offer, the page shows its bech32m, and publishing is
-    // an explicit second step (POST /api/publish-offer).
+
+    // Q7: one live offer per account, recorded the moment the artefact exists. The device
+    // entry this offer consumed is spent when (and only when) the taker submits, but a
+    // SECOND signature from this account would make this one unsettleable either way.
+    writeRecord({
+      ...record,
+      liveOffer: {
+        offerId: built.sha256,
+        give: `${offerSpec.call.giveAmount} ${offerSpec.giveToken}`,
+        want: `${offerSpec.call.want.value} ${offerSpec.wantToken}`,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
     j.txId = built.sha256;
-    j.data = { blob: built.blob, sha256: built.sha256, bytes: built.bytes };
+    j.data = {
+      blob: built.blob, sha256: built.sha256, bytes: built.bytes,
+      legSegment: built.legSegment, terms: built.terms,
+    };
     jlog(j, `offer BUILT — ${built.bytes} bytes, offerId ${built.sha256.slice(0, 16)}…; use Publish to send it to the kernel`);
   });
 }
 
-/** Shielded funding runs on the FUNDER (genesis-3) wallet so the relay stays
- * shielded-free: mint the demo token's shielded colour, then deposit it into
- * the account's shielded Manager balance (what an open swap's give leg spends). */
-function fundShieldedJob(accountId: Hex32, amount: bigint, tokenNameArg?: string): Job {
-  return enqueue("fund-shielded", async (j) => {
-    // Resolved INSIDE the job, not at enqueue time: on a cold stack the registry
-    // may not have been read yet when the request arrives.
-    const tokenName = tokenNameArg ?? defaultTokenName("shielded");
-    const token = tokenByName(tokenName);
-    if (token.family !== "shielded") throw new Error(`'${tokenName}' is not a shielded token`);
-    // mint_shielded now names its recipient; mintShieldedTo passes the calling
-    // wallet's own coin public key, so the funder still mints to itself…
-    await withProveRetry(j, "fund-shielded-mint", () => session("fund-shielded-mint", async (walletResult) => {
-      await mintShieldedTo(walletResult, j, token, amount);
+// ── funding ──────────────────────────────────────────────────────────────────
+
+/** Unshielded: mint to the funder's own user address, then `deposit_unshielded`. The
+ *  depositor pays the fee and the circuit is PERMISSIONLESS — no device, no signature. */
+function fundJob(address: string, amount: bigint, tokenNameArg?: string): Job {
+  return enqueue("fund", async (j) => {
+    const record = requireRecord(address);
+    const token = tokenByName(tokenNameArg ?? defaultTokenName("unshielded"));
+    if (token.family !== "unshielded") throw new Error(`fund deposits the UNSHIELDED balance — '${token.name}' is shielded (use Fund shielded)`);
+    await withProveRetry(j, "fund-mint", () => session("fund-mint", async (walletCtx) => {
+      await mintUnshieldedTo(walletCtx, j, token, amount, userAddressBytes(walletCtx));
     }, { seed: FUNDER_SEED }));
-    // …then deposits the fresh coins into the account's Manager credit.
-    await withProveRetry(j, "fund-shielded-deposit", () => session("fund-shielded-deposit", async (walletResult) => {
-      const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      jlog(j, `depositShielded(${amount} ${token.name}) → ${accountId.slice(0, 18)}…`);
-      const coin = {
-        nonce: crypto.getRandomValues(new Uint8Array(32)),
-        color: hexToBytes(token.color),
-        value: amount,
-      };
-      const tx = await (mgr.handle.callTx as any).depositShielded(coin, hexToBytes(accountId));
-      j.txId = tx.public?.txId ?? null;
-      jlog(j, `deposited — tx=${j.txId ?? "?"}`);
+    await withProveRetry(j, "fund-deposit", () => session("fund-deposit", async (walletCtx) => {
+      const account = await connectAccount(walletCtx, record);
+      jlog(j, `deposit_unshielded(${amount} ${token.name}) → ${address.slice(0, 18)}…`);
+      const r = await account.depositUnshielded(hexToBytes(token.color), amount);
+      j.txId = r.txId;
+      jlog(j, `deposited — tx=${r.txId}`);
     }, { seed: FUNDER_SEED }));
   });
 }
 
-/** Mint straight to a WALLET (no Manager deposit): the taker side of the demo.
- * Shielded mints go to the target wallet itself (its own coin public key is
- * passed as the circuit's recipient); unshielded mints go to the target's
- * 32-byte user address. */
+/**
+ * Shielded: mint a coin to the funder wallet, then `deposit_shielded(coin, entry)`.
+ *
+ * TWO THINGS THAT WERE NOT THERE BEFORE. The entry is a 192-byte ciphertext sealed to the
+ * account's own `enc_key` — the Manager had a public balance map, and Passport has an
+ * encrypted inbox, so without the entry the coin is invisible to anyone rebuilding the
+ * store from chain data. And the coin's `mt_index` has to be CAPTURED afterwards, because
+ * `held_coin` cannot serve a coin whose Merkle position the client does not know.
+ */
+function fundShieldedJob(address: string, amount: bigint, tokenNameArg?: string): Job {
+  return enqueue("fund-shielded", async (j) => {
+    let record = requireRecord(address);
+    const token = tokenByName(tokenNameArg ?? defaultTokenName("shielded"));
+    if (token.family !== "shielded") throw new Error(`'${token.name}' is not a shielded token`);
+    if (record.coins[token.color]) {
+      // Stateless custody holds ONE coin per colour in this client's store, and there is no
+      // in-circuit merge: a second deposit of the same colour would overwrite the first in
+      // the store and strand it (it is still the account's, and still discoverable by an
+      // inbox walk — but not by this console). Refuse rather than lose track.
+      throw new Error(
+        `this account already holds a ${token.name} coin of ${record.coins[token.color]!.value}. Stateless ` +
+        "custody has no in-circuit merge and this console keeps one coin per colour: spend or withdraw it first",
+      );
+    }
+    await withProveRetry(j, "fund-shielded-mint", () => session("fund-shielded-mint", async (walletCtx) => {
+      await mintShieldedTo(walletCtx, j, token, amount);
+    }, { seed: FUNDER_SEED }));
+    await withProveRetry(j, "fund-shielded-deposit", () => session("fund-shielded-deposit", async (walletCtx) => {
+      const account = await connectAccount(walletCtx, record);
+      const coin = { nonce: randomBytes32(), color: hexToBytes(token.color), value: amount };
+      jlog(j, `deposit_shielded(${amount} ${token.name}) + a 192-byte inbox entry sealed to the account's enc_key`);
+      const { txId } = await depositAsThirdParty(account as any, coin, { encKey: hexToBytes(record.encPublicKey) });
+      j.txId = txId;
+      jlog(j, `deposited — tx=${txId}`);
+      record = await captureCoin(record, txId, coin, j);
+    }, { seed: FUNDER_SEED }));
+    // Prove the entry really is discoverable from chain data alone — the one check that
+    // catches a depositor who sealed a lie (S3), and the same walk a restored console does.
+    await session("fund-shielded-verify", async (walletCtx) => {
+      const account = await connectAccount(walletCtx, record);
+      const found = await inboxWalkPortable(await account.ledgerState(), hexToBytes(record.encSecretKey));
+      const mine = found.filter((c) => toHex(c.color) === token.color);
+      jlog(j, `inbox walk: ${found.length} entr${found.length === 1 ? "y" : "ies"} readable, ${mine.length} of ${token.name}`);
+      if (mine.length === 0) throw new Error("the deposit's inbox entry did not decrypt — the coin would be undiscoverable");
+    }, { requireFunds: false, seed: FUNDER_SEED });
+  });
+}
+
+/** Mint straight to a WALLET (no account deposit): the taker side of the demo. */
 function faucetJob(tokenNameArg: string | undefined, amount: bigint, target: "relay" | "taker" | "funder"): Job {
   return enqueue("faucet", async (j) => {
-    const tokenName = tokenNameArg ?? defaultTokenName("shielded", 1);
-    const token = tokenByName(tokenName);
+    const token = tokenByName(tokenNameArg ?? defaultTokenName("shielded", 1));
     const seed = target === "taker" ? TAKER_SEED : target === "funder" ? FUNDER_SEED : RELAY_SEED;
-    await withProveRetry(j, "faucet", () => session(`faucet-${target}`, async (walletResult) => {
-      if (token.family === "shielded") {
-        const tx = await mintShieldedTo(walletResult, j, token, amount);
-        j.txId = tx.public?.txId ?? null;
-      } else {
-        const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-        const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-        const tx = await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
-        j.txId = tx.public?.txId ?? null;
-      }
+    await withProveRetry(j, "faucet", () => session(`faucet-${target}`, async (walletCtx) => {
+      const tx = token.family === "shielded"
+        ? await mintShieldedTo(walletCtx, j, token, amount)
+        : await mintUnshieldedTo(walletCtx, j, token, amount, userAddressBytes(walletCtx));
+      j.txId = (tx as any).public?.txId ?? null;
       jlog(j, `faucet done: ${amount} ${token.name} → the ${target} wallet`);
     }, { seed }));
   });
 }
 
-/** Send tokens to ANY standard Midnight address (user request): the funder
- * wallet mints the token to itself, then does a plain wallet transfer to the
- * pasted address. Shielded tokens need a mn_shield-addr… (it carries BOTH the
- * coin and encryption public keys — this is the general form of what the
- * withdraw-shielded dropdown special-cases); unshielded tokens a mn_addr…. */
+/** Send tokens to ANY standard Midnight address: the funder mints to itself, then does a
+ *  plain wallet transfer. Unchanged by 00034 — no account is involved. */
 function sendJob(tokenNameArg: string | undefined, amount: bigint, to: string): Job {
   return enqueue("send", async (j) => {
-    const tokenName = tokenNameArg ?? defaultTokenName("shielded");
-    const token = tokenByName(tokenName);
-    const netId = midnightNetworkConfig.id as any;
+    const token = tokenByName(tokenNameArg ?? defaultTokenName("shielded"));
+    const netId = CONFIG.networkId as any;
     let receiver: any;
     if (token.family === "shielded") {
       if (!to.startsWith("mn_shield-addr")) throw new Error(`${token.name} is SHIELDED — the recipient must be a mn_shield-addr… address`);
@@ -1112,20 +1142,11 @@ function sendJob(tokenNameArg: string | undefined, amount: bigint, to: string): 
       if (!to.startsWith("mn_addr")) throw new Error(`${token.name} is UNSHIELDED — the recipient must be a mn_addr… address`);
       receiver = parseMidnightBech32m(to).decode(UnshieldedAddress as any, netId);
     }
-    await withProveRetry(j, "send", () => session("send", async (walletResult) => {
-      // 1. mint to the funder wallet itself…
-      if (token.family === "shielded") {
-        await mintShieldedTo(walletResult, j, token, amount);
-      } else {
-        const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-        const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-        await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
-      }
-      // 2. …then a standard wallet transfer to the pasted address. The wallet's
-      // local view of the fresh mint can lag the chain by a few blocks, so an
-      // insufficient-balance error here means "not indexed yet" — retry.
-      const wallet = walletResult.wallet as any;
-      const keys = { shieldedSecretKeys: walletResult.zswapSecretKeys, dustSecretKey: walletResult.dustSecretKey };
+    await withProveRetry(j, "send", () => session("send", async (walletCtx) => {
+      if (token.family === "shielded") await mintShieldedTo(walletCtx, j, token, amount);
+      else await mintUnshieldedTo(walletCtx, j, token, amount, userAddressBytes(walletCtx));
+      const wallet = walletCtx.wallet as any;
+      const keys = { shieldedSecretKeys: walletCtx.shieldedSecretKeys, dustSecretKey: walletCtx.dustSecretKey };
       jlog(j, `transferring ${amount} ${token.name} → ${to.slice(0, 30)}…`);
       let recipe: any = null;
       let lastErr: unknown = null;
@@ -1134,7 +1155,7 @@ function sendJob(tokenNameArg: string | undefined, amount: bigint, to: string): 
         try {
           recipe = await wallet.transferTransaction(
             [{ type: token.family, outputs: [{ type: token.color, receiverAddress: receiver, amount }] }],
-            keys, { ttl: new Date(Date.now() + 30 * 60_000) },
+            keys, { ttl: new Date(Date.now() + Number(process.env["TX_TTL_MS"] ?? "60000")) },
           );
           lastErr = null;
         } catch (e) {
@@ -1151,24 +1172,80 @@ function sendJob(tokenNameArg: string | undefined, amount: bigint, to: string): 
   });
 }
 
-function fundJob(accountId: Hex32, amount: bigint, tokenNameArg?: string): Job {
-  return enqueue("fund", async (j) => {
-    const tokenName = tokenNameArg ?? defaultTokenName("unshielded");
-    const token = tokenByName(tokenName);
-    if (token.family !== "unshielded") throw new Error(`fund deposits the UNSHIELDED balance — '${tokenName}' is shielded (use Fund shielded)`);
-    await withProveRetry(j, "fund-mint", () => session("fund-mint", async (walletResult) => {
-      const parsed = MidnightBech32m.parse(walletResult.unshieldedAddress);
-      const userAddr = Uint8Array.prototype.slice.call(parsed.data, 0, 32);
-      await mintUnshieldedTo(walletResult, j, token, amount, userAddr);
-    }));
-    await withProveRetry(j, "fund-deposit", () => session("fund-deposit", async (walletResult) => {
-      const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-      jlog(j, `depositUnshielded(${amount} ${token.name}) → ${accountId.slice(0, 18)}…`);
-      const tx = await (mgr.handle.callTx as any).depositUnshielded(hexToBytes(token.color), amount, hexToBytes(accountId));
-      j.txId = tx.public?.txId ?? null;
+/** A wallet actor deposits tokens IT HOLDS into an account — the onward-spend half of the
+ *  withdraw paths, and the second leg of an account-to-account send (Q41). */
+function depositFromWalletJob(address: string, amount: bigint, from: "taker" | "relay" | "funder", tokenName?: string): Job {
+  return enqueue(`deposit-from-${from}`, async (j) => {
+    let record = requireRecord(address);
+    const token = tokenByName(tokenName ?? defaultTokenName("unshielded"));
+    const seed = from === "taker" ? TAKER_SEED : from === "funder" ? FUNDER_SEED : RELAY_SEED;
+    await withProveRetry(j, "deposit", () => session(`deposit-${from}`, async (walletCtx) => {
+      const account = await connectAccount(walletCtx, record);
+      if (token.family === "shielded") {
+        const coin = { nonce: randomBytes32(), color: hexToBytes(token.color), value: amount };
+        jlog(j, `deposit_shielded(${amount} ${token.name}) from the ${from} wallet → ${address.slice(0, 18)}…`);
+        const { txId } = await depositAsThirdParty(account as any, coin, { encKey: hexToBytes(record.encPublicKey) });
+        j.txId = txId;
+        record = await captureCoin(record, txId, coin, j);
+      } else {
+        jlog(j, `deposit_unshielded(${amount} ${token.name}) from the ${from} wallet → ${address.slice(0, 18)}…`);
+        const r = await account.depositUnshielded(hexToBytes(token.color), amount);
+        j.txId = r.txId;
+      }
       jlog(j, `deposited — tx=${j.txId ?? "?"}`);
-    }));
+    }, { seed }));
   });
+}
+
+/** Settle a live book offer with the TAKER wallet: fetch the blob, balance, finalize,
+ *  submit. Unchanged by 00034 — the taker is a wallet with no maker keys, which is the
+ *  whole point of the artefact. */
+function takeJob(offerId: string): Job {
+  return enqueue("take", async (j) => {
+    jlog(j, `fetching offer ${offerId.slice(0, 16)}… from the kernel`);
+    const res = await fetch(`${KERNEL_URL}/v1/offers/${offerId}`, { signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) throw new Error(`kernel: ${res.status} fetching the offer`);
+    const detail: any = await res.json();
+    const blob = String(detail.offerBech32 ?? "");
+    if (!blob.startsWith("swapoffer1")) throw new Error("offer blob missing from the kernel response");
+    await session("take", async (walletCtx) => {
+      const wallet = walletCtx.wallet as any;
+      const keys = { shieldedSecretKeys: walletCtx.shieldedSecretKeys, dustSecretKey: walletCtx.dustSecretKey };
+      const offerTx = (Transaction as any).deserialize("signature", "proof", "binding", OfferFiles.decode(blob));
+      jlog(j, "balancing the settlement (taker funds the want leg, sweeps the give surplus)…");
+      const t0 = Date.now();
+      const recipe = await wallet.balanceFinalizedTransaction(offerTx, keys, {
+        ttl: new Date(Date.now() + Number(process.env["TX_TTL_MS"] ?? "60000")),
+      });
+      const settleTx = await wallet.finalizeRecipe(recipe);
+      await wallet.submitTransaction(settleTx);
+      j.txId = settleTx.transactionHash?.().toString?.() ?? null;
+      jlog(j, `settlement submitted in ${((Date.now() - t0) / 1000).toFixed(0)}s — tx=${j.txId ?? "?"}`);
+    }, { seed: TAKER_SEED });
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const s: any = await (await fetch(`${KERNEL_URL}/v1/offers/${offerId}/status`)).json();
+        if (s.status === "consumed") {
+          jlog(j, "book status: CONSUMED — settlement confirmed");
+          clearLiveOffer(offerId);
+          return;
+        }
+        if (["cancelled", "expired", "unknown", "not_found"].includes(s.status)) {
+          throw new Error(`offer ended with status ${s.status}`);
+        }
+      } catch (e) {
+        if (e instanceof Error && /ended with status/.test(e.message)) throw e;
+      }
+    }
+    jlog(j, "submitted, but the book has not flipped to consumed yet — check the offer status");
+  });
+}
+
+function clearLiveOffer(offerId: string): void {
+  const store = readStore();
+  const rec = store.accounts.find((a) => a.liveOffer?.offerId === offerId);
+  if (rec) writeRecord({ ...rec, liveOffer: null });
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
@@ -1186,26 +1263,17 @@ const STATIC_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
 };
-// no-store: this is a dev console that redeploys often — stale cached JS has
-// already cost one confused verification pass.
 const staticFile = (name: string, type: string) =>
   new Response(Bun.file(resolve(STATIC_DIR, name)), {
     headers: { "content-type": type, "cache-control": "no-store" },
   });
 
-// ── infrastructure status (the page's Infrastructure view) ───────────────────
-// Every probe runs over the COMPOSE network with a short timeout. A service
-// whose DNS name does not resolve is a profile that is not up → "absent";
-// a resolvable name that refuses/errors is "down".
 type ProbeResult = { status: "up" | "down" | "absent"; info?: unknown };
 async function probe(fn: () => Promise<unknown>): Promise<ProbeResult> {
   try {
     return { status: "up", info: await fn() };
   } catch (e) {
     const m = e instanceof Error ? `${e.message} ${(e as any).code ?? ""}` : String(e);
-    // ConnectionRefused = the name resolved but nothing is listening → DOWN
-    // (a container exists and is broken/booting). Only a name that does not
-    // resolve at all means the profile is not up → ABSENT.
     const refused = /ConnectionRefused|ECONNREFUSED/i.test(m);
     const absent = !refused && /getaddrinfo|resolve|ENOTFOUND|DNS|FailedToOpenSocket|Unable to connect/i.test(m);
     return { status: absent ? "absent" : "down", info: m.slice(0, 160) };
@@ -1217,13 +1285,8 @@ const fetchJson = async (url: string, init: RequestInit = {}, ms = 3500) => {
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return await r.json();
 };
-// The nix-based proof-server images answer nothing useful at "/" — any HTTP
-// response at all (even 404) proves the service is listening.
 const fetchAlive = async (url: string, ms = 3000) => {
-  const r = await fetch(url, { signal: T(ms) }).catch((e) => {
-    // A refused/failed connection throws; an HTTP error status does not.
-    throw e;
-  });
+  const r = await fetch(url, { signal: T(ms) });
   return { httpStatus: r.status };
 };
 
@@ -1234,16 +1297,8 @@ async function infraStatus() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: [] }),
     });
-  // TCP-level only, deliberately: the console has no postgres client and does
-  // not hold a credential for any of the per-consumer roles. "The shared server
-  // is accepting connections" is the whole claim, and it is the one that
-  // distinguishes "kernel/evm are down" from "their database is down".
   const probePostgres = async () => {
-    const socket = await Bun.connect({
-      hostname: "postgres",
-      port: 5432,
-      socket: { data() {} },
-    });
+    const socket = await Bun.connect({ hostname: "postgres", port: 5432, socket: { data() {} } });
     socket.end();
     return { reachable: true, host: "postgres:5432", databases: ["offerfiles", "umbra"] };
   };
@@ -1273,7 +1328,6 @@ async function infraStatus() {
         const s = (await fetchJson(`${KERNEL_URL}/v1/health/sync`)) as any;
         return { current: s.current ?? s.isCurrent ?? null, offers: s.offers ?? null };
       }),
-      // Its OWN container since the Phase 11 split — not a port on the kernel.
       probe(async () => (await fetchJson("http://batcher:3334/health")) as any),
       probe(() => fetchAlive("http://celestia:26658/")),
       probe(async () => {
@@ -1298,11 +1352,6 @@ async function infraStatus() {
       probe(probePostgres),
     ]);
 
-  // Since the ledger-v9 re-pin the solver DOES have an HTTP surface of its own:
-  // GET /health on its status listener, open by design (no internal data, so a
-  // healthcheck needs no secret). Probe it directly — it is the solver speaking
-  // for itself — and keep the sink's view as the fallback, because a solver
-  // whose listener is off is still visible through the relay socket.
   const solverStatus = await probe(async () => (await fetchJson(`${SOLVER_STATUS_URL}/health`)) as any);
   const solver: ProbeResult =
     solverStatus.status === "up"
@@ -1320,22 +1369,12 @@ async function infraStatus() {
           ? { status: "up", info: { via: "sink relay socket (status listener unreachable)" } }
           : { status: "down", info: "sink up, no solver connected" };
 
-  // The monitor site and the offer poster. Both are opt-in profiles, so `absent`
-  // (which `probe` reports for a name that does not resolve) is the normal
-  // answer on a stack that did not bring them up — not an error.
-  //
-  // The faucet is probed on its REGISTRY route rather than on `/`: the page shell is served by
-  // the image, while metadata.undeployed.json comes from the volume this stack's own deploy
-  // one-shot published. A probe of `/` would report `up` for a container that is serving six
-  // unavailable tokens, which is exactly the state an operator needs to see.
   const [solverFrontend, offerPoster, faucet] = await Promise.all([
     probe(async () => (await fetchJson(`${SOLVER_FRONTEND_URL}/health`)) as any),
     probe(async () => {
       const h = (await fetchJson(`${OFFER_POSTER_URL}/health`)) as any;
       return {
-        state: h.state,
-        mints: h.mints,
-        liveOffers: h.liveOffers,
+        state: h.state, mints: h.mints, liveOffers: h.liveOffers,
         lastOfferId: typeof h.lastOfferId === "string" ? h.lastOfferId.slice(0, 12) : null,
         lastFailure: h.lastFailure ?? null,
       };
@@ -1355,26 +1394,11 @@ async function infraStatus() {
     }),
   ]);
 
-  // ── the price feed (profile `prices`) ──────────────────────────────────────
-  // It has NO endpoint of its own: it publishes no port, serves nothing, and
-  // talks only to CoinGecko and Postgres. So it is probed where its output
-  // lands — the KERNEL's GET /v1/prices `feed` block, which is the same row
-  // (`price_feed_status`) the feed upserts after every cycle.
-  //
-  // That row is deliberately NOT seeded by 000-init.sql, so the three states map
-  // onto the three dots exactly:
-  //   absent  no feed row at all — this stack never ran the profile (the normal
-  //           answer, since it is opt-in and needs an API key)
-  //   down    a cycle ran and recorded an error (no key, a 429, a provider
-  //           outage). The stack still quotes: the seeded prices are untouched.
-  //   up      a cycle completed cleanly; last_ok_at says when.
   const priceFeed = await probe(async () => {
     const NIGHT = "0".repeat(64);
     const p = (await fetchJson(`${KERNEL_URL}/v1/prices?tokens=${NIGHT}`)) as any;
     const feed = p?.feed ?? {};
     if (!feed.last_run_at && !feed.last_ok_at) {
-      // Distinguished from an unreachable kernel: this IS an answer, and it
-      // says the feed has never run here.
       throw new Error("no price-feed row — the `prices` profile has not run on this stack");
     }
     return {
@@ -1382,14 +1406,9 @@ async function infraStatus() {
       lastOkAt: feed.last_ok_at ?? null,
       lastRunAt: feed.last_run_at ?? null,
       lastError: feed.last_error ?? null,
-      // Which assets are live rather than seeded — the one claim that cannot be
-      // satisfied by the shipped data (`source` is a two-value CHECK column).
-      fedAssets: (p?.assets ?? [])
-        .filter((a: any) => a?.source === "feed")
-        .map((a: any) => a.asset_id),
+      fedAssets: (p?.assets ?? []).filter((a: any) => a?.source === "feed").map((a: any) => a.asset_id),
     };
   });
-  // `probe` cannot know that a recorded last_error means DOWN rather than UP.
   const priceFeedComponent =
     priceFeed.status === "up" && (priceFeed.info as any)?.lastError
       ? { status: "down" as const, info: priceFeed.info }
@@ -1403,8 +1422,6 @@ async function infraStatus() {
       kernel, kernelSync, batcher, celestia,
       evmRpc, frontend, solverSink: sink, solver, solverFrontend, offerPoster, faucet,
       priceFeed: priceFeedComponent,
-      // The one store for the whole stack (T11.4): the kernel's offer book
-      // (`offerfiles`) and umbra-evm's index (`umbra`) both live here.
       postgres,
     },
   };
@@ -1419,7 +1436,6 @@ Bun.serve({
     const path = url.pathname;
     try {
       if (path === "/" || path === "/index.html") return staticFile("index.html", "text/html; charset=utf-8");
-      // Any other flat file in /aa/console by extension (no subdirs, no dotfiles).
       if (/^\/[A-Za-z0-9_.-]+\.(html|js|css|svg)$/.test(path)) {
         const ext = path.slice(path.lastIndexOf("."));
         const f = Bun.file(resolve(STATIC_DIR, path.slice(1)));
@@ -1429,27 +1445,26 @@ Bun.serve({
         return bad("not found", 404);
       }
       if (path === "/api/infra") return json(await infraStatus());
-      // /api/solver/snapshot and /api/solver/stream were removed with the sink's
-      // feed page: they existed only to proxy that page's data same-origin, and
-      // the sink no longer streams anything. The solver's state reaches a human
-      // through the monitor site (framed by the Offers+Solver tab) and reaches
-      // an automated gate through scripts/verify-solver.sh.
       if (path === "/healthz") {
         return json({ ok: true, relay, taker, jobsQueued: queue.length, deployed: existsSync(ARTIFACT_PATH) });
       }
       if (path === "/api/info") {
         return json({
-          network: midnightNetworkConfig.id,
-          // Which compiler produced the Manager circuits this relay proves with, and
-          // which published release they came from. The page's Repos tab renders it,
-          // and it is the one place a reader can see that WITHOUT trusting a doc.
-          zkirSource: ZKIR_SOURCE,
-          manager: MANAGER, minter: MINTER, domain: artifact.manager.domain,
-          minterTag: artifact.minter.tag ?? null,
-          relay,
-          taker,
-          // DECIMALS ARE PART OF THE ANSWER NOW. The page formats amounts and
-          // the six are 8/18/6/6/6/8 — it used to be told nothing and assumed 6.
+          network: CONFIG.networkId,
+          model: "passport-per-user-account",
+          // The build receipt: which fork commit, which compiler, which prover keys this
+          // image actually carries. The page's Repos tab renders it, and it is the one
+          // place a reader can see it WITHOUT trusting a doc.
+          build: BUILD,
+          artefacts: artifact?.artefacts ?? null,
+          vault: artifact?.vault ?? null,
+          signet: artifact?.signet ?? null,
+          mpc: artifact?.mpc ?? null,
+          testFaucet: TEST_FAUCET ?? null,
+          accountPlan: artifact?.accountPlan ?? null,
+          swapCircuit: SWAP_CIRCUIT,
+          proofServers: { contracts: CONTRACT_PROOF_SERVER, wallet: WALLET_PROOF_SERVER },
+          relay, taker,
           tokens: tokens.list.map((t) => ({
             name: t.name, label: t.label, family: t.family, color: t.color,
             decimals: t.decimals, issuer: t.issuer,
@@ -1461,23 +1476,28 @@ Bun.serve({
           solverFrontendUrl: SOLVER_FRONTEND_PUBLIC_URL,
           faucetUrl: `${FAUCET_PUBLIC_URL.replace(/\/+$/, "")}/?network=${NETWORK_KEY}`,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
-          // Withdraw's node-rejection (Custom error 214, recipient Either arm
-          // inversion) was FIXED upstream in AA PR #10 (713a2021…) and this
-          // stack pins a post-fix AA_REF — no known-issue banner any more.
-          withdrawKnownIssue: null,
+          // The bridge tab is only meaningful when the image carries the bridge circuits.
+          bridge: BUILD.withBridge ? { available: true, vault: artifact?.vault ?? null } : { available: false },
         });
       }
-      if (path === "/api/accounts") return json({ accounts: await listAccounts() });
+      if (path === "/api/accounts") {
+        const owner = url.searchParams.get("owner") ?? undefined;
+        return json({ accounts: await listAccounts(owner ?? undefined) });
+      }
       if (path === "/api/prepare" && req.method === "POST") {
         pruneOld();
-        const body = await req.json();
-        const { prep } = await buildAction(body);
+        const prep = await buildAction(await req.json());
         const id = newId();
         prepared.set(id, prep);
         return json({
           prepId: id,
-          request: buildEthSignTypedDataV4Request(prep.action, artifactDomain()),
-          action: prep.action,
+          kind: prep.kind,
+          // EXACTLY ONE of these two is present, and the page branches on it: a `message`
+          // is `personal_sign` (enrolment, authorises nothing); `typedData` is
+          // `eth_signTypedData_v4` (an authorisation the circuit will verify).
+          message: prep.message ?? null,
+          typedData: prep.typedData ?? null,
+          digest: prep.digest ?? null,
           summary: prep.summary,
         });
       }
@@ -1488,7 +1508,9 @@ Bun.serve({
         const signature = String(body.signature ?? "");
         if (!/^0x[0-9a-f]{130}$/i.test(signature)) return bad("signature must be a 65-byte 0x hex string");
         prepared.delete(String(body.prepId));
-        const job = prep.kind === "swap" ? offerJob(prep, signature) : executeJob(prep, signature);
+        const job = prep.kind === "register" ? registerJob(prep, signature)
+          : prep.kind === "swap" ? offerJob(prep, signature)
+          : gatedJob(prep, signature);
         return json({ jobId: job.id });
       }
       if (path === "/api/pure") {
@@ -1525,21 +1547,24 @@ Bun.serve({
         const body = await req.json();
         const offerId = String(body.offerId ?? "");
         if (!/^[0-9a-f]{64}$/i.test(offerId)) return bad("offerId must be 64 hex chars");
-        const job = takeJob(offerId);
-        return json({ jobId: job.id });
+        return json({ jobId: takeJob(offerId).id });
+      }
+      if (path === "/api/offer/forget" && req.method === "POST") {
+        // Q7's escape hatch: an offer nobody took blocks the account's next one, and the
+        // maker's device entry is NOT consumed until a taker submits — so forgetting it
+        // locally is safe and is the only way out of a stale live offer.
+        const body = await req.json();
+        clearLiveOffer(String(body.offerId ?? ""));
+        return json({ cleared: true });
       }
       if (path === "/api/fund-shielded" && req.method === "POST") {
         const body = await req.json();
-        const accountId = String(body.accountId ?? "") as Hex32;
-        if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
+        const address = String(body.accountId ?? body.address ?? "");
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
-        const job = fundShieldedJob(accountId, amount, body.token === undefined ? undefined : String(body.token));
-        return json({ jobId: job.id });
+        return json({ jobId: fundShieldedJob(address, amount, body.token === undefined ? undefined : String(body.token)).id });
       }
       if (path === "/api/offers") {
-        // Thin proxy over the kernel book, feature-detected — the page's swap
-        // panel degrades gracefully when the offerfiles profile is down.
         try {
           const res = await fetch(`${KERNEL_URL}/v1/offers?limit=20`, { signal: AbortSignal.timeout(5000) });
           return json({ kernel: true, book: await res.json() });
@@ -1549,41 +1574,22 @@ Bun.serve({
       }
       if (path === "/api/fund" && req.method === "POST") {
         const body = await req.json();
-        const accountId = String(body.accountId ?? "") as Hex32;
-        if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
+        const address = String(body.accountId ?? body.address ?? "");
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
-        const job = fundJob(accountId, amount, body.token === undefined ? undefined : String(body.token));
-        return json({ jobId: job.id });
+        return json({ jobId: fundJob(address, amount, body.token === undefined ? undefined : String(body.token)).id });
       }
       if (path === "/api/deposit" && req.method === "POST") {
-        // A wallet actor (taker/relay/funder) deposits tokens IT HOLDS into an
-        // AA account — the onward-spend half of the withdraw paths.
         const body = await req.json();
-        const accountId = String(body.accountId ?? "") as Hex32;
-        if (!/^0x[0-9a-f]{64}$/i.test(accountId)) return bad("accountId must be 0x…32 bytes");
+        const address = String(body.accountId ?? body.address ?? "");
         const amount = BigInt(body.amount ?? 0);
         if (amount <= 0n) return bad("amount must be a positive integer");
         const from = String(body.from ?? "taker");
         if (!["taker", "relay", "funder"].includes(from)) return bad("from must be taker|relay|funder");
-        const token = tokenByName(String(body.token ?? defaultTokenName("unshielded")));
-        const seed = from === "taker" ? TAKER_SEED : from === "funder" ? FUNDER_SEED : RELAY_SEED;
-        const job = enqueue(`deposit-from-${from}`, async (j) => {
-          await withProveRetry(j, "deposit", () => session(`deposit-${from}`, async (walletResult) => {
-            const mgr = await join(walletResult, "contract-manager", MANAGER, managerWitnesses, "aaManagerPrivateState");
-            jlog(j, `deposit${token.family === "shielded" ? "Shielded" : "Unshielded"}(${amount} ${token.name}) from the ${from} wallet → ${accountId.slice(0, 18)}…`);
-            let tx;
-            if (token.family === "shielded") {
-              const coin = { nonce: crypto.getRandomValues(new Uint8Array(32)), color: hexToBytes(token.color), value: amount };
-              tx = await (mgr.handle.callTx as any).depositShielded(coin, hexToBytes(accountId));
-            } else {
-              tx = await (mgr.handle.callTx as any).depositUnshielded(hexToBytes(token.color), amount, hexToBytes(accountId));
-            }
-            j.txId = tx.public?.txId ?? null;
-            jlog(j, `deposited — tx=${j.txId ?? "?"}`);
-          }, { seed }));
+        return json({
+          jobId: depositFromWalletJob(address, amount, from as any,
+            body.token === undefined ? undefined : String(body.token)).id,
         });
-        return json({ jobId: job.id });
       }
       if (path === "/api/faucet" && req.method === "POST") {
         const body = await req.json();
@@ -1591,8 +1597,7 @@ Bun.serve({
         if (amount <= 0n) return bad("amount must be a positive integer");
         const target = String(body.target ?? "taker");
         if (!["relay", "taker", "funder"].includes(target)) return bad("target must be relay|taker|funder");
-        const job = faucetJob(body.token === undefined ? undefined : String(body.token), amount, target as any);
-        return json({ jobId: job.id });
+        return json({ jobId: faucetJob(body.token === undefined ? undefined : String(body.token), amount, target as any).id });
       }
       if (path === "/api/send" && req.method === "POST") {
         const body = await req.json();
@@ -1600,17 +1605,20 @@ Bun.serve({
         if (amount <= 0n) return bad("amount must be a positive integer");
         const to = String(body.to ?? "").trim();
         if (!to) return bad("to must be a bech32m Midnight address (mn_addr… or mn_shield-addr…)");
-        const job = sendJob(body.token === undefined ? undefined : String(body.token), amount, to);
-        return json({ jobId: job.id });
+        return json({ jobId: sendJob(body.token === undefined ? undefined : String(body.token), amount, to).id });
       }
       if (path === "/api/dev-sign" && req.method === "POST") {
         if (!DEV_SIGNER) return bad("dev signer is disabled (set AA_CONSOLE_DEV_SIGNER=1)", 403);
         const body = await req.json();
         const prep = prepared.get(String(body.prepId ?? ""));
         if (!prep) return bad("unknown or expired prepId — prepare again");
-        if (prep.owner.toLowerCase() !== DEV_ADDR.toLowerCase())
-          return bad(`dev signer is ${DEV_ADDR}; the prepared action's owner is ${prep.owner}`);
-        return json({ signature: metamaskSign(DEV_KEY, prep.action, artifactDomain()), address: DEV_ADDR });
+        if (prep.owner !== DEV_DEVICE.addressHex) {
+          return bad(`dev signer is ${DEV_ADDR}; the prepared action's owner is 0x${prep.owner}`);
+        }
+        const { serializeSignature, signDigest, eip191Digest } =
+          await import("../passport/src/wallet/signer.js") as any;
+        const digest = prep.message ? eip191Digest(prep.message) : hexToBytes(prep.digest!);
+        return json({ signature: `0x${toHex(serializeSignature(signDigest(DEV_KEY, digest)))}`, address: DEV_ADDR });
       }
       if (path.startsWith("/api/jobs/")) {
         const job = jobs.get(path.slice("/api/jobs/".length));
@@ -1619,8 +1627,8 @@ Bun.serve({
         return json(view);
       }
       if (path === "/api/wallet/refresh" && req.method === "POST") {
-        await checkRelayWallet();
-        await checkTakerWallet();
+        await checkWallet("relay");
+        await checkWallet("taker");
         return json({ relay, taker });
       }
       return bad("not found", 404);
@@ -1632,26 +1640,70 @@ Bun.serve({
   },
 });
 
-setNetworkId(midnightNetworkConfig.id as any);
-log(`serving on :${PORT} — manager=${MANAGER.slice(0, 16)}… minter=${MINTER.slice(0, 16)}…`);
+// ── the account's read-only surface ──────────────────────────────────────────
+// The Manager's `/api/pure` listed balance-map key derivations and registry lookups. An
+// account has neither: what it has is LEDGER STATE (public, per account) and the contract's
+// own PURE ORACLES — the same circuits the client uses to build a challenge, exposed so an
+// auditor can reproduce a digest without trusting this process.
+const PURE_FN_DOCS = [
+  { fn: "ledger", kind: "read", params: ["address"], doc: "the account's whole public ledger state" },
+  { fn: "encKey", kind: "read", params: ["address"], doc: "the account's advertised X25519 key — what a depositor seals to" },
+  { fn: "authNonce", kind: "read", params: ["address"], doc: "the next authorisation nonce" },
+  { fn: "inbox", kind: "read", params: ["address"], doc: "inbox_count and the raw entries (opaque without the viewing key)" },
+  { fn: "deviceEntry", kind: "pure", params: ["address", "owner (0x…20)", "epoch", "counter"], doc: "derive_device_entry_with_evm — the rolling entry the seam looks up" },
+  { fn: "bootCommitment", kind: "pure", params: ["salt (0x…32)", "owner (0x…20)"], doc: "derive_boot_commitment_with_evm" },
+  { fn: "domainSeparator", kind: "pure", params: ["address", "salt (0x…32)"], doc: "the EIP-712 domain separator this account's wallet signs under" },
+  { fn: "accountAlias", kind: "pure", params: ["address"], doc: "evm_account_alias — the 20-byte verifyingContract of the domain" },
+];
+
+async function runPureFn(fn: string, args: string[]): Promise<unknown> {
+  const { pureCircuits } = await import("../passport/src/wallet/contract.js");
+  const { accountAlias, domainSeparator } = await import("../passport/src/wallet/eip712.js");
+  const addr = () => args[0] ?? "";
+  switch (fn) {
+    case "ledger": {
+      const l = await accountLedger(addr());
+      return {
+        booted: Boolean(l.booted), authNonce: String(l.auth_nonce), round: String(l.round),
+        inboxCount: String(l.inbox_count), deviceEpoch: String(l.device_epoch),
+        encKey: toHex(Uint8Array.from(l.enc_key)),
+        evmDomainSalt: toHex(Uint8Array.from(l.evm_domain_salt)),
+      };
+    }
+    case "encKey": return toHex(Uint8Array.from((await accountLedger(addr())).enc_key));
+    case "authNonce": return String((await accountLedger(addr())).auth_nonce);
+    case "inbox": {
+      const l = await accountLedger(addr());
+      const entries: string[] = [];
+      for (let i = 0n; i < l.inbox_count; i++) {
+        if (l.inbox.member(i)) entries.push(toHex(Uint8Array.from(l.inbox.lookup(i))).slice(0, 32) + "…");
+      }
+      return { inboxCount: String(l.inbox_count), entries };
+    }
+    case "deviceEntry":
+      return toHex((pureCircuits as any).derive_device_entry_with_evm(
+        { bytes: hexToBytes(addr()) },
+        hexToBytes(args[1] ?? ""),
+        BigInt(args[2] ?? 0),
+        BigInt(args[3] ?? 0),
+      ));
+    case "bootCommitment":
+      return toHex((pureCircuits as any).derive_boot_commitment_with_evm(
+        bytes32(args[0] ?? ""), hexToBytes(args[1] ?? ""),
+      ));
+    case "domainSeparator":
+      return toHex(domainSeparator(hexToBytes(addr()), bytes32(args[1] ?? "")));
+    case "accountAlias":
+      return toHex(accountAlias(hexToBytes(addr())));
+  }
+  throw new Error(`unknown function '${fn}'`);
+}
+
+log(`serving on :${PORT} — passport ${String(BUILD.passportCommit).slice(0, 12)}…, ` +
+  `${consoleAccountCircuits().length} circuits per account, vault ${VAULT_ADDRESS?.slice(0, 16) ?? "(none)"}…`);
+log(`proof servers: contracts ${CONTRACT_PROOF_SERVER} (experimental, [v7]), wallet ${WALLET_PROOF_SERVER} (plain)`);
 if (DEV_SIGNER) log(`dev signer ENABLED — address ${DEV_ADDR} (testing only)`);
-// ── the token set, retried in the BACKGROUND ────────────────────────────────
-//
-// The registry is served by `faucet-site`, and this container does not (and must
-// not) wait for it: `compose/aa.yml` declares no dependency on the `faucet`
-// fragment, because `./up.sh --with aa` alone has to keep working and a profile
-// here IS a fragment filename — naming a service from another fragment would
-// break every stack that leaves it out. So on a cold `--all` bring-up this
-// process starts while the six issuers are still being deployed, and the first
-// read fails. It must not fail PERMANENTLY: every token action calls
-// `resolveTokens()` again on an empty list, but `/api/info` is read by the page
-// and by `verify-aa.sh` without touching a token action, and a console that
-// reported `tokens: []` for the rest of its life because of a 20-second race
-// would look exactly like a broken build.
-//
-// Bounded and jittered, and it STOPS on success — this is a race, not a poll.
-// The budget is generous because the thing it waits for is six real contract
-// deployments on a cold devnet.
+
 const resolveTokensWithRetry = async (): Promise<void> => {
   const tries = Number(process.env["AA_TOKENS_RESOLVE_TRIES"] ?? 60);
   const everyMs = Number(process.env["AA_TOKENS_RESOLVE_INTERVAL_MS"] ?? 10_000);
@@ -1663,19 +1715,16 @@ const resolveTokensWithRetry = async (): Promise<void> => {
     }
     if (attempt === 1) {
       log(`the faucet registry is not readable yet — retrying every ${everyMs}ms for up to ${tries} attempts`);
-      log(`  (this is expected on a cold --all bring-up: the six issuers are still deploying)`);
+      log("  (this is expected on a cold --all bring-up: the six issuers are still deploying)");
     }
     if (attempt === tries) {
       log(`GIVING UP after ${tries} attempts: ${tokens.error ?? "no error"}`);
-      log(`  every token action will report it. Is the faucet profile up? ./up.sh --with faucet`);
+      log("  every token action will report it. Is the faucet profile up? ./up.sh --with faucet");
       return;
     }
     await new Promise((r) => setTimeout(r, everyMs + Math.floor(Math.random() * 1000)));
   }
 };
-// NOT awaited: the server is already listening, and every other panel of the
-// console works without a token. Blocking here would make a slow faucet look
-// like a console that never starts.
 void resolveTokensWithRetry();
-await checkRelayWallet();
-await checkTakerWallet();
+await checkWallet("relay");
+await checkWallet("taker");

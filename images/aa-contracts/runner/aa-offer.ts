@@ -1,206 +1,113 @@
-// aa-offer.ts — build a PUBLISHABLE unbalanced zswap offer from an AA Manager
-// open-swap `execute` (selector 6), and encode it for the offer-files kernel.
+// aa-offer.ts — turn a Passport account's open-swap call into the blob this stack's
+// offer-files kernel accepts.
 //
 // The offer IS the proven-but-never-submitted transaction: an open-shape
-// selector-6 call leaves segment 0 unbalanced by exactly {+give, −want}
-// (the give surplus has no output at all — that positive imbalance is the open
-// offer; the want deficit is the coin the contract claims via receiveShielded).
-// A taker balances and submits it later; the maker never pays fees and never
-// touches its own coins here.
+// `open_swap_shielded_with_evm` call leaves the give value with no output at all (a
+// POSITIVE imbalance) beside the −want deficit the circuit's `receiveShielded` claims. A
+// taker balances and submits it later; the maker never pays a fee and never touches its
+// own coins here.
 //
-// Ported from the AA project's proven research harness (never productized
-// upstream — the AA repo's reorg removed it from main):
-//   ~/todo/AA/experiments/00008-AA-v3-evm/harness/src/offer/build.ts  (builder)
-//   ~/todo/AA/experiments/00008-AA-v3-evm/harness/src/g1/maker.ts     (FR-302 gate)
-// with two deliberate changes: the circuit is the v5 `execute` gateway (EIP-712
-// authorized) rather than the legacy per-circuit entrypoint, and the encoding
-// is the kernel's own MIP-0005 `swapoffer1…` (OfferFiles) rather than the
-// harness's bespoke envelope — the kernel's offerId (sha256 of the canonical
-// Transaction bytes) is what the harness called the content address.
+// ⚠ WHAT CHANGED IN 00034. The builder, the two gates and the imbalance readers used to
+// live in this file, ported from the AA project's research harness, and drove the AA-v3
+// Manager's `execute` gateway (selector 6). They now live in the Passport fork's
+// `src/wallet/offer.ts` (PR-B), which is where they belong: they are properties of the
+// circuit, and the fork's own suites exercise them offline against the contract's pure
+// circuits. This file is what remains — the two things that are THIS STACK's, not the
+// contract's:
 //
-// TWO FAIL-CLOSED GATES, both from the harness (keep them; they are the
-// difference between "posted an offer" and "posted an unsettleable artifact"):
-//   FR-302  the offer's legs sit at SEGMENT 0 and no other segment carries a
-//           delta — a leg in a fallible segment is unsettleable by a taker.
-//   FR-301  the maker artifact carries NO DUST actions — dust is the taker's.
+//   1. BINDING. The fork's `buildOpenSwapOffer` stops at the proven, PRE-BINDING artefact
+//      and its envelope declares `form: 'pre-binding'`, because its own taker merges the
+//      recipe and binds at the end. This stack's kernel does not: its deserializer accepts
+//      only the BOUND wire header `transaction[v12](signature[v2],proof,pedersen-schnorr[v1])`
+//      and an unbound transaction serializes as `embedded-fr` and lands BAD_DESERIALIZE
+//      (measured 2026-08-26, unchanged). So the artefact is bound HERE, and the bound
+//      bytes are what is hashed, published and content-addressed.
+//   2. The MIP-0005 `swapoffer1…` encoding the kernel parses (@effectstream/mip-zswap-offer).
+//
+// ⚠ AND ONE GATE IS GONE. `AA_OFFER_ALLOW_FALLIBLE` no longer exists. It was an override
+// for project 00006's FR-302 rule that an offer's legs must sit in the GUARANTEED segment
+// 0 — a rule PR-B measured to be unsatisfiable for any device-gated circuit, because the
+// MIP-0013 seam writes ledger state (the consumed device entry, its successor, auth_nonce,
+// round) BEFORE any value moves, and everything after that write is in the transaction's
+// fallible half by construction. Question Q39 replaced it with the rule a taker actually
+// needs: ALL the legs in ONE segment, whichever it is, declared in the terms and checked
+// against the bytes. That rule is enforced inside the fork's builder and it FAILS CLOSED,
+// so there is nothing left to override.
 
-import { createUnprovenCallTx } from "@midnight-ntwrk/midnight-js-contracts";
 import { OfferFiles } from "@effectstream/mip-zswap-offer/mip5";
 
-export type ImbalanceMap = Record<string, string>;
-export interface PlacementReport {
-  segments: number[];
-  imbalances: Record<string, ImbalanceMap>;
-  expectedAtSegment0: ImbalanceMap;
-  segment0Exact: boolean;
-  otherSegmentsEmpty: boolean;
-  offendingSegments: string[];
-  ok: boolean;
-}
+import {
+  buildOpenSwapOffer as buildPassportOffer,
+  readAllImbalances,
+  legSegmentOf,
+  sha256Hex,
+  type OfferTerms,
+  type OpenSwapOfferSpec,
+  type ImbalanceReading,
+} from "../passport/src/wallet/offer.js";
 
-const hex = (u: Uint8Array): string =>
-  Array.from(u, (x) => x.toString(16).padStart(2, "0")).join("");
+export type { OfferTerms, ImbalanceReading };
 
-// Token keys out of tx.imbalances() are ledger token-type objects; label them
-// stably. Shielded token types carry .raw (32 bytes); dust and unshielded carry
-// tags. Unknown shapes degrade to JSON so a mismatch is visible, not hidden.
-const tokenLabel = (token: any): string => {
-  try {
-    if (token === "dust" || token?.tag === "dust") return "dust";
-    const tag = token?.tag ?? (token?.raw !== undefined ? "shielded" : undefined);
-    const raw = token?.raw ?? token?.value ?? token;
-    if (tag && raw instanceof Uint8Array) return `${tag}:${hex(raw)}`;
-    if (typeof raw === "string") return `${tag ?? "token"}:${raw.replace(/^0x/, "")}`;
-    return JSON.stringify(token);
-  } catch {
-    return String(token);
-  }
-};
-
-export const shieldedLabel = (colourHex: string): string =>
-  `shielded:${colourHex.replace(/^0x/, "").toLowerCase()}`;
-
-// `Transaction.segments()` is not bound to JS at these pins; derive the set
-// from the two maps that ARE bound (harness finding F-304 — `?.()` fallback
-// would silently degrade the gate to "segment 0 looks right").
-export const segmentsOf = (tx: any): number[] => {
-  const set = new Set<number>([0]);
-  for (const k of (tx.intents?.keys?.() ?? []) as Iterable<number>) set.add(Number(k));
-  for (const k of (tx.fallibleOffer?.keys?.() ?? []) as Iterable<number>) set.add(Number(k));
-  return [...set].sort((a, b) => a - b);
-};
-
-const readImbalances = (tx: any, segment: number): ImbalanceMap => {
-  const out: ImbalanceMap = {};
-  for (const [token, delta] of tx.imbalances(segment) as Map<unknown, bigint>) {
-    if (delta !== 0n) out[tokenLabel(token)] = String(delta);
-  }
-  return out;
-};
-
-export const assertPlacement = (tx: any, expected: ImbalanceMap): PlacementReport => {
-  const segments = segmentsOf(tx);
-  const imbalances: Record<string, ImbalanceMap> = {};
-  for (const s of segments) {
-    try {
-      imbalances[String(s)] = readImbalances(tx, s);
-    } catch (e) {
-      imbalances[String(s)] = { "<unreadable>": e instanceof Error ? e.message : String(e) };
-    }
-  }
-  const seg0 = imbalances["0"] ?? {};
-  const segment0Exact =
-    Object.keys(seg0).length === Object.keys(expected).length &&
-    Object.entries(expected).every(([k, v]) => seg0[k] === v);
-  const offendingSegments = segments
-    .filter((s) => s !== 0)
-    .filter((s) => Object.keys(imbalances[String(s)] ?? {}).length > 0)
-    .map((s) => `${s}: ${JSON.stringify(imbalances[String(s)])}`);
-  return {
-    segments, imbalances, expectedAtSegment0: expected,
-    segment0Exact,
-    otherSegmentsEmpty: offendingSegments.length === 0,
-    offendingSegments,
-    ok: segment0Exact && offendingSegments.length === 0,
-  };
-};
-
-export const requirePlacement = (what: string, report: PlacementReport): PlacementReport => {
-  if (report.ok) return report;
-  throw new Error(
-    `FR-302 VIOLATED for ${what}: expected segment-0 ${JSON.stringify(report.expectedAtSegment0)}, ` +
-    `observed ${JSON.stringify(report.imbalances["0"] ?? {})}; ` +
-    `other segments carrying deltas: ${report.offendingSegments.join("; ") || "(none)"} — ` +
-    `an offer with a leg outside the guaranteed section is unsettleable by an independent taker, refusing to publish`,
-  );
-};
-
-/** FR-301: a maker artifact must carry no DUST actions (dust is the taker's job). */
-const carriesDust = (tx: any): boolean => {
-  try {
-    const d = tx.dustActions ?? tx.dust;
-    if (d === undefined || d === null) return false;
-    if (typeof d.isEmpty === "function") return !d.isEmpty();
-    if (typeof d.size === "number" || typeof d.size === "bigint") return Number(d.size) > 0;
-    return true; // present in an unknown shape — fail closed
-  } catch {
-    return true;
-  }
-};
-
-export interface OpenSwapOfferSpec {
-  providers: any;              // configureMidnightNodeProviders result (proofProvider = aa-proof-server)
-  compiledContract: any;       // the manager's CompiledContract with witnesses
-  managerAddress: string;
-  args: unknown[];             // [payload, signature, point] from prepareEvmExecute
-  giveColorHex: string;        // no 0x prefix needed either way
-  giveAmount: bigint;
-  wantColorHex: string;
-  wantAmount: bigint;
-  log?: (line: string) => void;
-}
-
-export interface BuiltOffer {
-  blob: string;                // swapoffer1… (MIP-0005)
-  bytes: number;               // serialized transaction size
-  sha256: string;              // == the kernel's offerId
-  placement: PlacementReport;
+export interface KernelOffer {
+  /** `swapoffer1…` — the MIP-0005 blob the poster/kernel consumes. */
+  blob: string;
+  /** The BOUND transaction bytes the blob carries. */
+  bytes: number;
+  /** SHA-256 of those bytes — what the kernel calls the offerId. */
+  sha256: string;
+  /** The fork's offer terms, with `form` corrected to `binding` and the content address
+   *  recomputed over the bound bytes. Published beside the blob. */
+  terms: OfferTerms;
+  /** Segment → token → signed delta, measured on the BOUND artefact. */
+  imbalances: ImbalanceReading;
+  /** The one segment the legs are in (Q39). */
+  legSegment: string;
   proveMs: number;
 }
 
-export async function buildOpenSwapOffer(spec: OpenSwapOfferSpec): Promise<BuiltOffer> {
-  const log = spec.log ?? (() => {});
-  const built: any = await createUnprovenCallTx(spec.providers, {
-    compiledContract: spec.compiledContract,
-    circuitId: "execute",
-    contractAddress: spec.managerAddress,
-    args: spec.args,
-    privateStateId: "aaManagerPrivateState",
-  } as any);
+/**
+ * Prove an offer, bind it, and encode it for the kernel.
+ *
+ * Everything before `bind()` is the fork's: the call, the proof, the DUST refusal and the
+ * placement assert. Everything after it is this stack's wire format.
+ */
+export async function buildKernelOffer(
+  spec: OpenSwapOfferSpec,
+  log: (line: string) => void = () => {},
+): Promise<KernelOffer> {
+  log(`proving ${spec.circuitId} — the LAST thing the maker does (no balance, no dust, no submit)`);
+  const offer = await buildPassportOffer(spec);
+  log(`proved in ${offer.proveMs} ms; legs in segment ${offer.terms.legSegment}`);
 
-  log("proving the open-swap execute — the LAST thing the maker does (no balance, no dust, no submit)");
-  const t0 = Date.now();
-  const provenUnbound: any = await spec.providers.proofProvider.proveTx(built.private.unprovenTx);
-  const proveMs = Date.now() - t0;
-  // BINDING form (measured 2026-08-26): the kernel's deserializer accepts only
-  // the BOUND wire header `transaction[v12](signature[v2],proof,pedersen-schnorr[v1])`
-  // — a pre-binding tx serializes as `embedded-fr` and lands BAD_DESERIALIZE.
-  // Wallet-built offers (balanceFinalizedTransaction) are bound too; bind here.
-  const proven: any = typeof provenUnbound.bind === "function" ? provenUnbound.bind() : provenUnbound;
-
-  if (carriesDust(proven)) {
-    throw new Error("FR-301 VIOLATED: the maker artifact carries DUST actions — refusing to publish");
-  }
-
-  // Open shape (recipientKind 0): +give stands beside −want at segment 0. The
-  // give and want colours MUST differ — same-colour legs net into one delta and
-  // the kernel would reject the offer as NOT_A_SWAP.
-  const give = shieldedLabel(spec.giveColorHex);
-  const want = shieldedLabel(spec.wantColorHex);
-  if (give === want) throw new Error("give and want colours must differ (same-colour legs net out: NOT_A_SWAP)");
-  const expected: ImbalanceMap = { [give]: String(spec.giveAmount), [want]: String(-spec.wantAmount) };
-  const report = assertPlacement(proven, expected);
-  // MEASURED 2026-08-26 on this stack: the v5 k=19 `execute` gateway's transcript
-  // exceeds the ledger's guaranteed budget even at 1 pool / 1 custody cell, so
-  // the WHOLE call lands in the fallible section (AA issues 0003/0004 mechanism;
-  // this datapoint is NEW — v4's boundary was 2 cells). The gate therefore fails
-  // closed by default. AA_OFFER_ALLOW_FALLIBLE=1 publishes anyway — an
-  // EXPERIMENT lane for measuring what the kernel and a live taker actually do
-  // with a fallible-placement offer, not a production path.
-  const allowFallible = /^(1|true|yes)$/i.test(process.env["AA_OFFER_ALLOW_FALLIBLE"] ?? "");
-  let placement = report;
-  if (!report.ok && allowFallible) {
-    log(`FR-302 gate OVERRIDDEN (AA_OFFER_ALLOW_FALLIBLE): placement=${JSON.stringify(report.imbalances)}`);
-  } else {
-    placement = requirePlacement(
-      `open-swap offer (give ${spec.giveAmount} ${give.slice(9, 21)}… / want ${spec.wantAmount} ${want.slice(9, 21)}…)`,
-      report,
+  // Bind. `bind()` seals the artefact's pedersen commitments; it adds no value leg, so the
+  // imbalances must be identical — and that is asserted rather than assumed, because a
+  // change here would be a silent change to what a taker is asked to fund.
+  const bound: any =
+    typeof (offer.proven as any).bind === "function" ? (offer.proven as any).bind() : offer.proven;
+  const imbalances = readAllImbalances(bound, `bound offer (${spec.circuitId})`);
+  const legSegment = legSegmentOf(imbalances) ?? "";
+  if (JSON.stringify(imbalances[legSegment] ?? {}) !== JSON.stringify(offer.imbalances[offer.terms.legSegment] ?? {})) {
+    throw new Error(
+      `binding changed the offer's imbalances: before ${JSON.stringify(offer.imbalances)}, ` +
+        `after ${JSON.stringify(imbalances)} — refusing to publish`,
     );
   }
 
-  const bytes: Uint8Array = proven.serialize();
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const bytes: Uint8Array = bound.serialize();
+  const sha256 = sha256Hex(bytes);
+  const terms: OfferTerms = {
+    ...offer.terms,
+    form: "binding",
+    contentAddress: sha256,
+    transactionBytes: bytes.length,
+    imbalances,
+    legSegment,
+  };
   const blob = OfferFiles.encode(bytes);
-  log(`offer proven in ${proveMs} ms; ${bytes.length} bytes; sha256(offerId)=${hex(digest).slice(0, 16)}…`);
-  return { blob, bytes: bytes.length, sha256: hex(digest), placement, proveMs };
+  log(`bound: ${bytes.length} bytes; sha256(offerId)=${sha256.slice(0, 16)}…`);
+  return { blob, bytes: bytes.length, sha256, terms, imbalances, legSegment, proveMs: offer.proveMs };
 }
+
+/** The label the imbalance readers use for a shielded colour, re-exported for callers
+ *  that want to talk about a specific leg (`shielded:<64 hex>`). */
+export { shieldedLabel } from "../passport/src/wallet/offer.js";
