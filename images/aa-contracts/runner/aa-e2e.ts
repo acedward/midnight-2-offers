@@ -52,7 +52,7 @@ import { CustodyAccount, deployEvmAccount } from "../passport/src/wallet/account
 import { EvmDevice } from "../passport/src/wallet/signer.js";
 import { generateEncKeyPair, sealInboxEntry } from "../passport/src/wallet/inbox.js";
 import { depositAsThirdParty, inboxWalkPortable } from "../passport/src/wallet/deposit.js";
-import { candidateIndices } from "../passport/src/wallet/capture.js";
+import { candidateIndices, enumerateContractActions } from "../passport/src/wallet/capture.js";
 import {
   freshWantNonce,
   offerAuthArgs,
@@ -376,24 +376,38 @@ const spend = await session("spend", E2E_SEED, async (walletCtx) => {
     );
   }
   log(`inbox walk after settlement: ${found.length} entries, the want coin among them`);
-  // ITS mt_index COMES FROM THE SETTLEMENT TRANSACTION, WHICH SOMEBODY ELSE SUBMITTED. That
-  // is the honest cost of not having been the submitter: the coin's Merkle position is not in
-  // anything the maker holds. `candidateIndices` narrows it to the commitments that ONE
-  // transaction produced — usually three or four, of which two are the account's (the want
-  // coin and the change) and the rest are the taker's — so the scan is a handful of attempts
-  // rather than a search. A wrong index fails while PROVING, before any transaction exists,
-  // so a retry costs time and nothing else. A k=18 proof is about a minute, which is why the
-  // range matters more here than the elegance of the loop.
+  // ITS mt_index COMES FROM A TRANSACTION THIS CLIENT NEVER SAW, and that is the honest cost
+  // of not having been the submitter: the coin's Merkle position is in the settlement, and
+  // the settlement is the taker's.
+  //
+  // ⚠ AND THE TAKER'S TRANSACTION ID IS NOT A KEY THE INDEXER ACCEPTS. Measured here: the
+  // wallet SDK's `transactionHash()` gives `3f81c1f3…`, while every id midnight-js reports
+  // for a contract call is a 33-byte IDENTIFIER (`005a5f00…`), and
+  // `transactions(offset: {identifier: …})` answers "no transaction" for the former. So the
+  // maker does not look the settlement up by id at all — it enumerates the ACCOUNT's own
+  // action history, which is the discovery path MIP-0012 §6.5 describes and the only one
+  // that also works when a solver settled the offer and this process saw nothing.
   let candidates: bigint[] = [];
-  const settleTxId = (settlement as any).txId as string | undefined;
-  if (settleTxId) {
-    candidates = (await candidateIndices(settleTxId)).candidates;
-    log(`settlement ${settleTxId.slice(0, 16)}… produced commitments ${candidates.map(String).join(", ")}`);
-  } else {
-    // The solver settled it and this driver never saw the transaction id. Fall back to a
-    // bounded scan from the account's own inbox position, which is the best a maker can do.
+  const actions = await enumerateContractActions(accountAddress).catch((e) => {
+    log(`  contract-action enumeration failed (${e instanceof Error ? e.message : e})`);
+    return [] as Awaited<ReturnType<typeof enumerateContractActions>>;
+  });
+  const withWindow = actions.filter((a) => a.startIndex != null && a.endIndex != null && a.endIndex! > a.startIndex!);
+  const latest = withWindow[withWindow.length - 1];
+  if (latest) {
+    for (let i = latest.startIndex!; i < latest.endIndex!; i++) candidates.push(BigInt(i));
+    log(`the account's latest action (${latest.kind}${latest.entryPoint ? ` ${latest.entryPoint}` : ""}, block `
+      + `${latest.blockHeight}) carried commitments ${candidates.map(String).join(", ")}`);
+  }
+  if (candidates.length === 0) {
+    const settleTxId = (settlement as any).txId as string | undefined;
+    if (settleTxId) {
+      candidates = (await candidateIndices(settleTxId).catch(() => ({ candidates: [] as bigint[] }))).candidates;
+    }
+  }
+  if (candidates.length === 0) {
     for (let i = 0n; i < 24n; i++) candidates.push(i);
-    log("the solver settled it, so the settlement tx id is unknown here — scanning a bounded range");
+    log("no action window and no usable transaction id — scanning a bounded range");
   }
   const st: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
   const recipient = coinPkOf(st);
