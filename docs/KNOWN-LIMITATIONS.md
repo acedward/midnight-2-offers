@@ -334,6 +334,14 @@ here rather than left to a build flag nobody reads.
   ride the wave-2 maintenance update either way, so an account registered by a default image
   can be bridged later by an image built with `AA_WITH_BRIDGE=1`; what the flag buys is the
   ~1.2 GB of proving keys needed to make those calls in this process.
+- **There is therefore no bridge tab in the console, and no `--with signet` profile.** Both
+  were planned alongside this migration and are deliberately not in it: a tab that cannot
+  complete a transfer against a stub key would invite somebody to move funds that cannot come
+  back. Making the bridge real needs a second compose profile carrying Sig Network's fakenet
+  MPC responder and an anvil chain (their images pinned by digest) plus the vault's relayer,
+  which shares no code with the account model this profile ships. Nothing about that is
+  blocked by what is here: the verifier keys are already deployed, so accounts registered
+  today keep working when the profile lands.
 
 ## The console holds every account's viewing key
 
