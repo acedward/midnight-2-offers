@@ -133,7 +133,13 @@ const DEV_SIGNER = /^(1|true|yes)$/i.test(process.env["AA_CONSOLE_DEV_SIGNER"] ?
 // wallet extension). Public by design, like every seed in this repo.
 const DEV_KEY = hexToBytes("d".repeat(60) + "c0de");
 const DEV_DEVICE = EvmDevice.fromPrivateKey(DEV_KEY);
-const DEV_ADDR = `0x${DEV_DEVICE.addressHex}`;
+// ⚠ `EvmDevice.addressHex` ALREADY CARRIES THE `0x`. Measured, not assumed: the client's own
+// `toHex` prefixes, while this file's does not, and the two are one character apart in a
+// value that is compared as a STRING against the owner the page sends. Wrapping it again
+// produced `0x0x…`, which failed the owner regex and made the dev signer unusable while
+// every log line still looked plausible. `DEV_OWNER` is the bare form this file compares.
+const DEV_ADDR = DEV_DEVICE.addressHex;
+const DEV_OWNER = DEV_ADDR.replace(/^0x/, "").toLowerCase();
 
 const KERNEL_URL = process.env["AA_KERNEL_URL"] ?? "http://kernel:9999";
 const SINK_URL = process.env["AA_SINK_URL"] ?? "http://solver-sink:8080";
@@ -1749,7 +1755,7 @@ Bun.serve({
         const body = await req.json();
         const prep = prepared.get(String(body.prepId ?? ""));
         if (!prep) return bad("unknown or expired prepId — prepare again");
-        if (prep.owner !== DEV_DEVICE.addressHex) {
+        if (prep.owner !== DEV_OWNER) {
           return bad(`dev signer is ${DEV_ADDR}; the prepared action's owner is 0x${prep.owner}`);
         }
         const { serializeSignature, signDigest, eip191Digest } =

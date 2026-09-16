@@ -55,7 +55,6 @@ for (const pkg of ["@metamask/eth-sig-util"]) {
 }
 
 const { personalSign } = await import("@metamask/eth-sig-util");
-const { privateToAddress } = await import("@ethereumjs/util").catch(() => ({ privateToAddress: null as any }));
 
 const TAG = "[aa-console-mint]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
@@ -130,14 +129,13 @@ log(`unshielded ${UN.name} colour ${UN.color.slice(0, 16)}… decimals ${UN.deci
 
 // ── 1. register: prepare -> personal_sign -> submit ─────────────────────────
 const keyBuf = Buffer.from(OWNER_KEY.slice(2), "hex");
-const OWNER = privateToAddress
-  ? `0x${Buffer.from(privateToAddress(keyBuf)).toString("hex")}`.toLowerCase()
-  : await (async () => {
-      // No @ethereumjs/util in this tree: derive the address with the project's own client,
-      // which is the same 20 bytes by construction (keccak of the uncompressed point).
-      const { EvmDevice } = await import("../passport/src/wallet/signer.js");
-      return `0x${EvmDevice.fromPrivateKey(new Uint8Array(keyBuf)).addressHex}`;
-    })();
+// The address the console will be told to expect. Derived with the PROJECT's own client
+// rather than with an Ethereum utility library, because the two must agree by construction:
+// the console recovers a point from the signature and hashes it to an address, and if this
+// driver named a different one the submit would be refused by name rather than silently.
+// `addressHex` already carries the `0x`.
+const { EvmDevice } = await import("../passport/src/wallet/signer.js");
+const OWNER = EvmDevice.fromPrivateKey(new Uint8Array(keyBuf)).addressHex.toLowerCase();
 log(`owner EOA ${OWNER}`);
 
 const prep = await api("/api/prepare", { kind: "register", owner: OWNER });

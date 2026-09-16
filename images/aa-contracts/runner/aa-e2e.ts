@@ -186,7 +186,7 @@ step("1/5 register — deploy and activate ONE account contract for an Ethereum 
 const device = EvmDevice.fromPrivateKey(OWNER_KEY);
 const encKeys = generateEncKeyPair();
 const waves = consoleWaves();
-log(`owner 0x${device.addressHex}`);
+log(`owner ${device.addressHex}`);   // addressHex already carries the 0x
 log(`waves: ${waves.waveOne.length} operations in wave 1, ${waves.waveTwo.length} in wave 2 (then the authority is retired)`);
 
 const accountAddress = await session("register", E2E_SEED, async (walletCtx) => {
@@ -204,7 +204,7 @@ const accountAddress = await session("register", E2E_SEED, async (walletCtx) => 
 });
 log(`✅ account ${accountAddress} (the account id IS this address)`);
 steps.register = {
-  owner: `0x${device.addressHex}`,
+  owner: device.addressHex,
   accountAddress,
   circuits: consoleAccountCircuits(),
   waveOne: waves.waveOne,
