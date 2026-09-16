@@ -51,8 +51,28 @@ export interface AccountRecord {
    *  A wrong index fails at PROVING, before any transaction exists, so trying the
    *  next one is safe — it is just slow, which is why the list is kept. */
   mtCandidates?: Record<string, string[]>;
-  /** The offer this account currently has live, if any (Q7: one at a time). */
-  liveOffer?: { offerId: string; give: string; want: string; createdAt: string } | null;
+  /** The offer this account currently has live, if any (Q7: one at a time).
+   *
+   *  It carries what RECONCILING after a settlement needs, because by then the artefact is
+   *  gone and the chain does not say which offer a transaction settled. Without this the
+   *  console's coin store keeps a coin the settlement nullified, and the account's NEXT call
+   *  fails at proving with a message about a merkle path. */
+  liveOffer?: {
+    offerId: string;
+    give: string;
+    want: string;
+    createdAt: string;
+    giveColour: string;
+    giveAmount: string;
+    wantColour: string;
+    wantAmount: string;
+    wantNonceHex: string;
+    /** The change the circuit returns to the account, or null when the give coin is exact.
+     *  Its NONCE is stored rather than re-derived: the rule is `swap_change_nonce(<the GIVE
+     *  coin's nonce>)`, and by settlement time the give coin is gone from the store. */
+    changeValue: string | null;
+    changeNonceHex: string | null;
+  } | null;
   registeredAt: string;
   /** Free-form notes (network, the deploy's transaction ids). */
   meta?: Record<string, string>;

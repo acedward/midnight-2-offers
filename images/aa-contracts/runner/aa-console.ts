@@ -1100,6 +1100,7 @@ function offerJob(prep: Prepared, signatureHex: string): Job {
     // Q7: one live offer per account, recorded the moment the artefact exists. The device
     // entry this offer consumed is spent when (and only when) the taker submits, but a
     // SECOND signature from this account would make this one unsettleable either way.
+    const change = predictChangeCoin(offerSpec.coin, offerSpec.call.giveAmount);
     writeRecord({
       ...record,
       liveOffer: {
@@ -1107,6 +1108,13 @@ function offerJob(prep: Prepared, signatureHex: string): Job {
         give: `${offerSpec.call.giveAmount} ${offerSpec.giveToken}`,
         want: `${offerSpec.call.want.value} ${offerSpec.wantToken}`,
         createdAt: new Date().toISOString(),
+        giveColour: toHex(offerSpec.call.giveColor),
+        giveAmount: String(offerSpec.call.giveAmount),
+        wantColour: toHex(offerSpec.call.want.color),
+        wantAmount: String(offerSpec.call.want.value),
+        wantNonceHex: toHex(offerSpec.call.want.nonce),
+        changeValue: change ? String(change.value) : null,
+        changeNonceHex: change ? toHex(change.nonce) : null,
       },
     });
 
@@ -1304,7 +1312,7 @@ function takeJob(offerId: string): Job {
         const s: any = await (await fetch(`${KERNEL_URL}/v1/offers/${offerId}/status`)).json();
         if (s.status === "consumed") {
           jlog(j, "book status: CONSUMED — settlement confirmed");
-          clearLiveOffer(offerId);
+          await reconcileSettledOffer(offerId, j.txId, j);
           return;
         }
         if (["cancelled", "expired", "unknown", "not_found"].includes(s.status)) {
@@ -1316,6 +1324,59 @@ function takeJob(offerId: string): Job {
     }
     jlog(j, "submitted, but the book has not flipped to consumed yet — check the offer status");
   });
+}
+
+/**
+ * A settled offer changes the maker's custody, and NOTHING tells the maker so.
+ *
+ * The give coin is nullified by a transaction the maker did not submit; the want coin and
+ * the change are created by it, and their Merkle positions live only in it. If the console
+ * simply forgot the offer, its store would keep a coin that no longer exists — and the
+ * account's NEXT call would fail inside proving with a message about a merkle path, minutes
+ * later, pointing at nothing. So: drop the spent coin, and capture what came back.
+ *
+ * `settleTxId` is present when THIS console's taker settled. When the solver did, there is
+ * no transaction id here, so the spent coin is still dropped (that part is certain) and the
+ * received coins are left for a rescan, which is stated in the log rather than papered over.
+ */
+async function reconcileSettledOffer(offerId: string, settleTxId: string | null, j?: Job): Promise<void> {
+  const store = readStore();
+  const rec = store.accounts.find((a) => a.liveOffer?.offerId === offerId);
+  if (!rec?.liveOffer) return;
+  const offer = rec.liveOffer;
+  const say = (line: string) => (j ? jlog(j, line) : log(line));
+
+  const coins = { ...rec.coins };
+  const mtCandidates = { ...(rec.mtCandidates ?? {}) };
+  delete coins[offer.giveColour];
+  delete mtCandidates[offer.giveColour];
+  say(`settled: the ${offer.give} coin is nullified — dropped from the store`);
+
+  if (settleTxId) {
+    const { candidates } = await candidateIndices(settleTxId);
+    const list = candidates.map(String);
+    say(`the settlement produced commitments ${list.join(", ")} — the want coin and the change are among them`);
+    coins[offer.wantColour] = {
+      nonceHex: offer.wantNonceHex, colorHex: offer.wantColour,
+      value: offer.wantAmount, mtIndex: list[0]!,
+    };
+    mtCandidates[offer.wantColour] = list;
+    if (offer.changeValue && offer.changeNonceHex) {
+      // The change coin's nonce was PREDICTED before the offer was proved (the circuit's own
+      // `swap_change_nonce` rule over the GIVE coin's nonce) and stored then, because by now
+      // the give coin is gone from the store and the rule's input with it.
+      coins[offer.giveColour] = {
+        nonceHex: offer.changeNonceHex, colorHex: offer.giveColour,
+        value: offer.changeValue, mtIndex: list[0]!,
+      };
+      mtCandidates[offer.giveColour] = list;
+      say(`the change (${offer.changeValue} of the give colour) is back in the store`);
+    }
+  } else {
+    say("the solver settled it, so this console has no transaction id: the received coins need a "
+      + "rescan (the account still owns them, and the inbox entries are on chain)");
+  }
+  writeRecord({ ...rec, coins, mtCandidates, liveOffer: null });
 }
 
 function clearLiveOffer(offerId: string): void {
