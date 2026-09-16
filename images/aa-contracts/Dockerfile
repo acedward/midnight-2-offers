@@ -175,7 +175,7 @@ ARG AA_PROVER_KEYS
 ARG AA_WITH_BRIDGE
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates unzip bash jq \
+ && apt-get install -y --no-install-recommends curl ca-certificates unzip bash \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=source /kernel-src/infra/compact-version.txt     /opt/compact-version.txt
@@ -293,14 +293,13 @@ RUN set -eux; \
       /work/contracts/faucet.compact /work/contracts/managed/faucet; \
     du -sh "$V/managed" /work/contracts/managed/account /work/contracts/managed/faucet
 
-# The prune, and the manifest re-stamp that makes it legal. Separate RUN only because it
-# reads AA_PROVER_KEYS/AA_WITH_BRIDGE — a rebuild with a different key set must not
-# recompile 33 circuits.
+# The prune. A separate RUN because it reads AA_PROVER_KEYS/AA_WITH_BRIDGE, and a rebuild
+# with a different key set must not recompile 33 circuits.
 #
-# `NodeZkConfigProvider` runs verify:"require" against `compiler/contract-manifest.json`,
-# so a manifest that still describes a deleted `.prover` fails at the first call. Every
-# pruned entry is REMOVED from the manifest rather than left describing bytes that are not
-# there — the same rule the MinoCrab re-stamp followed, for the opposite reason.
+# MEASURED on this tree (2026-09-16): the account's compiled bundle is 7.2 GB with every
+# prover key and 2.9 GB with the default set; the vault's is 717 MB before and 114 MB after;
+# the faucet's 54 MB. The manifest each bundle carries still describes the deleted keys at
+# this point — the re-stamp that fixes that runs in the final stage, where bun is.
 ARG AA_PROVER_KEYS
 ARG AA_WITH_BRIDGE
 RUN set -eux; \
@@ -333,25 +332,6 @@ mint_shielded mint_unshielded mint_unshielded_to_contract"; \
     done; \
     echo "prover keys: ${kept} kept, ${dropped} pruned (of ${total_before})"; \
     du -sh /work/contracts/managed/account /work/contracts/erc20-vault/managed
-
-# The re-stamp, done properly with jq (no python in this base image). A `keys` entry whose
-# file is gone is deleted; every surviving entry is re-measured from the ACTUAL bytes, so
-# the manifest describes this image rather than the compile that produced it.
-RUN set -eux; \
-    for bundle in /work/contracts/managed/account \
-                  /work/contracts/managed/faucet \
-                  /work/contracts/erc20-vault/managed/Erc20Vault \
-                  /work/contracts/erc20-vault/managed/SignetSigner; do \
-      m="$bundle/compiler/contract-manifest.json"; \
-      [ -f "$m" ] || continue; \
-      present=""; \
-      for f in "$bundle"/keys/*; do [ -e "$f" ] || continue; present="$present $(basename "$f")"; done; \
-      jq --arg present " $present " \
-         '.keys |= with_entries(select(.key == "type" or ($present | contains(" " + .key + " "))))' \
-         "$m" > "$m.new"; \
-      mv "$m.new" "$m"; \
-      echo "re-stamped $(basename "$bundle")/compiler/contract-manifest.json"; \
-    done
 
 COPY --from=source /mtt/shielded   /aa/contract-mtt-shielded/src/managed
 COPY --from=source /mtt/unshielded /aa/contract-mtt-unshielded/src/managed
@@ -427,6 +407,35 @@ RUN set -eux; \
     cp /opt/signet-pkg-sha256       /aa/.signet-pkg-sha256; \
     cp /opt/aa-prover-keys          /aa/.aa-prover-keys; \
     cp /opt/aa-with-bridge          /aa/.aa-with-bridge
+
+# ── the manifest re-stamp the prune made necessary ──────────────────────────
+# `NodeZkConfigProvider` runs verify:"require" against `compiler/contract-manifest.json`, so
+# a manifest that still describes a `.prover` the prune deleted fails at the first call with
+# an ENOENT that reads like a broken build. Every pruned entry is REMOVED rather than left
+# describing bytes that are not there. It runs HERE rather than in the compact stage because
+# bun is the JSON tool this image has — the first version used jq and got it wrong in a way
+# worth recording: inside `contains(…)` the input is the ARGUMENT, so `.key` indexed a
+# string and jq exited 5 ("Cannot index string with string \"key\"").
+RUN bun -e ' \
+  const { readdirSync, existsSync } = await import("node:fs"); \
+  const root = "/aa/passport/contracts"; \
+  const bundles = [ \
+    `${root}/managed/account`, `${root}/managed/faucet`, \
+    `${root}/erc20-vault/managed/Erc20Vault`, `${root}/erc20-vault/managed/SignetSigner`, \
+  ]; \
+  for (const dir of bundles) { \
+    const path = `${dir}/compiler/contract-manifest.json`; \
+    if (!existsSync(path)) continue; \
+    const m = await Bun.file(path).json(); \
+    const present = new Set(readdirSync(`${dir}/keys`)); \
+    let dropped = 0; \
+    for (const name of Object.keys(m.keys ?? {})) { \
+      if (name === "type" || present.has(name)) continue; \
+      delete m.keys[name]; dropped += 1; \
+    } \
+    await Bun.write(path, JSON.stringify(m, null, 2) + "\n"); \
+    console.log(`re-stamped ${dir.split("/").pop()}: ${dropped} pruned key(s) removed from the manifest`); \
+  }'
 
 # The artefact fingerprints every account deploy receipt has to quote (spec FR-022): the
 # SHA-256 of each compiled bundle's verifier keys and generated module, computed from the

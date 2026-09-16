@@ -397,6 +397,14 @@ async function listAccounts(owner?: string) {
       const t = tokens.list.find((x) => x.color === colour);
       shielded[t?.name ?? `0x${colour.slice(0, 12)}…`] = coin.value;
     }
+    // `balances` is the two halves merged, for a caller that just wants a number per token
+    // name. Keeping `unshielded` and `shielded` separate beside it is deliberate: they come
+    // from different places — public ledger state and this console's private coin store —
+    // and a view that hides that hides the custody model.
+    const balances: Record<string, string> = {
+      ...((ledgerView as any).unshielded ?? {}),
+      ...shielded,
+    };
     out.push({
       accountId: rec.address,
       address: rec.address,
@@ -404,6 +412,8 @@ async function listAccounts(owner?: string) {
       registeredAt: rec.registeredAt,
       liveOffer: rec.liveOffer ?? null,
       shielded,
+      balances,
+      nonce: (ledgerView as any).authNonce ?? null,
       ...ledgerView,
     });
   }
@@ -724,6 +734,46 @@ async function buildAction(body: any): Promise<Prepared> {
     );
   }
 
+  if (kind === "send-to-account") {
+    // Q41: AA-v3's internal transfers moved value between two ROWS of one contract's balance
+    // map. Two Passport accounts are two contracts, and an account never calls another
+    // account, so the same move is a withdraw and a deposit — ONE HOP through a wallet the
+    // console already runs. The owner signs only the first half; the second is
+    // permissionless, which is why it needs no second signature.
+    const token = tokenByName(String(body.token ?? defaultTokenName("shielded")));
+    if (token.family !== "shielded") {
+      throw new Error(
+        "an account-to-account send moves a SHIELDED coin. The unshielded half is a plain " +
+        "withdraw to the other owner's wallet address followed by their own deposit, because " +
+        "unshielded value is a public balance and needs no inbox entry",
+      );
+    }
+    if (amount <= 0n) throw new Error("amount must be a positive integer");
+    const to = String(body.toAccountId ?? body.to ?? "");
+    const target = findByAddress(readStore(), to);
+    if (!target) throw new Error(`this console has no record of the recipient account ${to.slice(0, 18)}…`);
+    if (target.address === address) throw new Error("the sender and the recipient are the same account");
+    const held = record.coins[token.color];
+    if (!held) throw new Error(`the account holds no ${token.name} coin — fund it first`);
+    if (BigInt(held.value) < amount) {
+      throw new Error(`the account's ${token.name} coin is ${held.value}; one call spends one coin`);
+    }
+    // The hop wallet is the FUNDER, which is also the wallet that will pay for the deposit.
+    // Because it is both the recipient of the withdraw and the balancer of that transaction,
+    // midnight-js attaches the coin's ciphertext for it automatically — no third-party
+    // encryption-key mapping is needed (Q42 is about the case where they differ).
+    const hop = await walletZswapKeys(FUNDER_SEED);
+    const coin = {
+      nonce: hexToBytes(held.nonceHex), color: hexToBytes(held.colorHex),
+      value: BigInt(held.value), mt_index: BigInt(held.mtIndex),
+    };
+    const prepared = finish(
+      { op: "withdrawShielded", recipient: hexToBytes(hop.coinPublicKey), color: hexToBytes(token.color), amount, coin },
+      { token: token.name, amount: String(amount), toAccount: target.address, via: "funder wallet (one hop)" },
+    );
+    return { ...prepared, kind: "send-to-account", exec: { ...prepared.exec!, toAccount: target.address, token: token.name } as any };
+  }
+
   if (kind === "swap") {
     const giveToken = tokenByName(String(body.giveToken ?? defaultTokenName("shielded", 0)));
     const wantToken = tokenByName(String(body.wantToken ?? defaultTokenName("shielded", 1)));
@@ -967,19 +1017,33 @@ function gatedJob(prep: Prepared, signatureHex: string): Job {
       delete next.coins[colour];
       writeRecord(next);
       if (change) {
-        jlog(j, `the spend returned ${change.value} of change — capturing it and sealing its inbox entry`);
+        jlog(j, `the spend returned ${change.value} of change — capturing it`);
         next = await captureCoin(next, j.txId!, change, j);
-        // The change coin's description is NOT on chain: the circuit returns it and the
-        // owner appends the entry itself, which is a second gated call. Without it the
-        // coin is invisible to anyone rebuilding the store from chain data alone (S3).
-        const { sealInboxEntry } = await import("../passport/src/wallet/inbox.js");
-        const entry = sealInboxEntry(hexToBytes(next.encPublicKey), change);
-        const account2 = await connectAccount(walletCtx, next);
-        const ctx2 = await account2.callContext();
-        const counter2 = await account2.resolveUseCounter(deviceForRead(prep.owner));
-        jlog(j, "the change entry needs a second signature — the console cannot sign for you, so it is queued for the page");
-        j.data = { ...(j.data as any ?? {}), pendingChangeEntry: { entry: toHex(entry), authNonce: String(ctx2.authNonce), useCounter: String(counter2) } };
-        void account2;
+        // THE CHANGE COIN HAS NO INBOX ENTRY, and that is a stated limitation rather than an
+        // oversight. `withdraw_shielded` RETURNS the change to the caller; filing its
+        // description on chain is `append_inbox_with_evm`, a second DEVICE-GATED call and
+        // therefore a second wallet signature. This console keeps the coin in its own store,
+        // so it can spend it — but a client rebuilding this account from chain data alone
+        // would not see it (MIP-0012 S3). The Append-inbox action is how an owner files it.
+        jlog(j, "note: the change coin is in this console's store but has NO inbox entry — filing one "
+          + "is a second gated call (append_inbox_with_evm) and needs a second signature");
+      }
+      // Q41's second half: an account-to-account send is this withdraw plus a PERMISSIONLESS
+      // deposit into the recipient, which needs no signature from anybody.
+      const toAccount = (exec as any).toAccount as string | undefined;
+      if (toAccount) {
+        const recipient = requireRecord(toAccount);
+        jlog(j, `one hop: depositing ${req.amount} into ${toAccount.slice(0, 18)}… from the funder wallet`);
+        await session("send-to-account-deposit", async (hopCtx) => {
+          const hopAccount = await connectAccount(hopCtx, recipient);
+          const hopCoin = { nonce: randomBytes32(), color: req.color, value: req.amount };
+          const { txId } = await depositAsThirdParty(hopAccount as any, hopCoin, {
+            encKey: hexToBytes(recipient.encPublicKey),
+          });
+          jlog(j, `deposited into the recipient — tx=${txId}`);
+          await captureCoin(recipient, txId, hopCoin, j);
+          j.data = { ...(j.data as any ?? {}), hopTxId: txId, toAccount };
+        }, { seed: FUNDER_SEED });
       }
     }));
   });

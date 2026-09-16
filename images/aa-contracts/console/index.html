@@ -161,7 +161,7 @@
     <div id="w-status" class="wl-status"><span class="pill dim">disconnected</span></div>
 
     <div id="wl-connect">
-      <p class="note" style="margin-top:2px">Funds live on Midnight, inside the Manager contract. Your EVM
+      <p class="note" style="margin-top:2px">Funds live on Midnight, inside <b>your own account contract</b>. Your EVM
       wallet only ever signs typed data — no chain, no gas, no funds needed on the EVM side; the
       stack's relay proves each action (~1–2 min) and submits it.</p>
       <button id="connect" class="wl-cta">Connect wallet</button>
@@ -171,7 +171,7 @@
 
     <div id="wl-main" style="display:none">
       <div id="wl-warn" class="wl-warn" style="display:none">
-        <span><b>Not registered</b> — this address owns no AA account yet. Register creates one
+        <span><b>Not registered</b> — this address owns no account yet. Register <b>deploys a contract</b> for it (two transactions, minutes of proving), and the contract address becomes the account id
         (fresh salt → fresh account id), signed by your wallet.</span>
         <button id="op-register" disabled>Register</button>
       </div>
@@ -200,7 +200,7 @@
 
         <nav class="wl-ops" id="ops-seg">
           <button data-ops="withdraw" class="active">Withdraw Tokens</button>
-          <button data-ops="transfer">Transfer Tokens</button>
+          <button data-ops="transfer">Send to account</button>
           <button data-ops="offer">Publish Offer</button>
         </nav>
 
@@ -232,9 +232,11 @@
 
         <div id="ops-transfer" class="opspane">
           <div class="opgroup">
-            <h3>Transfer — pick a token</h3>
-            <p class="note">Moves balance between AA accounts inside the Manager. Pick what to
-            transfer — the token's type decides which selector is signed.</p>
+            <h3>Send to another account — pick a token</h3>
+            <p class="note">Two accounts are two contracts, so this is a <b>withdraw</b> of one shielded
+            coin to the console's funder wallet followed by a permissionless <b>deposit</b> into the
+            recipient — one signature from you, two transactions on chain. AA-v3's internal
+            transfers had no counterpart here (question Q41).</p>
             <div id="tr-list"></div>
             <div id="tr-form" style="display:none">
               <div class="wdp-head">
@@ -247,7 +249,7 @@
               <form id="f-tr"><div class="row">
                 <div style="flex:2"><label>to account</label><select id="tr-to" required></select></div>
                 <div><label>amount</label><input id="tr-amount" value="100000" pattern="[0-9]+" required></div>
-                <div><button type="submit" id="op-transfer">Transfer</button></div>
+                <div><button type="submit" id="op-transfer">Send</button></div>
               </div></form>
             </div>
           </div>
@@ -256,7 +258,8 @@
         <div id="ops-offer" class="opspane">
           <div class="opgroup">
             <h3>Publish offer <span class="chip sh">shielded swap</span></h3>
-            <p class="note">Selector 6 — opens a shielded swap on the Manager. The proven transaction is
+            <p class="note"><code>open_swap_shielded_with_evm</code> — one proved call releases the give
+            coin with no output and claims the want coin into custody. The proven transaction is
             <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the offer, published to
             the offer-files kernel for a taker (or the solver) to settle. The give leg spends the
             account's <b>shielded</b> balance — fund it on the <b>AA infra</b> tab first.</p>
@@ -288,7 +291,7 @@
   <details class="advanced">
     <summary>Read &amp; pure functions</summary>
     <section class="wide" style="margin-top:8px">
-      <p class="note">The Manager's non-mutating surface: <b>pure</b> functions run the compiled
+      <p class="note">The account's non-mutating surface: <b>pure</b> functions run the compiled
       circuit module locally, <b>read</b> functions are ledger lookups through the indexer. No
       signature, no proof, instant.</p>
       <form id="f-pure"><div class="row">
@@ -315,8 +318,8 @@
     <h2>Stack</h2>
     <dl class="kv">
       <dt>network</dt><dd id="s-net">—</dd>
-      <dt>manager</dt><dd id="s-manager">—</dd>
-      <dt>minter</dt><dd id="s-minter">—</dd>
+      <dt>vault (shared)</dt><dd id="s-manager">—</dd>
+      <dt>account plan</dt><dd id="s-minter">—</dd>
       <dt>tokens</dt><dd id="s-tokens">—</dd>
       <dt>relay wallet</dt><dd id="s-relay">—</dd>
       <dt>taker wallet</dt><dd id="s-taker">—</dd>
@@ -326,7 +329,8 @@
   <section>
     <h2>Fund account</h2>
     <p class="note">Relay operations (no signature): mint demo tokens and deposit them into the
-    chosen account. <b>Unshielded</b> feeds transfers and withdrawals; <b>shielded</b> feeds the
+    chosen account. <b>Unshielded</b> is a public balance on the account's ledger; <b>shielded</b>
+    is a coin in this console's private store (the chain holds only its encrypted inbox entry) and feeds the
     swap's give leg.</p>
     <form id="f-fund"><div class="row">
       <div><label>account</label><select id="fund-account" required></select></div>
@@ -344,7 +348,7 @@
 
   <section>
     <h2>Faucet — mint to a wallet</h2>
-    <p class="note">Mints tokens straight to one of the stack's wallets (no Manager deposit) —
+    <p class="note">Mints tokens straight to one of the stack's wallets (no account deposit) —
     e.g. give the taker the want-leg funds for settling offers. It calls the LOCAL
     <code>mint-test-tokens</code> issuer for the selected token (one contract per token), from the
     relay's own wallet.</p>
@@ -373,7 +377,7 @@
   </section>
 
   <section class="wide">
-    <h2>Accounts on the Manager <button id="refresh" class="ghost" style="float:right;padding:2px 10px;font-size:12px">refresh</button></h2>
+    <h2>Accounts this console has registered <button id="refresh" class="ghost" style="float:right;padding:2px 10px;font-size:12px">refresh</button></h2>
     <div class="tablewrap"><table>
       <thead id="accounts-head"><tr><th>account id</th><th>EVM owner</th><th>nonce</th><th></th></tr></thead>
       <tbody id="accounts"></tbody>

@@ -1,6 +1,18 @@
-// AA Console — browser side. Deliberately thin: this page holds NO Midnight
-// wallet and NO prover. It signs `eth_signTypedData_v4` requests the relay
-// builds (AA repo codec, server-side) and polls relay jobs. See aa-console.ts.
+// AA Console — browser side. Deliberately thin: this page holds NO Midnight wallet and NO
+// prover. It signs what the relay builds and polls the relay's jobs. See aa-console.ts.
+//
+// ⚠ PROJECT 00034 CHANGED TWO THINGS A READER OF THIS FILE WILL TRIP OVER.
+//
+//   1. THERE ARE TWO KINDS OF SIGNATURE NOW. `register` asks for an EIP-191
+//      `personal_sign` over a fixed sentence — it names no operation, authorises nothing and
+//      moves no funds. Its only job is to reveal the wallet's public POINT, which no EVM
+//      wallet exposes and which the account's activation circuit carries as an argument
+//      (Q30). Every other action is `eth_signTypedData_v4` over an EIP-712 struct whose
+//      `challenge` field binds the account, the arguments and the witness coin. `/api/prepare`
+//      answers with exactly one of `message` or `typedData`, and `signPrepared` branches on it.
+//   2. REGISTER DEPLOYS A CONTRACT. The account id IS the contract address and it does not
+//      exist until the deploy lands, so the page cannot show one in advance, and registering
+//      is two transactions and minutes of proving rather than one call (Q40).
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -72,8 +84,19 @@ async function signPrepared(prep) {
     const r = await api("/api/dev-sign", { prepId: prep.prepId });
     return r.signature;
   }
-  // prep.request is a ready-made {method:'eth_signTypedData_v4', params:[owner, json]}.
-  return await window.ethereum.request(prep.request);
+  if (prep.message) {
+    // ENROLMENT (register only). `personal_sign` takes the message first and the address
+    // second — the opposite order to `eth_signTypedData_v4`, which is a classic way to get a
+    // silent "wrong signer" out of a wallet.
+    return await window.ethereum.request({
+      method: "personal_sign",
+      params: [prep.message, state.signer],
+    });
+  }
+  return await window.ethereum.request({
+    method: "eth_signTypedData_v4",
+    params: [state.signer, JSON.stringify(prep.typedData)],
+  });
 }
 
 // ── data + rendering ─────────────────────────────────────────────────────────
@@ -82,8 +105,13 @@ async function loadInfo() {
   state.info = await api("/api/info");
   const i = state.info;
   $("s-net").textContent = i.network;
-  $("s-manager").textContent = short(i.manager);
-  $("s-minter").textContent = short(i.minter);
+  // The shared pieces this stack deployed. There is no Manager and no Minter: an account is
+  // a contract per user, and what is shared is the VAULT every account's constructor seals.
+  $("s-manager").textContent = short(i.vault?.address);
+  $("s-manager").title = i.vault?.address ?? "";
+  $("s-minter").textContent = i.accountPlan
+    ? `${i.accountPlan.circuits.length} circuits · wave 1 ${i.accountPlan.waveOne.length} + wave 2 ${i.accountPlan.waveTwo.length} · authority retired`
+    : "—";
   // DECIMALS ARE SHOWN, because they are not all 6 any more: the six local
   // issuers are 8/18/6/6/6/8, and every amount in this page is BASE UNITS.
   $("s-tokens").textContent = (i.tokens ?? []).length
@@ -126,8 +154,12 @@ async function loadInfo() {
   tp.className = `pill ${i.taker?.funded ? "ok" : "warn"}`;
   tp.textContent = i.taker?.funded ? `funded (${i.taker.balance})` : "UNFUNDED — fund-wallet.sh <aa-taker seed> --shielded-amount";
   $("s-taker").append(tp, ` ${short(i.taker?.address ?? "")}`);
-  if (i.withdrawKnownIssue) $("withdraw-note").textContent = i.withdrawKnownIssue;
-  else $("withdraw-note").style.display = "none";
+  const note = $("withdraw-note");
+  if (note) {
+    note.textContent =
+      "A shielded withdraw spends ONE held coin and returns the change to this console's "
+      + "store; the change gets no inbox entry unless you file one (a second signature).";
+  }
   $("use-dev").style.display = i.devSigner ? "" : "none";
 }
 
@@ -144,7 +176,9 @@ function renderAccounts() {
   thead.innerHTML = "";
   {
     const tr = document.createElement("tr");
-    for (const h of ["account id", "EVM owner", "nonce", ...tokenNames, ""]) {
+    // "account id" IS the contract address now; `inbox` is how many coin descriptions the
+    // account has been given, which is the only on-chain trace a shielded holding leaves.
+    for (const h of ["account (contract address)", "EVM owner", "authNonce", "inbox", ...tokenNames, ""]) {
       const th = document.createElement("th");
       th.textContent = h;
       tr.append(th);
@@ -157,7 +191,8 @@ function renderAccounts() {
     const tr = document.createElement("tr");
     const mark = mine(a) ? " (you)" : "";
     const cells = [
-      [short(a.accountId), ""], [short(a.owner) + mark, ""], [a.nonce, "num"],
+      [short(a.accountId), ""], [short(a.owner) + mark, ""], [a.authNonce ?? a.nonce ?? "—", "num"],
+      [a.inboxCount ?? "—", "num"],
       ...tokenNames.map((tn) => [(a.balances ?? {})[tn] ?? "0", "num"]),
     ];
     for (const [text, cls] of cells) {
@@ -168,6 +203,13 @@ function renderAccounts() {
     }
     const td = document.createElement("td");
     if (mine(a)) { const b = document.createElement("span"); b.className = "pill ok"; b.textContent = "yours"; td.append(b); }
+    if (a.liveOffer) {
+      const o = document.createElement("span");
+      o.className = "pill warn";
+      o.title = `${a.liveOffer.give} for ${a.liveOffer.want} — one live offer per account (Q7)`;
+      o.textContent = "offer live";
+      td.append(" ", o);
+    }
     tr.append(td);
     tbody.append(tr);
   }
@@ -315,9 +357,14 @@ $("f-fund").onsubmit = busy(async () => {
 });
 
 
-// Transfer — token-first flow, symmetric with Withdraw: pick from the typed,
-// balance-annotated list, THEN the destination account + amount. The picked
-// token's family decides the signed action (selector 5 vs 4).
+// Send to another account — token-first flow, symmetric with Withdraw.
+//
+// ⚠ IT IS NOT AN INTERNAL TRANSFER ANY MORE (Q41). Both accounts used to be rows in ONE
+// contract's balance map, so a transfer was two map updates and one signed action. They are
+// separate contracts now, and an account never calls another account — so this is a
+// WITHDRAW of a shielded coin to a wallet the console runs, followed by a permissionless
+// DEPOSIT into the recipient. Two transactions, one signature (the deposit needs none), and
+// the hop is visible in the job log rather than hidden.
 function renderTransfer() {
   const tok = (state.info?.tokens ?? []).find((t) => t.name === state.trToken);
   $("tr-list").style.display = tok ? "none" : "";
@@ -349,15 +396,17 @@ function renderTransfer() {
   chip.textContent = tok.family;
   $("tr-chosen-bal").textContent = `balance ${(acct?.balances ?? {})[tok.name] ?? "0"}`;
   $("tr-doc").textContent = sh
-    ? "Selector 4 — internal SHIELDED transfer between AA accounts, signed by your EVM wallet."
-    : "Selector 5 — internal unshielded transfer between AA accounts, signed by your EVM wallet.";
+    ? "withdraw_shielded_with_evm → the console's funder wallet → deposit_shielded into the "
+      + "recipient. One signature from you; the deposit is permissionless."
+    : "UNSHIELDED value is a public balance and needs no inbox entry: withdraw it to the other "
+      + "owner's wallet address and let them deposit it. Pick a shielded token to send here.";
 }
 $("tr-back").onclick = () => { state.trToken = null; renderTransfer(); };
 $("f-tr").onsubmit = busy(() => {
   const tok = (state.info?.tokens ?? []).find((t) => t.name === state.trToken);
   const acct = currentAccount();
   return prepareSignSubmit({
-    kind: tok.family === "shielded" ? "transfer-shielded" : "transfer",
+    kind: "send-to-account",
     owner: state.signer, accountId: acct.accountId,
     toAccountId: $("tr-to").value, amount: $("tr-amount").value, token: tok.name,
   });
@@ -442,8 +491,20 @@ $("f-fundsh").onsubmit = busy(async () => {
   await watchJob(jobId);
 });
 $("f-swap").onsubmit = busy(async () => {
-  // Step 1: sign + contract call + prove — the result is the offer's bech32m,
-  // shown below; publishing is the explicit second step.
+  // Step 1: sign + contract call + prove — the result is the offer's bech32m, shown below;
+  // publishing is the explicit second step.
+  //
+  // Q7, checked here so the wallet is never asked to sign something that cannot settle: the
+  // MIP-0013 seam consumes ONE device entry per call, so signing a second offer while the
+  // first is unsettled makes the FIRST one permanently unsettleable. The relay refuses it
+  // too; this is only so the refusal arrives before the wallet prompt.
+  const from = state.accounts.find((a) => a.accountId === $("sw-from").value);
+  if (from?.liveOffer) {
+    throw new Error(
+      `this account already has a live offer (${from.liveOffer.give} for ${from.liveOffer.want}). `
+      + "Settle it, or forget it in the book, before making another — one live offer per account.",
+    );
+  }
   showActivity();
   $("swap-built").style.display = "none";
   const prep = await api("/api/prepare", {
