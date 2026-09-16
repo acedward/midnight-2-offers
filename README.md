@@ -251,7 +251,7 @@ this block is stale or when one pin has two different defaults in the tree.
 <!-- render-readme-pins:end -->
 
 The long version of each row — why there are two proof servers, what the whole-coin line
-changed, MinoCrab's equivalence testing, the poster's exact-coin guarantee, the price feed's
+changed, how a Passport account is deployed and what it keeps where, the poster's exact-coin guarantee, the price feed's
 secret handling — is in [docs/COMPONENTS.md](docs/COMPONENTS.md); the reasoning behind each
 artifact choice is in [docs/ARTIFACT-DECISIONS.md](docs/ARTIFACT-DECISIONS.md); what does not
 work yet is in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
@@ -260,20 +260,38 @@ work yet is in [docs/KNOWN-LIMITATIONS.md](docs/KNOWN-LIMITATIONS.md).
 
 `http://127.0.0.1:10700` (profile `aa`) is the demo's face. The **Midnight-EVM [AA] Wallet**
 tab is a wallet-shaped product: connect any injected EVM wallet (MetaMask, Rabby, …) and the
-Manager's read surface executes immediately for that address — registration not required; the
-rows just read empty. An unregistered address gets a Register warning; a registered one gets
-its balances (every demo token, shielded/unshielded chips) and three operations — **Withdraw**
-and **Transfer** open on a typed, balance-annotated token list before asking amount/recipient,
-and **Publish Offer** builds a real MIP-0005 `swapoffer1…` (shown as bech32m, published to the
-kernel with a second click). Shielded withdrawals go to **any** `mn_shield-addr…` — the pasted
-address carries the recipient's coin + encryption keys. The relay recovers the signer's public
-key from each EIP-712 signature, proves `execute` (~1 min on the default MinoCrab k=18 artifact,
-~2 min with `AA_ZKIR_SOURCE=compactc`) and submits —
-the browser never holds a Midnight key. **AA infra** holds the plumbing: funding, faucet,
-mint-and-send to any pasted Midnight address, and the accounts table. The other tabs: the
-offer book plus the **COW solver monitor** (what the solver says about itself, read from its
-unpublished status listener) — an **infrastructure** canvas probing every component including the
-monitor and the offer poster, an embedded **Memos** app, and the **Repos** pin table.
+console shows the accounts it has registered for that address.
+
+⚠ **`register` DEPLOYS A CONTRACT.** Since project 00034 there is no shared "Manager": an
+account is **one contract per user**, a fork of the Midnight Passport account, and its id IS
+its contract address — which does not exist until the deploy transaction is built. So
+registering is two transactions and minutes of proving, and it starts with an EIP-191
+`personal_sign` over a fixed sentence that names no operation and moves no funds: its only job
+is to reveal the wallet's public key, which no EVM wallet exposes and which the activation
+circuit needs as an argument. Every action after that is `eth_signTypedData_v4` over a struct
+whose `challenge` field binds the account, the arguments and the witness coin.
+
+A registered account shows its balances — **unshielded** from its own ledger, **shielded**
+from the console's private coin store, because a shielded coin is not in ledger state at all —
+and three operations: **Withdraw** and **Send to account** open on a typed, balance-annotated
+token list before asking amount/recipient, and **Publish Offer** proves
+`open_swap_shielded_with_evm` and never submits it, which is what makes the proven transaction
+an offer (shown as bech32m, published to the kernel with a second click). Shielded withdrawals
+go to **any** `mn_shield-addr…` — the pasted address carries the recipient's coin + encryption
+keys. "Send to account" is a withdraw plus a permissionless deposit, because two accounts are
+two contracts and AA-v3's internal transfers have no counterpart. One live offer per account:
+the authorisation seam consumes a single-use device entry per call, so a second offer would
+make the first unsettleable.
+
+The relay recovers the signer's public key from each signature, proves through the profile's
+own experimental proof server (every gated circuit is k=18, so ~1–2 minutes per action) and
+submits — the browser never holds a Midnight key. **AA infra** holds the plumbing: funding,
+faucet, mint-and-send to any pasted Midnight address, and the accounts table. The other tabs:
+the offer book plus the **COW solver monitor** (what the solver says about itself, read from
+its unpublished status listener), an **infrastructure** canvas probing every component
+including the monitor and the offer poster, an embedded **Memos** app, and the **Repos** pin
+table, which prints the fork commit, the compiler and the artefact fingerprints the running
+image actually carries.
 `AA_CONSOLE_DEV_SIGNER=1` adds a built-in signer for wallet-less runs.
 
 Full component write-ups (the AA/console/swap mechanics and their switches, umbra-evm's

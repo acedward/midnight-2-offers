@@ -41,11 +41,11 @@ Work down the list and stop at the first route that applies.
 | proof server, plain | `9.0.0-rc.5` | `exact-oci-mirror` | upstream index `sha256:d96a4d0f…` |
 | proof server, experimental | `9.0.0-rc.5` | `exact-oci-mirror` | upstream index `sha256:4f02ca27…` |
 | proof data | SRS K0–K19 + Ledger-static `9.0.0` | one verified generation | `b7358497…` |
-| Compact (kernel + AA builds) | current compatible pin | direct official LFDT | unchanged by this policy |
+| Compact (kernel + aa builds) | current compatible pin | direct official LFDT | unchanged by this policy |
 | Compact (shielded-night only) | `0.34.0` | official release asset, SHA-256 per arch | amd64 `775ccddf…`, arm64 `d3e292c4…` |
-| kernel, batcher, solver, AA, frontend, umbra-evm, Postgres, shielded-night | — | `source-build` | unchanged by this policy |
+| kernel, batcher, solver, Passport accounts, frontend, umbra-evm, Postgres, shielded-night | — | `source-build` | unchanged by this policy |
 | mint-test-tokens issuers + faucet site | commit `a51cf3ad…` | `source-build`, **no compiler** | the tracked `contracts/v2/managed/` at that commit |
-| AA Manager `execute` ZKIR + keys | minocrab release `v0.2.0` | `published-release-asset` (`sources[]`) | `sha256(SHA256SUMS)` `4a8c0183…` |
+| Signet protocol Compact module (2 source files) | `@sig-net/midnight` `0.22.0-rc.1` | npm tarball by URL, **source pin** | `sha256(tarball)` `0e7414d5…` |
 
 Full digests, asset ids, member hashes, and per-platform manifest/config/layer digests live
 in the JSON. This table is the readable summary; the JSON is the truth.
@@ -69,62 +69,53 @@ untracked or ignored file under `contracts/v2/{shielded-token.compact,unshielded
 A recompile into that tree would therefore make the very tool this image exists to run REFUSE
 to deploy. Rule 2's principle — *an exact published artifact is taken by hash, never
 recompiled* — applies here with the immutable upstream commit as the artifact, exactly as
-`sources[minocrab-release]` records it for the AA Manager's ZK keys. The image asserts the
+`sources[]` used to record it for the AA Manager's ZK keys. The image asserts the
 artifacts are tracked, that they carry the declared toolchain, and that their zkir is **v2**
-(the plain proof-server lane, not the AA profile's experimental v3), and then RUNS upstream's
+(the plain proof-server lane, not the `aa` profile's experimental v3), and then RUNS upstream's
 own provenance gate at build time so a bad tree fails in seconds rather than mid-bring-up.
 See `images/mint-test-tokens/PROVENANCE.md`.
 
-## Consumed releases (`sources[]`)
+## Consumed releases (`sources[]`) — currently EMPTY, and why
 
 `components[]` describes the external runtimes this stack SCHEDULES. `retainedPaths[]`
 describes what it BUILDS. `sources[]` is the third thing: files an image DOWNLOADS from a
 published release and takes as-is, because rule 2 — *an exact published artifact is taken by
 hash, never recompiled* — applies to more than warehouse binaries.
 
-There is one entry, and it is the AA Manager's `execute` circuit. The
-[MinoCrab port](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) publishes,
-per release tag, `<circuit>.{zkir,bzkir,prover,verifier}` for nine circuits plus `SHA256SUMS`
-and `manifest.json` — 38 files, 695,875,589 B, of which `execute.prover` alone is 544 MiB.
-Rebuilding them needs a pinned compactc archive, the Midnight SRS for each `k`, and a keygen
-run; asking every consumer to redo that is asking every consumer to re-earn trust that has
-already been earned once, under conditions they cannot fully reproduce.
+**It has no entries today.** It had exactly one, and it was the AA-v3 Manager's `execute`
+circuit: the [MinoCrab port](https://github.com/acedward/AA-midnight-evm-experiment-minocrab)
+published `<circuit>.{zkir,bzkir,prover,verifier}` per release tag, and the `aa` image took
+those bytes rather than rebuilding them, because rebuilding needed a pinned compactc archive,
+the Midnight SRS for each `k` and a keygen run. Project 00034 retired the Manager: the `aa`
+image now **compiles every contract it deploys** — the Signet singleton, the ERC20 vault and
+the account, in one stage with one compactc — so there is no pre-built key material left in
+this repository to take by hash.
 
-**The identity is one hash, and it is not the tag.** `SHA256SUMS` is 3,263 bytes naming the
-SHA-256 of every other file in the release, `manifest.json` included. `manifest.json` in turn
-carries the release tag, the port commit, the MinoCrab rev, the contract pin and all ten
-contract-file hashes, the compactc and `zkir-v3` hashes, the SRS used per `k`, and every
-circuit's k/rows/sizes/hashes. So pinning `sha256(SHA256SUMS)` pins all 38 files and their
-whole provenance, and the AA image asserts it before it uses a byte:
+**The one external artefact the `aa` image still downloads is a SOURCE pin, not a matrix
+entry.** It fetches the `@sig-net/midnight` npm tarball and verifies `SIGNET_PKG_SHA256`
+against it, but what it takes out of that tarball is two `.compact` SOURCE FILES, which it
+then compiles. That is the opposite of what `sources[]` exists to record, and treating it as
+a published artifact would blur the distinction the matrix is built on. It is pinned exactly
+as `PASSPORT_REF` is — `scripts/verify-pin-defaults.sh` proves every declaration of it across
+`compose/`, `images/`, `scripts/` and `.env.example` is the same value, and the image verifies
+the download.
 
-1. `sha256(SHA256SUMS)` equals `MINOCRAB_SUMS_SHA256`,
-2. `sha256sum -c` over every file it took, with the count of verified files compared against
-   the count requested — so a file `SHA256SUMS` does not list cannot pass unchecked,
-3. `manifest.json`'s `tag`, `gitCommit` and `contractPin.commit` equal `MINOCRAB_RELEASE`,
-   `MINOCRAB_REF` and `AA_REF` — the last one being what stops a build from deploying
-   perfectly-verified keys for a *different contract*.
-
-All three are exercised by `./scripts/verify-artifact-fetch.sh`, which builds the fetch stage
-against a synthetic release constructed in a temp directory: no real key material is needed to
-prove the gates bite, which is what makes them testable on a clean clone.
-
-`./scripts/verify-artifact-fetch.sh --static` additionally asserts the Dockerfile's ARG
-defaults equal the matrix, so the pin cannot exist twice with two values.
-
-**The matrix entry is self-checking.** The validator does not know whether a hash is right —
-nothing offline can. What it checks is that the entry cannot be vague: a checksums hash is
-present (an entry identified only by its tag is rejected), the file list is complete and has
-no duplicates, `SHA256SUMS` is not listed among the files it covers, the manifest's hash
-agrees with its entry in that list, and `assetCount`/`assetBytes` are the sum of the parts.
+**The validator for `sources[]` stays.** An entry is still required to be unvague: a checksums
+hash present (an entry identified only by its tag is rejected), a complete file list with no
+duplicates, the checksums file not listed among the files it covers, the manifest's hash
+agreeing with its entry in that list, and `assetCount`/`assetBytes` equal to the sum of the
+parts. The five self-test fixtures that mutated the MinoCrab entry went with the entry — a
+self-test that cannot construct its own subject is not a check that stopped biting, it is a
+check whose subject left — and they return the day an entry does.
 
 ## Four rules that are easy to get wrong
 
 **A tag is not an identity.** Every external runtime reference resolves to a digest. Tags
 are kept alongside as readable comments, never as the thing Compose consumes. `9.0.0-rc.5`
 pointed at the right bytes on the day it was checked; nothing guarantees it still does. The
-same applies to a GitHub release tag: `MINOCRAB_RELEASE=v0.2.0` is a locator that tells the
-build where to look, and `MINOCRAB_SUMS_SHA256` is what decides whether what it found is
-acceptable. A re-cut release under the same tag fails the build.
+same applies to a package version: `SIGNET_PKG_VERSION=0.22.0-rc.1` is a locator that tells
+the build where to look, and `SIGNET_PKG_SHA256` is what decides whether what it found is
+acceptable. A re-published tarball under the same version fails the build.
 
 **The proof server cannot be repackaged from the warehouse ZIP.** The warehouse publishes a
 standalone `9.0.0-rc.5` executable, and it is byte-identical to the one inside the official
