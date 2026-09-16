@@ -376,14 +376,29 @@ const spend = await session("spend", E2E_SEED, async (walletCtx) => {
     );
   }
   log(`inbox walk after settlement: ${found.length} entries, the want coin among them`);
-  // Its mt_index comes from the settlement transaction, which the taker submitted — so this
-  // client resolves it by candidate retry, the honest cost of not having been the submitter.
+  // ITS mt_index COMES FROM THE SETTLEMENT TRANSACTION, WHICH SOMEBODY ELSE SUBMITTED. That
+  // is the honest cost of not having been the submitter: the coin's Merkle position is not in
+  // anything the maker holds. `candidateIndices` narrows it to the commitments that ONE
+  // transaction produced — usually three or four, of which two are the account's (the want
+  // coin and the change) and the rest are the taker's — so the scan is a handful of attempts
+  // rather than a search. A wrong index fails while PROVING, before any transaction exists,
+  // so a retry costs time and nothing else. A k=18 proof is about a minute, which is why the
+  // range matters more here than the elegance of the loop.
+  let candidates: bigint[] = [];
+  const settleTxId = (settlement as any).txId as string | undefined;
+  if (settleTxId) {
+    candidates = (await candidateIndices(settleTxId)).candidates;
+    log(`settlement ${settleTxId.slice(0, 16)}… produced commitments ${candidates.map(String).join(", ")}`);
+  } else {
+    // The solver settled it and this driver never saw the transaction id. Fall back to a
+    // bounded scan from the account's own inbox position, which is the best a maker can do.
+    for (let i = 0n; i < 24n; i++) candidates.push(i);
+    log("the solver settled it, so the settlement tx id is unknown here — scanning a bounded range");
+  }
   const st: any = await Rx.firstValueFrom((walletCtx.wallet as any).state());
   const recipient = coinPkOf(st);
-  const contractState = await (account as any).providers.publicDataProvider.queryContractState(accountAddress);
-  void contractState;
   let lastError: unknown = null;
-  for (let idx = 0n; idx < 64n; idx++) {
+  for (const idx of candidates) {
     await account.putCoin({ nonce: received.nonce, color: received.color, value: received.value, mtIndex: idx });
     try {
       const r = await account.withdrawShielded(device, recipient, received.color, received.value);
@@ -391,10 +406,10 @@ const spend = await session("spend", E2E_SEED, async (walletCtx) => {
     } catch (e) {
       lastError = e;
       const msg = e instanceof Error ? e.message : String(e);
-      // A wrong index fails while PROVING, before a transaction exists. Anything else is a
-      // real failure and must not be retried 64 times.
-      if (!/merkle|mt_index|proof|prove|witness|commitment/i.test(msg)) throw e;
-      if (idx % 8n === 0n) log(`  mt_index ${idx} rejected — continuing the scan`);
+      // A wrong index fails while PROVING. Anything else is a real failure and must not be
+      // retried against every candidate.
+      if (!/merkle|mt_index|proof|prove|witness|commitment|invalid/i.test(msg)) throw e;
+      log(`  mt_index ${idx} rejected (${msg.slice(0, 80)}) — next candidate`);
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
