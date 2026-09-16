@@ -510,11 +510,13 @@ ENVIRONMENT and never in the file passed to `--env-file`: that file is regenerat
 Its step 1 is a set of OFFLINE gates that need no daemon, no network and no registry — the
 artifact-decision matrix, the fetch pins, the proof-server mirror record, the rendered compose
 pins, and `verify-pin-defaults.sh`, which fails when any two defaults of one SOURCE pin
-(`KERNEL_REF`, `SOLVER_REF`, `FRONTEND_REF`, `AA_REF`, `UMBRA_REF`, `SHIELDED_NIGHT_REF`,
-`MINOCRAB_REF`) disagree anywhere in `compose/`, `images/`, `scripts/` or `.env.example`. It
-covers two pins that are not commits at all and would otherwise go unchecked: the AA image's
-`MINOCRAB_SUMS_SHA256` (a 64-hex release identity) and `MINOCRAB_RELEASE` (a `vX.Y.Z` tag) —
-a pin with two values is not a pin whatever shape it has. That check exists
+(`KERNEL_REF`, `SOLVER_REF`, `FRONTEND_REF`, `PASSPORT_REF`, `UMBRA_REF`,
+`SHIELDED_NIGHT_REF`, `MINT_TEST_TOKENS_REF`) disagree anywhere in `compose/`, `images/`,
+`scripts/` or `.env.example`. It covers two pins that are not commits at all and would
+otherwise go unchecked: the aa image's `SIGNET_PKG_SHA256` (the 64-hex identity of the
+`@sig-net/midnight` tarball it compiles two `.compact` sources out of) and
+`SIGNET_PKG_VERSION` (the version that only says where to look) — a pin with two values is
+not a pin whatever shape it has. That check exists
 because the repository once shipped a split kernel pin, and every OTHER check compares a running
 image against ONE of the copies — so the failure read as a stale image rather than as the
 configuration defect it was. Each gate that has a `--self-test` runs it, so a check that stopped

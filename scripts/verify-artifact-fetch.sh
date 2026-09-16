@@ -313,70 +313,22 @@ reject "celestia / asset from the wrong upstream project" "$CELESTIA_DIR" fetch 
   "CELESTIA_APP_VERSION=$(pin 'components[celestia-node].version')" \
   "CELESTIA_APP_SHA256_${A}=$(pin "components[celestia-node].assets[${PLATFORM}].outerSha256")"
 
-# ── negative: the AA image's MinoCrab release gate ───────────────────────────
+# ── negative: the aa image's OWN gate is a SHA-256 on a download ─────────────
 #
-# The AA image takes the Manager's `execute` artifact from a PUBLISHED RELEASE and
-# identifies it by one hash — the SHA-256 of the release's own SHA256SUMS. Three
-# assertions stand between that pin and the image, and each of them is exercised here
-# against a SYNTHETIC release built in a temp directory. Synthetic on purpose: these
-# fixtures must run on a clean clone with no 663 MiB of key material anywhere, and a
-# gate that can only be tested when you already hold the real assets is a gate nobody
-# tests. The `minocrab-release` stage depends on no other stage, so `--target` builds
-# it alone — no compactc, no keygen, no AA checkout.
-minocrab_fixture_dir=""
-make_minocrab_fixture() { # <corrupt-a-file: 0|1> <contract-commit>
-  local corrupt="$1" contract="$2" d
-  d="$(mktemp -d)"
-  minocrab_fixture_dir="$d"
-  # Content is irrelevant — nothing here is ever proved with. What is being tested is
-  # whether the build believes a file it has not verified.
-  printf 'not-a-real-zkir\n'     > "$d/execute.zkir"
-  printf 'not-a-real-bzkir\n'    > "$d/execute.bzkir"
-  printf 'not-a-real-verifier\n' > "$d/execute.verifier"
-  cat > "$d/manifest.json" <<JSON
-{
-  "tag": "$(pin 'sources[minocrab-release].releaseTag')",
-  "gitCommit": "$(pin 'sources[minocrab-release].commit')",
-  "contractPin": {
-    "commit": "${contract}"
-  }
-}
-JSON
-  ( cd "$d" && sha256sum execute.zkir execute.bzkir execute.verifier manifest.json > SHA256SUMS )
-  if [[ "$corrupt" == "1" ]]; then
-    # SHA256SUMS still says what the file used to be. This is the tamper the content
-    # gate exists for, and it is invisible to the identity gate.
-    printf 'tampered\n' > "$d/execute.verifier"
-  fi
-  MINOCRAB_FIXTURE_SUMS="$(sha256sum "$d/SHA256SUMS" | cut -d ' ' -f 1)"
-}
-
-# 12: the real pin against a release that is not the pinned one — the identity gate.
-make_minocrab_fixture 0 "$(pin 'sources[minocrab-release].contractCommit')"
-EXTRA_BUILD_FLAGS=(--build-context "minocrab=${minocrab_fixture_dir}")
-reject "aa / MinoCrab release whose SHA256SUMS is not the pinned one" "$AA_DIR" minocrab-release
-rm -rf "$minocrab_fixture_dir"
-
-# 13: identity gate satisfied by construction, one file tampered with — the content gate.
-make_minocrab_fixture 1 "$(pin 'sources[minocrab-release].contractCommit')"
-EXTRA_BUILD_FLAGS=(--build-context "minocrab=${minocrab_fixture_dir}")
-reject "aa / MinoCrab asset that SHA256SUMS does not vouch for" "$AA_DIR" minocrab-release \
-  "MINOCRAB_SUMS_SHA256=${MINOCRAB_FIXTURE_SUMS}"
-rm -rf "$minocrab_fixture_dir"
-
-# 14: both hash gates satisfied, but these keys are for a DIFFERENT contract. This is the
-# one a re-pin of AA_REF alone would walk into: bytes that verify perfectly and prove the
-# wrong statement.
-make_minocrab_fixture 0 "0123456789abcdef0123456789abcdef01234567"
-EXTRA_BUILD_FLAGS=(--build-context "minocrab=${minocrab_fixture_dir}")
-reject "aa / MinoCrab keys whose manifest names another contract" "$AA_DIR" minocrab-release \
-  "MINOCRAB_SUMS_SHA256=${MINOCRAB_FIXTURE_SUMS}"
-rm -rf "$minocrab_fixture_dir"
-
-# 15: an unknown artifact source must not silently fall through to "compactc".
-EXTRA_BUILD_FLAGS=(--build-context "minocrab=${AA_DIR}/minocrab-local")
-reject "aa / unknown AA_ZKIR_SOURCE" "$AA_DIR" minocrab-release \
-  "AA_ZKIR_SOURCE=whatever"
+# There used to be four fixtures here, and they exercised the MinoCrab release gate: a
+# synthetic release in a temp directory, three assertions between the pin and the image
+# (`sha256(SHA256SUMS)`, `sha256sum -c` over every file taken, and the manifest's contract
+# pin equalling `AA_REF`), plus one for an unknown `AA_ZKIR_SOURCE`.
+#
+# All four are gone with the thing they guarded. The aa image takes NO pre-built key material
+# now — it compiles every contract it deploys — and the one artefact it downloads is the
+# `@sig-net/midnight` npm tarball, verified with a plain `sha256sum -c` against
+# `SIGNET_PKG_SHA256` before a byte of it is read. A negative fixture for that would be a
+# fixture for `sha256sum`, and the compile that follows is the real proof: a tampered tarball
+# does not produce a contract whose verifier keys match anything.
+#
+# The fixture MACHINERY above (`reject`, the synthetic-directory pattern) is untouched, so a
+# future downloaded artefact gets its gate tested the same way.
 
 docker rmi "midnight-2-offers/artifact-fetch-negative:${TAG_PREFIX}" >/dev/null 2>&1 || true
 
