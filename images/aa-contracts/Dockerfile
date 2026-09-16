@@ -502,6 +502,29 @@ RUN ln -s /aa/node_modules /aa/passport/contracts/erc20-vault/node_modules
 # the SDK's own MidnightBech32m.parse() stops at bech32's 90 (infra issue 00023).
 RUN cd /aa && bun test runner/midnight-bech32m.test.ts
 
+# Every runner entrypoint must RESOLVE: each name it imports from the fork, from the
+# generated contract modules and from its own files has to exist. Sub-second, and it closes
+# the hole that shipped on 2026-09-16: `const { parseSignature } = await import(
+# "../passport/src/wallet/signer.js")` names a module that EXISTS but does not export that
+# function, so the destructure quietly yields `undefined` and the failure surfaces only when
+# that line runs — in this case in front of a user, halfway through registering an account,
+# on the one path `aa-e2e.sh` cannot reach (the e2e holds a private key, so it never has to
+# RECOVER a public point from a signature; `verify.sh --aa-mint` is what caught it).
+#
+# `--packages=external` keeps node_modules out of the bundle and still checks every relative
+# import, which is what the fork's client and our own modules are. NOTE THE LIMIT: a dynamic
+# `await import()` is a runtime import, and no bundler checks the names destructured from it.
+# That is precisely why imports from the fork belong at the top of the file, statically —
+# where a wrong name stops the container from starting instead of waiting for a job.
+RUN set -eux; \
+    cd /aa; \
+    for f in runner/aa-console.ts runner/aa-e2e.ts runner/deploy-aa.ts runner/aa-console-mint.ts runner/aa-offer.ts; do \
+      bun build "./$f" --target=bun --packages=external --outfile=/tmp/resolve-check.js >/dev/null \
+        || { echo "FAIL: ${f} imports a name that does not exist (see the error above)" >&2; exit 1; }; \
+      echo "resolves: ${f}"; \
+    done; \
+    rm -f /tmp/resolve-check.js
+
 # ── ONE compactc, ONE compact-runtime (issues/00011), now across THREE repositories ──
 # This process imports generated contract modules from the Passport fork (account, vault,
 # singleton — compiled here) and from mint-test-tokens (two issuers — copied), and every

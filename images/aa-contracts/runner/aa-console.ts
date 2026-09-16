@@ -92,11 +92,29 @@ import { CustodyAccount, deployEvmAccount } from "../passport/src/wallet/account
 import {
   EvmDevice,
   authorise,
+  eip191Digest,
   evmChallengeFor,
   evmTypedMessage,
   type AuthRequest,
   type CallContext,
 } from "../passport/src/wallet/signer.js";
+// The raw secp256k1 helpers are NOT in signer.ts — they are its dependency, one module down.
+// They were reached through `await import("./signer.js")` until 2026-09-16, which is a silent
+// `undefined` per name at CALL time: `signer.js` exists, so the import resolves, and the
+// destructure of a name it does not export yields undefined rather than throwing. Only two
+// code paths used them — the console recovering a wallet's public point from an enrolment
+// signature, and the dev signer — and neither runs in `aa-e2e.sh`, which holds a private key
+// and computes the point directly. `verify.sh --aa-mint` is the only gate that reaches them,
+// and it caught this. Imported STATICALLY now: a wrong name here fails at module load, so the
+// console does not start rather than failing in front of a user mid-registration.
+import {
+  ethereumAddress,
+  lowS,
+  parseSignature,
+  recoverPoint,
+  serializeSignature,
+  signDigest,
+} from "../passport/src/wallet/evm-signature.js";
 import { buildTypedData, computeDigest } from "../passport/src/wallet/eip712.js";
 import { generateEncKeyPair } from "../passport/src/wallet/inbox.js";
 import { depositAsThirdParty, inboxWalkPortable } from "../passport/src/wallet/deposit.js";
@@ -943,8 +961,6 @@ async function work() {
 
 function registerJob(prep: Prepared, signatureHex: string): Job {
   return enqueue("register", async (j) => {
-    const { recoverPoint, parseSignature, lowS, eip191Digest, ethereumAddress } =
-      await import("../passport/src/wallet/signer.js") as any;
     jlog(j, "recovering the wallet's public point from the enrolment signature");
     const sig = lowS(parseSignature(hexToBytes(signatureHex)));
     const point = recoverPoint(eip191Digest(prep.message!), sig);
@@ -1758,8 +1774,6 @@ Bun.serve({
         if (prep.owner !== DEV_OWNER) {
           return bad(`dev signer is ${DEV_ADDR}; the prepared action's owner is 0x${prep.owner}`);
         }
-        const { serializeSignature, signDigest, eip191Digest } =
-          await import("../passport/src/wallet/signer.js") as any;
         const digest = prep.message ? eip191Digest(prep.message) : hexToBytes(prep.digest!);
         return json({ signature: `0x${toHex(serializeSignature(signDigest(DEV_KEY, digest)))}`, address: DEV_ADDR });
       }
