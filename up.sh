@@ -696,7 +696,7 @@ if [[ " $PROFILES " == *" evm "* ]]; then
   info "evm WS            ws://${HOST_ADDR}:${EVM_WS_HOST_PORT}"
 fi
 if [[ " $PROFILES " == *" aa "* ]]; then
-  info "AA web console    http://${HOST_ADDR}:${AA_CONSOLE_HOST_PORT:-10700}   (browser EVM wallet → relay → Manager.execute)"
+  info "AA web console    http://${HOST_ADDR}:${AA_CONSOLE_HOST_PORT:-10700}   (browser EVM wallet → relay → the user's OWN Passport account contract)"
 fi
 if [[ " $PROFILES " == *" offerfiles "* ]]; then
   info "celestia DA RPC   ${CELESTIA_DA_URL}   (namespace ${CELESTIA_NAMESPACE})"
