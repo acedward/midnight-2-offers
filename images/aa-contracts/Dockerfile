@@ -364,53 +364,10 @@ COPY --from=source /src/contract/src     /aa/passport/src
 COPY --from=source /src/contract/docs    /aa/passport/docs
 COPY --from=source /src/contract/package.json /aa/passport/package.json
 COPY --from=compact /work/contracts      /aa/passport/contracts
-COPY runner/ /aa/runner/
-COPY console/ /aa/console/
-
-# ONE node_modules, at /aa, for the runner AND the fork's client AND the generated
-# contract modules: module resolution walks UP from the importing file, so a single
-# hoisted tree is what makes the compactc-generated code at
-# /aa/passport/contracts/managed/*/contract/index.js see @midnight-ntwrk/compact-runtime.
-RUN cp /aa/runner/package.json /aa/package.json && cd /aa && bun install
-
-# Q47, closed for this consumer. The vault package's `src/signet-sdk.ts` re-exports the
-# SDK's plain-TypeScript modules by RELATIVE FILE PATH
-# (`../node_modules/@sig-net/midnight/dist/abi-serde.js`), which resolves only when the
-# vault package has a node_modules of its own. This image hoists everything to /aa, so the
-# path is made true with a link rather than by patching somebody else's file.
-RUN ln -s /aa/node_modules /aa/passport/contracts/erc20-vault/node_modules
-
-# The console's recipient parser must accept a full Midnight shielded address (135 chars);
-# the SDK's own MidnightBech32m.parse() stops at bech32's 90 (infra issue 00023).
-RUN cd /aa && bun test runner/midnight-bech32m.test.ts
-
-# ── ONE compactc, ONE compact-runtime (issues/00011), now across THREE repositories ──
-# This process imports generated contract modules from the Passport fork (account, vault,
-# singleton — compiled here) and from mint-test-tokens (two issuers — copied), and every
-# one of them opens with `checkRuntimeVersion("<what its compiler emitted>")`. The compact
-# stage already proved this image's compactc agrees with BOTH package manifests; the three
-# assertions below prove the same number against what `bun install` actually RESOLVED,
-# that exactly one copy is installed, and that the COPIED artifacts' own compiler receipt
-# agrees too.
-RUN set -eux; \
-    want="$(cat /opt/compact-runtime-version)"; \
-    copies="$(find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' | wc -l | tr -d ' ')"; \
-    test "$copies" = "1" || { echo "FAIL: ${copies} copies of @midnight-ntwrk/compact-runtime are installed at /aa; exactly one must be" >&2; find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' >&2; exit 1; }; \
-    got="$(bun -e 'const p = (await import("/aa/node_modules/@midnight-ntwrk/compact-runtime/package.json", { with: { type: "json" } })).default; console.log(p.version)')"; \
-    test "$got" = "$want" || { echo "FAIL: compactc $(cat /opt/compactc-version) emits code for compact-runtime ${want}, but the runner installed ${got}" >&2; exit 1; }; \
-    echo "runner compact-runtime ${got} == compactc $(cat /opt/compactc-version) runtime target"; \
-    acct="$(bun -e 'const i = (await import("/aa/passport/contracts/managed/account/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["runtime-version"]);')"; \
-    test "$acct" = "$want" || { echo "FAIL: the account artifact was built for compact-runtime ${acct}, this image installs ${want}" >&2; exit 1; }; \
-    mtt="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["runtime-version"]);')"; \
-    test "$mtt" = "$want" || { echo "FAIL: the mint-test-tokens artifacts at $(cat /aa/.mint-test-tokens-commit) were built for compact-runtime ${mtt}, but this image installs ${want}" >&2; exit 1; }; \
-    mttc="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["compiler-version"]);')"; \
-    echo "mint-test-tokens artifacts: compiler ${mttc} / runtime ${mtt} (copied, never recompiled)"; \
-    cp /opt/compactc-version        /aa/.compactc-version; \
-    cp /opt/compact-runtime-version /aa/.compact-runtime-version; \
-    cp /opt/signet-pkg-version      /aa/.signet-pkg-version; \
-    cp /opt/signet-pkg-sha256       /aa/.signet-pkg-sha256; \
-    cp /opt/aa-prover-keys          /aa/.aa-prover-keys; \
-    cp /opt/aa-with-bridge          /aa/.aa-with-bridge
+# ── the artefact bookkeeping, done BEFORE the runner is copied ───────────────
+# Order matters for the build cache and for nothing else: these three steps read only the
+# COMPILED artefacts, so putting them ahead of `COPY runner/` means editing a TypeScript file
+# no longer re-measures 47 circuits. (It did, and it cost three and a half minutes a time.)
 
 # ── the manifest re-stamp the prune made necessary ──────────────────────────
 # `NodeZkConfigProvider` runs verify:"require" against `compiler/contract-manifest.json`, so
@@ -481,7 +438,8 @@ RUN bun -e ' \
 # meaningless. `mock-compile` generates no key and touches nothing: each `.zkir` is copied to
 # a scratch directory first.
 #
-# It runs LAST so that a re-measure never invalidates the 33-circuit compile above.
+# It runs after the compile and BEFORE the runner is copied, so neither a re-measure nor a
+# TypeScript edit invalidates the other.
 RUN set -eux; \
     out=/aa/.circuit-k.json; \
     tmp=$(mktemp -d); \
@@ -523,6 +481,54 @@ RUN set -eux; \
       console.log(`${rows.length} proof-bearing circuits; heaviest ${rows[0][0]} k=${rows[0][1].k} rows=${rows[0][1].rows}`); \
       console.log(`prover keys kept: ${rows.filter((r) => r[1].proverBytes > 0).length}, ` + \
         `${(rows.reduce((a, r) => a + r[1].proverBytes, 0) / 1e9).toFixed(2)} GB`);'
+
+COPY runner/ /aa/runner/
+COPY console/ /aa/console/
+
+# ONE node_modules, at /aa, for the runner AND the fork's client AND the generated
+# contract modules: module resolution walks UP from the importing file, so a single
+# hoisted tree is what makes the compactc-generated code at
+# /aa/passport/contracts/managed/*/contract/index.js see @midnight-ntwrk/compact-runtime.
+RUN cp /aa/runner/package.json /aa/package.json && cd /aa && bun install
+
+# Q47, closed for this consumer. The vault package's `src/signet-sdk.ts` re-exports the
+# SDK's plain-TypeScript modules by RELATIVE FILE PATH
+# (`../node_modules/@sig-net/midnight/dist/abi-serde.js`), which resolves only when the
+# vault package has a node_modules of its own. This image hoists everything to /aa, so the
+# path is made true with a link rather than by patching somebody else's file.
+RUN ln -s /aa/node_modules /aa/passport/contracts/erc20-vault/node_modules
+
+# The console's recipient parser must accept a full Midnight shielded address (135 chars);
+# the SDK's own MidnightBech32m.parse() stops at bech32's 90 (infra issue 00023).
+RUN cd /aa && bun test runner/midnight-bech32m.test.ts
+
+# ── ONE compactc, ONE compact-runtime (issues/00011), now across THREE repositories ──
+# This process imports generated contract modules from the Passport fork (account, vault,
+# singleton — compiled here) and from mint-test-tokens (two issuers — copied), and every
+# one of them opens with `checkRuntimeVersion("<what its compiler emitted>")`. The compact
+# stage already proved this image's compactc agrees with BOTH package manifests; the three
+# assertions below prove the same number against what `bun install` actually RESOLVED,
+# that exactly one copy is installed, and that the COPIED artifacts' own compiler receipt
+# agrees too.
+RUN set -eux; \
+    want="$(cat /opt/compact-runtime-version)"; \
+    copies="$(find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' | wc -l | tr -d ' ')"; \
+    test "$copies" = "1" || { echo "FAIL: ${copies} copies of @midnight-ntwrk/compact-runtime are installed at /aa; exactly one must be" >&2; find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' >&2; exit 1; }; \
+    got="$(bun -e 'const p = (await import("/aa/node_modules/@midnight-ntwrk/compact-runtime/package.json", { with: { type: "json" } })).default; console.log(p.version)')"; \
+    test "$got" = "$want" || { echo "FAIL: compactc $(cat /opt/compactc-version) emits code for compact-runtime ${want}, but the runner installed ${got}" >&2; exit 1; }; \
+    echo "runner compact-runtime ${got} == compactc $(cat /opt/compactc-version) runtime target"; \
+    acct="$(bun -e 'const i = (await import("/aa/passport/contracts/managed/account/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["runtime-version"]);')"; \
+    test "$acct" = "$want" || { echo "FAIL: the account artifact was built for compact-runtime ${acct}, this image installs ${want}" >&2; exit 1; }; \
+    mtt="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["runtime-version"]);')"; \
+    test "$mtt" = "$want" || { echo "FAIL: the mint-test-tokens artifacts at $(cat /aa/.mint-test-tokens-commit) were built for compact-runtime ${mtt}, but this image installs ${want}" >&2; exit 1; }; \
+    mttc="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["compiler-version"]);')"; \
+    echo "mint-test-tokens artifacts: compiler ${mttc} / runtime ${mtt} (copied, never recompiled)"; \
+    cp /opt/compactc-version        /aa/.compactc-version; \
+    cp /opt/compact-runtime-version /aa/.compact-runtime-version; \
+    cp /opt/signet-pkg-version      /aa/.signet-pkg-version; \
+    cp /opt/signet-pkg-sha256       /aa/.signet-pkg-sha256; \
+    cp /opt/aa-prover-keys          /aa/.aa-prover-keys; \
+    cp /opt/aa-with-bridge          /aa/.aa-with-bridge
 
 RUN printf '%s\n' \
       '#!/bin/bash' \
