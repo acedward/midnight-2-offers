@@ -482,14 +482,24 @@ RUN set -eux; \
       console.log(`prover keys kept: ${rows.filter((r) => r[1].proverBytes > 0).length}, ` + \
         `${(rows.reduce((a, r) => a + r[1].proverBytes, 0) / 1e9).toFixed(2)} GB`);'
 
-COPY runner/ /aa/runner/
-COPY console/ /aa/console/
-
 # ONE node_modules, at /aa, for the runner AND the fork's client AND the generated
 # contract modules: module resolution walks UP from the importing file, so a single
 # hoisted tree is what makes the compactc-generated code at
 # /aa/passport/contracts/managed/*/contract/index.js see @midnight-ntwrk/compact-runtime.
-RUN cp /aa/runner/package.json /aa/package.json && cd /aa && bun install
+#
+# The MANIFEST alone comes first, and `COPY runner/` follows the install. This is ordinary
+# layer hygiene with a sharp edge behind it: with `COPY runner/` first, editing any one
+# TypeScript file invalidated the install layer, so every code change needed the npm
+# registry to be reachable FROM A CONTAINER. On 2026-09-16 it was not — the host resolved
+# and fetched registry.npmjs.org while containers could not open the connection at all —
+# and a one-line console fix turned into `error: rxjs@7.8.2 failed to resolve` and nine
+# more, 0.2 s into a build that has nothing to do with dependencies. Keyed on the manifest,
+# the install layer survives every source edit.
+COPY runner/package.json /aa/package.json
+RUN cd /aa && bun install
+
+COPY runner/ /aa/runner/
+COPY console/ /aa/console/
 
 # Q47, closed for this consumer. The vault package's `src/signet-sdk.ts` re-exports the
 # SDK's plain-TypeScript modules by RELATIVE FILE PATH
