@@ -130,6 +130,26 @@ asserts that OFFLINE against every seed declared in `wallets/wallets.json`, in `
 and in `.env.example`, so a future edit to any of those is caught before a build rather than by
 an exit 78 on a live stack.
 
+## The `signet` profile's wallet
+
+| Wallet | Seed (64 hex = 32 bytes) | `funding` | Role |
+|---|---|---|---|
+| `signet-responder` | `51e7…51e7` | `fund-script` | the bridge MPC responder's fee payer |
+
+**Why it is its own wallet.** The responder posts **two** contract writes per bridge leg
+(`respond`, then `respondBidirectional`), and it does so *concurrently* with everything else on the
+stack. Two long-lived facades on one seed force each other's connection down — the ONE FACADE PER
+SEED rule — so project 00034's stagenet run had to schedule the responder and the driver around a
+single shared seed instead. Here a dedicated seed costs one `fund-wallet.sh` call and removes the
+hazard entirely.
+
+**When it is funded, and why that is not too late.** `up.sh` funds it (NIGHT + DUST registration +
+the wait for a spendable DUST UTXO) right after the responder reports healthy. That ordering is
+deliberate rather than sloppy: `MidnightMonitor` builds the responder's wallet **lazily**, on its
+first signing request, so the container is genuinely healthy before any wallet exists — and nothing
+on this profile raises a request. It must nonetheless be funded before the first bridge deposit: an
+unfunded responder cannot pay for its writes and presents as an MPC that simply never answers.
+
 ## The `faucet` profile's two wallets
 
 The `faucet` profile deploys the six [mint-test-tokens](https://github.com/effectstream/mint-test-tokens)
@@ -196,6 +216,20 @@ grant of anything the poster does not ask for is inventory the SPA cannot spend.
 1 000 000 twUSDC (6 decimals) is roughly a dozen takes of a one-twBTC offer at the seeded BTC
 price, and it costs one proof cycle (~26 s cold); `FAUCET_MINT_GRANTS=` (explicitly empty) removes
 it.
+
+**The seed is substitutable, and 128 hex means "the operator's own wallet".** Since project 00035
+the frontend entrypoint accepts a **128-hex BIP-39 master seed** as well as a 32-byte one, and
+nothing in the bundle had to change for it: `connectLocal(seed)` hands the string to
+`buildWalletFacade`, which does `HDWallet.fromSeed(Buffer.from(seed,'hex'))` and then the standard
+`m/44'/2400'/0'/<role>'/0'` roles — the same derivation this document's *Import into Lace* section
+describes, on the same `@midnightntwrk/wallet-sdk-hd` pin. So setting `FRONTEND_WALLET_SEED` to a
+mnemonic's master seed makes the in-page wallet **that** wallet, address for address, and
+`scripts/fund-wallet.sh` (which already takes 64- or 128-hex seeds) funds it unchanged. Two things
+follow, and both matter: the addresses were verified equal across three implementations (the wallet
+SDK from the mnemonic, the SPA's own derivation from the master seed, and the Rust toolkit's
+`show-address --seed`), and **a master seed is a secret that `/config.js` serves in clear** — so
+such a stack is local-only. `docs/OPERATIONS.md` has the derivation recipe that never writes the
+mnemonic down; `docs/KNOWN-LIMITATIONS.md` has the exposure note.
 
 **Do not import this seed into Lace** while the SPA has it connected: one facade per seed, and
 this one is held by a browser. `lace-test` (`a51c86de…`) is the seed deliberately kept free for

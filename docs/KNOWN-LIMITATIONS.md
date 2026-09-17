@@ -310,38 +310,79 @@ control is worse than one that is gone.
   to mint-test-tokens' `contracts/v2/package.json`. **The AA pin, the kernel pin and the
   mint-test-tokens pin cannot be moved independently.** The build fails closed on any disagreement.
 
-## The `aa` profile's bridge vault is initialised against a STUB MPC key
+## The `aa` profile's bridge vault: a STUB MPC key by default, a DEMO-GRADE one with `signet`
 
-This is the most important caveat on the `aa` side, and it is the DEFAULT, so it is stated
-here rather than left to a build flag nobody reads.
+This is the most important caveat on the `aa` side, and both halves of it are the DEFAULT for
+some stack, so both are stated here rather than left to a build flag nobody reads.
+
+### Without `signet`: the MPC root key is a stub, and that is deliberate
 
 - **The vault is real; the MPC behind it is not.** Every account's constructor seals a
   reference to the ERC20 bridge vault, so `aa-deploy` has to deploy and `initialise` one
   before any account can exist. `initialise` pins the vault to an MPC root public key and an
-  EVM chain id, and Sig Network publishes a root key for **stagenet only**. On this localnet
-  there is no MPC at all, so the key is DERIVED FROM A PUBLIC STRING (`AA_DOMAIN`) and its
-  private half is therefore known to anyone reading this repository.
+  EVM chain id, and on a bare localnet there is no MPC at all — so the key is DERIVED FROM A
+  PUBLIC STRING (`AA_DOMAIN`) and its private half is therefore known to anyone reading this
+  repository.
 - **What that means in practice.** The five bridge circuits are compiled and their verifier
   keys are deployed, so an account is bridge-shaped — but nothing can move funds across the
-  bridge on this stack, because no MPC signs anything. The deposit addresses the client
+  bridge on such a stack, because no MPC signs anything. The deposit addresses the client
   derives are derivable by anybody. This is correct for a disposable localnet whose genesis
   seeds are published in `wallets/wallets.json` and **wrong anywhere else**.
 - **It is recorded rather than implied.** The deploy receipt carries
   `mpc.provenance: "derived-from-AA_DOMAIN"`, `./verify.sh --aa` prints the warning every
-  run, and the console's Repos tab shows it. `AA_MPC_ROOT_SECRET` overrides it with a real
-  root secret (what a `signet` profile with a fakenet responder would pass).
+  run, `./up.sh` says it in its summary, and the console's Repos tab shows it.
 - **`AA_WITH_BRIDGE=0` is the default for the PROVER keys only.** The bridge's verifier keys
   ride the wave-2 maintenance update either way, so an account registered by a default image
   can be bridged later by an image built with `AA_WITH_BRIDGE=1`; what the flag buys is the
   ~1.2 GB of proving keys needed to make those calls in this process.
-- **There is therefore no bridge tab in the console, and no `--with signet` profile.** Both
-  were planned alongside this migration and are deliberately not in it: a tab that cannot
-  complete a transfer against a stub key would invite somebody to move funds that cannot come
-  back. Making the bridge real needs a second compose profile carrying Sig Network's fakenet
-  MPC responder and an anvil chain (their images pinned by digest) plus the vault's relayer,
-  which shares no code with the account model this profile ships. Nothing about that is
-  blocked by what is here: the verifier keys are already deployed, so accounts registered
-  today keep working when the profile lands.
+
+### With `signet`: a real signer, and a bridge that is still demo-grade
+
+`./up.sh --with aa --with signet` (project 00035) replaces the stub: `aa-deploy` generates a
+per-stack MPC root secret, initialises the vault against its public half and pins the vault to a
+REAL EVM chain (11155111, Sepolia, by default), and `signet-fakenet` — our patched fakenet —
+holds the other half and signs on that chain. `mpc.provenance` becomes `"fakenet"`, and
+`aa-deploy` REFUSES the stub on that profile, because a stub-keyed vault where funds actually move
+would strand every deposit at an address whose private key is published in `deploy-aa.ts`'s own
+comments. `docs/COMPONENTS.md` has the whole profile.
+
+That is a working bridge, and it is still **not a production one**, for two independent reasons.
+Both are printed by `./up.sh` and by `./verify.sh` on every run, and both must travel with any
+artefact this profile produces:
+
+1. **The stack holds BOTH halves of the MPC root key.** Everything downstream of the signature is
+   real — the request, the singleton events, the EVM transaction, the attestation check inside the
+   circuit, the coins. What is **not** demonstrated is a signer nobody here controls. A vault
+   verifies only against the response key pinned at its own `initialise`, so this is sound as a
+   demonstration and unsound as custody.
+2. **The attestation is recovered by an `eth_call` REPLAY, not by a mined trace**, whenever the RPC
+   has no `debug` namespace — which is every free tier, including the one this was built for. The
+   replay reads pre-block state at the mined block's parent, so a call whose return data depended
+   on writes earlier in the same block (or on its position in the block) can differ from what the
+   real MPC would have signed. For a single ERC20 `transfer` from an address nothing else touches
+   the two agree, which is the only shape this bridge uses. With a traced endpoint the same image
+   takes the upstream path unchanged and this caveat disappears.
+
+### There is still no bridge tab in the console
+
+`signet` makes the *stack* able to bridge; it adds no UI. The console has no Bridge tab yet and no
+bridge relay jobs, so moving funds across today means driving the fork's client by hand. That is
+the next change rather than a permanent gap: the verifier keys are deployed, the vault is
+initialised for the right chain and against a key a responder actually holds, so accounts
+registered today keep working when the tab lands.
+
+### The frontend wallet's seed is visible to anyone who can load the page
+
+Not new with `signet`, but it matters as soon as the page holds a wallet somebody cares about.
+`compose/frontend.yml` injects `FRONTEND_WALLET_SEED` into `/config.js` as
+`window.DEMO_WALLET_SEED`, so **the in-page wallet's seed is served, in clear, to every client
+that can reach the frontend port**. With the stack's own `demo-spa` seed that is harmless: it is
+published in `wallets/wallets.json` and controls nothing but throwaway localnet tokens. Since
+project 00035 the entrypoint also accepts a 128-hex BIP-39 **master seed**, which makes the
+in-page wallet the same wallet a browser wallet shows for that mnemonic — and a master seed IS the
+wallet. So: a stack seeded that way is **local-only**. `BIND_ADDR` defaults to `127.0.0.1` and must
+stay there; do not put such a stack behind a proxy, on a shared host, or on a public port, and
+prefer a wallet whose contents you would not mind losing.
 
 ## The console holds every account's viewing key
 

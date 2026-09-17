@@ -437,11 +437,36 @@ complete URL for a faucet behind a proxy or on another host.
 brand-new EMPTY wallet on every page load. Since #922 removed the SPA's mint, an empty wallet is one
 that can never acquire anything — the faucet site drives an injected extension wallet, and an
 in-page wallet is not one. The stack therefore fixes it (`FRONTEND_WALLET_SEED`, wallet `demo-spa`),
-the entrypoint refuses anything that is not 64 lowercase hex with **exit 78** (a truncated seed is a
-DIFFERENT wallet, which looks exactly like "the mint did not work"), and `faucet-mint`'s default
+the entrypoint refuses anything that is not lowercase hex of a valid length with **exit 78** (a
+truncated seed is a DIFFERENT wallet, which looks exactly like "the mint did not work"), and
+`faucet-mint`'s default
 `spa` grant prefunds it with one whole twETH — the token the poster WANTS, so the SPA can take a
 poster offer immediately. `FRONTEND_WALLET_SEED=` restores the random wallet and
 `FAUCET_MINT_GRANTS=` removes the grant.
+
+**Two lengths are valid** (project 00035). 64 hex is upstream's 32-byte seed. **128 hex is a BIP-39
+master seed**, and passing one makes the in-page wallet the *same wallet* a browser wallet shows
+for that mnemonic — same shielded address, same unshielded address, same dust address. Nothing in
+the bundle changes for it: `connectLocal(seed)` hands the string to `buildWalletFacade`, which does
+`HDWallet.fromSeed(Buffer.from(seed,'hex'))` and then the standard `m/44'/2400'/0'/<role>'/0'`
+roles — exactly what `tools/mnemonic-wallets/derive.mjs` (and Lace) do, on the same
+`@midnightntwrk/wallet-sdk-hd` pin. `scripts/fund-wallet.sh` already funds 64- *or* 128-hex seeds,
+so the stack funds such a wallet with no extra step.
+
+To derive one **without writing the mnemonic anywhere**, pipe it in and keep only the seed:
+
+```bash
+# reads the phrase from a 600-mode file you already hold; nothing is echoed and nothing is stored
+./tools/mnemonic-wallets/derive.sh --json --mnemonic "$(cat ~/.config/<yours>.txt)" \
+  | python3 -c 'import json,sys; print("FRONTEND_WALLET_SEED=" + json.load(sys.stdin)[0]["masterSeed"])' \
+  >> .env
+```
+
+⚠ **A master seed IS the wallet, and the page serves it in clear.** `/config.js` is readable by
+anything that can reach the frontend port, so a stack seeded this way is **local-only**: keep
+`BIND_ADDR=127.0.0.1`, do not put it behind a proxy or on a shared host, and prefer a wallet whose
+contents you would not mind losing. `docs/KNOWN-LIMITATIONS.md` says the same where somebody
+auditing the stack will read it.
 
 `FAUCET_PORT` is injected whether or not the `faucet` profile is up, because the `frontend`
 fragment deliberately does not depend on it — it mounts nothing of that profile's and compose
@@ -559,9 +584,14 @@ docker compose … run --rm price-feed --once   # one cycle now; exit 0/2/64
 1 WBTC ≈ 32 WETH from day one. The profile buys **fresh** prices, not working ones. That is why
 it is opt-in here, and why upstream keeps its own copy behind `--profile prices`.
 
-**`COINGECKO_API_KEY` is the only genuine secret this repository uses.** Every other "secret"
-here — the wallet seeds, `SOLVER_STATUS_AUTH_TOKEN`, the Celestia auth token — is public dev
-material and documented as such. This one is a third-party credential on a metered quota, so:
+**`COINGECKO_API_KEY` and `SIGNET_EVM_RPC_URL` are the genuine secrets this repository asks an
+operator for**, and `FRONTEND_WALLET_SEED` becomes one the moment it is a real wallet's master seed
+(see *The in-page wallet's seed*). Everything else called a "secret" here — the wallet seeds,
+`SOLVER_STATUS_AUTH_TOKEN`, the Celestia auth token — is public dev material and documented as
+such. The rules below were written for the CoinGecko key and apply to all three; `SIGNET_EVM_RPC_URL`
+is covered again under the `signet` profile in [COMPONENTS.md](COMPONENTS.md), and
+`scripts/check-no-secrets.sh` (run by `ci-check.sh` step 1) greps the tracked tree for the shape of
+every one of them. This one is a third-party credential on a metered quota, so:
 
 - it has **no default anywhere** — not in `compose/prices.yml`, not in a Dockerfile, not in
   `.env.example` (which carries the variable NAME and a warning, and no value);
