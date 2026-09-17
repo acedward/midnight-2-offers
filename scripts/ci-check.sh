@@ -8,8 +8,9 @@
 #   ./scripts/ci-check.sh --no-fund    # skip funding; verify then covers genesis wallets only
 #
 # The steps, in order:
-#   1.  static      the offline artifact gates AND the e2e coverage matrix (every compose
-#                   service has a row naming the assertion that exercises it)
+#   1.  static      the offline artifact gates, the e2e coverage matrix (every compose service
+#                   has a row naming the assertion that exercises it) and the secret-hygiene
+#                   grep over the tracked tree
 #   2.  up          the requested profiles, blocking until each is genuinely usable — and, in
 #                   --all mode, an assertion that the `prices` profile really started
 #   3.  fund        fund-wallet.sh --all-demo (the demo-* and mnemonic-* wallets)
@@ -389,10 +390,18 @@ static_gates() {
   "$REPO_ROOT/scripts/verify-e2e-coverage.sh"                              || rc=1
   "$REPO_ROOT/scripts/verify-e2e-coverage.sh" --self-test >/dev/null \
     && ok "e2e coverage self-test passed" || rc=1
+  # SECRET HYGIENE. Since project 00035 this stack has two operator secrets (a keyed EVM RPC
+  # URL and, optionally, a personal wallet's master seed) and generates a third (the per-stack
+  # MPC root key). All three are supposed to live only in an uncommitted .env, in ~/.config or
+  # on a docker volume, and "supposed to" is not a check: a key in git history cannot be taken
+  # back. This greps the TRACKED tree — which is exactly what a push publishes — and its
+  # --self-test proves every pattern still bites, including on the operator's own mnemonic when
+  # this machine holds it.
+  "$REPO_ROOT/scripts/check-no-secrets.sh" --self-test                      || rc=1
   return $rc
 }
 
-step 1 "offline artifact gates + e2e coverage matrix" \
+step 1 "offline artifact gates + e2e coverage matrix + secret hygiene" \
   static_gates || true
 
 if step 2 "up --build ${PROFILE_ARGS[*]:-(core only)}" \
