@@ -26,6 +26,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 load_env
 
+# `dc` renders core.yml plus one fragment per name in $PROFILES, and a standalone script starts
+# with that empty — so `dc run … aa-deploy` would answer "no such service" against a stack that is
+# plainly running. The aa profile is what defines the service AND what this script needs anyway, so
+# it is named here rather than discovered. (scripts/evm-address.sh does the same for `evm`.)
+PROFILES="${PROFILES:-} aa"
+
 SEED=""
 JSON=0
 COLOUR=""

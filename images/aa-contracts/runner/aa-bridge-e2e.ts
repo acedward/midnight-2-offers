@@ -62,18 +62,46 @@ const { personalSign, signTypedData, SignTypedDataVersion } = await import("@met
 
 const TAG = "[aa-bridge-e2e]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
-const fail = (msg: string): never => { console.error(`${TAG} FAIL ${msg}`); process.exit(1); };
+/**
+ * A failure writes the report anyway, and that is not tidiness.
+ *
+ * The first live run of this file failed at its LAST step — a missing cap guard — after three
+ * successful legs on a real chain, and took the record of those legs with it. Sepolia
+ * transactions are not repeatable for free; the evidence of what did happen must survive the
+ * discovery of what did not.
+ */
+const fail = (msg: string): never => {
+  console.error(`${TAG} FAIL ${msg}`);
+  try {
+    mkdirSync(OUT.slice(0, OUT.lastIndexOf("/")), { recursive: true });
+    writeFileSync(OUT, `${JSON.stringify({
+      kind: "aa-bridge-e2e", result: "FAILED", failure: msg,
+      failedAt: new Date().toISOString(), tookSeconds: Math.round((Date.now() - t0) / 1000),
+      note: "the steps below DID happen, on a real chain, before the failure above",
+      spend, steps,
+    }, null, 2)}\n`);
+    console.error(`${TAG} the steps that did succeed are recorded in ${OUT}`);
+  } catch { /* the failure above is what matters */ }
+  process.exit(1);
+};
+
+const t0 = Date.now();
+const steps: Record<string, unknown> = {};
+const spend = { eth: 0n, tokens: {} as Record<string, string> };
 
 const BASE = (process.env["AA_BRIDGE_E2E_URL"] ?? "http://aa-console:8090").replace(/\/+$/, "");
 const OUT = process.env["AA_BRIDGE_E2E_OUT"] ?? "/aa/out/aa-bridge-e2e.json";
 const MODE = process.env["AA_BRIDGE_E2E_MODE"] ?? "sepolia";
 const RPC_URL = process.env["AA_BRIDGE_E2E_RPC_URL"] ?? "";
 const FUNDER_KEY = process.env["AA_BRIDGE_E2E_FUNDER_KEY"] ?? "";
-/** A throwaway EVM key: the run's "MetaMask". Public by design, like every seed in this repo. */
-const OWNER_KEY = (process.env["AA_BRIDGE_E2E_OWNER_KEY"] ?? `0x${"b21d6e".padStart(64, "0")}`) as `0x${string}`;
+/** A throwaway EVM key: the run's "MetaMask". Public by design, like every seed in this repo.
+ *  `||`, NOT `??`: the wrapper passes `-e AA_BRIDGE_E2E_OWNER_KEY=` when the operator named none,
+ *  and an EMPTY STRING is not nullish — `??` kept it and the run died inside secp256k1 with
+ *  "expected 32 bytes, got 0", four frames deep in a curve library. Measured, not imagined. */
+const OWNER_KEY = (process.env["AA_BRIDGE_E2E_OWNER_KEY"] || `0x${"b21d6e".padStart(64, "0")}`) as `0x${string}`;
 /** The recipient of the WALLET-path deposit: a Midnight wallet generated per run, whose seed
  *  the console never learns. */
-const RECIPIENT_SEED = process.env["AA_BRIDGE_E2E_RECIPIENT_SEED"] ?? toHex(crypto.getRandomValues(new Uint8Array(32)));
+const RECIPIENT_SEED = process.env["AA_BRIDGE_E2E_RECIPIENT_SEED"] || toHex(crypto.getRandomValues(new Uint8Array(32)));
 /**
  * `wallet` runs ONLY the wallet-recipient deposit, to an address given rather than generated.
  *
@@ -99,9 +127,6 @@ const JOB_TIMEOUT_MS = Number(process.env["AA_BRIDGE_E2E_JOB_TIMEOUT_MS"] ?? 2_4
 
 if (!RPC_URL) fail("AA_BRIDGE_E2E_RPC_URL is required (the EVM endpoint this run funds through)");
 if (!FUNDER_KEY) fail("AA_BRIDGE_E2E_FUNDER_KEY is required (scripts/aa-bridge-e2e.sh reads it from the operator's env)");
-
-const steps: Record<string, unknown> = {};
-const t0 = Date.now();
 
 // ── the console's API, exactly as the page calls it ─────────────────────────
 
@@ -166,8 +191,6 @@ const provider = new ethers.JsonRpcProvider(RPC_URL, undefined,
   MODE === "anvil" ? { staticNetwork: true, cacheTimeout: -1 } : { staticNetwork: true });
 const funder = new ethers.Wallet(FUNDER_KEY.startsWith("0x") ? FUNDER_KEY : `0x${FUNDER_KEY}`, provider);
 const erc20Of = (address: string) => new ethers.Contract(address, ERC20_ABI, funder);
-
-const spend = { eth: 0n, tokens: {} as Record<string, string> };
 
 /** Send tokens and gas to a deposit address. On a local chain the token is MINTED and the gas
  *  is set outright; on a public one both are transfers from the operator's funder, and every

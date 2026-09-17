@@ -38,6 +38,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 load_env
 
+# `dc` renders core.yml plus one fragment per name in $PROFILES, and a standalone script starts
+# with that empty — so `dc run … aa-deploy` would answer "no such service" against a stack that is
+# plainly running. The aa profile is what defines the service AND what this script needs anyway, so
+# it is named here rather than discovered. (scripts/evm-address.sh does the same for `evm`.)
+PROFILES="${PROFILES:-} aa"
+
 EVIDENCE_DIR=""
 MODE="${AA_BRIDGE_E2E_MODE:-sepolia}"
 ONLY="${AA_BRIDGE_E2E_ONLY:-}"
@@ -116,7 +122,7 @@ dc run --rm --no-deps \
   -e "AA_BRIDGE_E2E_AMOUNT_A=${AA_BRIDGE_E2E_AMOUNT_A:-0.5}" \
   -e "AA_BRIDGE_E2E_AMOUNT_B=${AMOUNT_B_OVERRIDE:-${AA_BRIDGE_E2E_AMOUNT_B:-10}}" \
   -e "AA_BRIDGE_E2E_WITHDRAW=${AA_BRIDGE_E2E_WITHDRAW:-0.2}" \
-  -e "AA_BRIDGE_E2E_OWNER_KEY=${AA_BRIDGE_E2E_OWNER_KEY:-}" \
+  ${AA_BRIDGE_E2E_OWNER_KEY:+-e "AA_BRIDGE_E2E_OWNER_KEY=${AA_BRIDGE_E2E_OWNER_KEY}"} \
   --entrypoint sh aa-deploy -c '. /run/aa-bridge-e2e.env && exec bun /aa/runner/aa-bridge-e2e.ts'
 RC=$?
 set -e

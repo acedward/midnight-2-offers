@@ -2527,6 +2527,13 @@ Bun.serve({
         const token = await resolveToken(String(body.token ?? ""));
         const amountRaw = body.amount === undefined || body.amount === ""
           ? 0n : toRaw(String(body.amount), token.decimals);
+        // THE CAP IS CHECKED HERE TOO, not only at the start (spec FR-017: "refuse with a message
+        // at quote and at start"). The first live run of scripts/aa-bridge-e2e.sh caught this
+        // missing: a quote for three times the cap came back READY, with a deposit address and an
+        // amount to send. A quote is an INSTRUCTION to move real money to an address — telling an
+        // operator to send tokens that the start will then refuse is the worst possible order to
+        // discover a cap in. A zero amount (the page's first render) is not a request to spend.
+        if (amountRaw > 0n) assertCapHeadroom(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
         const cfg = bridgeConfigFor(token.erc20);
         const vaultEvmAddress = vaultEvmAddressFor(cfg);
         if (direction === "withdraw") {
