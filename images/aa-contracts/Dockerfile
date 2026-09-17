@@ -510,7 +510,12 @@ RUN ln -s /aa/node_modules /aa/passport/contracts/erc20-vault/node_modules
 
 # The console's recipient parser must accept a full Midnight shielded address (135 chars);
 # the SDK's own MidnightBech32m.parse() stops at bech32's 90 (infra issue 00023).
-RUN cd /aa && bun test runner/midnight-bech32m.test.ts
+#
+# aa-bridge.test.ts is the second gate and it is here for one reason: a bridged WEENUS
+# amount is 10^19, past Number.MAX_SAFE_INTEGER, and every token this stack had before was
+# 6 or 8 decimals. A `Number` that slipped into an amount path would have surfaced on real
+# Sepolia after the tokens had moved. It runs offline — no chain, no RPC, no artifact.
+RUN cd /aa && bun test runner/midnight-bech32m.test.ts runner/aa-bridge.test.ts
 
 # Every runner entrypoint must RESOLVE: each name it imports from the fork, from the
 # generated contract modules and from its own files has to exist. Sub-second, and it closes
@@ -528,7 +533,8 @@ RUN cd /aa && bun test runner/midnight-bech32m.test.ts
 # where a wrong name stops the container from starting instead of waiting for a job.
 RUN set -eux; \
     cd /aa; \
-    for f in runner/aa-console.ts runner/aa-e2e.ts runner/deploy-aa.ts runner/aa-console-mint.ts runner/aa-offer.ts; do \
+    for f in runner/aa-console.ts runner/aa-e2e.ts runner/deploy-aa.ts runner/aa-console-mint.ts \
+             runner/aa-offer.ts runner/aa-bridge.ts runner/aa-bridge-e2e.ts runner/aa-bridge-dryrun.ts; do \
       bun build "./$f" --target=bun --packages=external --outfile=/tmp/resolve-check.js >/dev/null \
         || { echo "FAIL: ${f} imports a name that does not exist (see the error above)" >&2; exit 1; }; \
       echo "resolves: ${f}"; \

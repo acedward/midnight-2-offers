@@ -92,6 +92,13 @@ x-aa-build: &aa-build
     # (~1.2 GB more). The bridge's VERIFIER keys are deployed either way — they cost
     # 5 × ~2 KB in the wave-2 maintenance update — so an account registered without this
     # can still be bridged later by an image built with it.
+    #
+    # ⚠ `up.sh --with signet` EXPORTS `AA_WITH_BRIDGE=1` (project 00035 PR-B). The default
+    # stays 0, so `--with aa` alone builds exactly the image it built before; but a stack
+    # that runs the MPC responder and cannot PROVE a bridge circuit is a stack whose Bridge
+    # tab can only ever say "unavailable", and the two flags describe one feature. Changing
+    # the flag changes the image's content, so the first `--with signet` bring-up after a
+    # bridge-less build rebuilds the last two stages (~10 min) and the image grows by ~1.2 GB.
     AA_WITH_BRIDGE: '${AA_WITH_BRIDGE:-0}'
 
 services:
@@ -223,6 +230,29 @@ services:
       AA_SOLVER_FRONTEND_URL: '${AA_SOLVER_FRONTEND_URL:-http://solver-frontend:8080}'
       AA_SOLVER_STATUS_URL: '${AA_SOLVER_STATUS_URL:-http://solver:9100}'
       AA_OFFER_POSTER_URL: '${AA_OFFER_POSTER_URL:-http://offer-poster:9977}'
+      # ── the ERC20 bridge (project 00035) ───────────────────────────────────
+      # THE SAME operator secret the responder gets, from the SAME variable, so the console's
+      # balance reads and the MPC's broadcasts can never be pointed at different chains. It
+      # carries the provider key, so it is never echoed in /api/info, in a bridge record or in
+      # a log line. Empty without the `signet` profile, which is what makes the Bridge tab say
+      # "unavailable" instead of failing per click.
+      AA_BRIDGE_EVM_RPC_URL: '${SIGNET_EVM_RPC_URL:-}'
+      # The ERC20s the Bridge tab offers by default; any other is reachable by address. Both
+      # of these are Sepolia's, and their DECIMALS DIFFER (6 and 18) — which is the point.
+      AA_BRIDGE_TOKENS: '${AA_BRIDGE_TOKENS:-0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238,0x7439E9Bb6D8a84dd3A23fe621A30F95403F87fB9}'
+      # Spend caps in DECIMAL units, summed over the console store's lifetime (spec FR-017,
+      # the owner's question Q8). A token with no cap is REFUSED, not allowed: an unknown
+      # ERC20 bridged without a ceiling is how a demo stack spends somebody's real funds.
+      AA_BRIDGE_CAP_USDC: '${AA_BRIDGE_CAP_USDC:-5}'
+      AA_BRIDGE_CAP_WEENUS: '${AA_BRIDGE_CAP_WEENUS:-50}'
+      AA_BRIDGE_CAP_ETH: '${AA_BRIDGE_CAP_ETH:-0.05}'
+      AA_BRIDGE_CAP_DEFAULT: '${AA_BRIDGE_CAP_DEFAULT:-0}'
+      # The frontend wallet's SHIELDED ADDRESS — public, and the only thing the console needs
+      # to offer "bridge to my own Midnight wallet" as one click. The SEED never comes here:
+      # it is the owner's, and the SPA page already exposes it to whoever can load that page
+      # (docs/KNOWN-LIMITATIONS.md). up.sh writes the same value into /aa/out/frontend-wallet.json
+      # after it funds that wallet, so an operator who sets nothing still gets the button.
+      AA_FRONTEND_WALLET_SHIELDED_ADDRESS: '${FRONTEND_WALLET_SHIELDED_ADDRESS:-}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
     volumes:

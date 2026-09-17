@@ -275,6 +275,14 @@ if [[ " $PROFILES " == *" signet "* ]]; then
   # actually serves: the vault pins it at `initialise` and every derived deposit address is
   # scoped to it, so a mismatch strands funds rather than erroring.
   export AA_EVM_CHAIN_ID="${AA_EVM_CHAIN_ID:-11155111}"
+  # THE BRIDGE'S PROVER KEYS, for the same reason and in the same place (project 00035 PR-B).
+  # `signet` exists to make the bridge real; an image that cannot PROVE
+  # `bridge_deposit_start_with_evm` gives a stack whose Bridge tab can only say "unavailable".
+  # The DEFAULT stays 0, so `--with aa` alone is byte-for-byte the image it was before — but
+  # the first `--with signet` build after a bridge-less one rebuilds the image's last stages
+  # (~10 minutes) and adds ~1.2 GB of proving keys. An operator who has a reason to say no can
+  # still set AA_WITH_BRIDGE=0 in the env file.
+  export AA_WITH_BRIDGE="${AA_WITH_BRIDGE:-1}"
 fi
 
 log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
@@ -485,6 +493,25 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" frontend "* ]] \
     else
       warn "funding the frontend wallet failed — the page still loads and batcher-sponsored swaps"
       warn "  still work; only the wallet's own fee-paying does not."
+    fi
+    # ── the Bridge tab's "use the frontend wallet" button (spec FR-003) ───────
+    #
+    # The console is told the wallet's SHIELDED ADDRESS and nothing else. That address is
+    # public — it is what a depositor sends to — while the seed is the owner's and stays in
+    # the env file and in the SPA's own page. Written into the aa-out volume rather than
+    # passed as an environment variable because this runs AFTER the containers exist; the
+    # console re-reads the file on every /api/info, so no restart is needed.
+    if [[ " $PROFILES " == *" aa "* ]]; then
+      FRONTEND_SHIELDED_ADDR="$("$REPO_ROOT/scripts/wallet-address.sh" "$FRONTEND_WALLET_SEED_VALUE" shielded 2>/dev/null || true)"
+      if [[ "$FRONTEND_SHIELDED_ADDR" == mn_shield-addr* ]]; then
+        if printf '{"shielded":"%s","source":"up.sh: FRONTEND_WALLET_SEED"}\n' "$FRONTEND_SHIELDED_ADDR" \
+             | dc exec -T aa-console sh -c 'cat > /aa/out/frontend-wallet.json' 2>/dev/null; then
+          log "the console's Bridge tab can now prefill the frontend wallet: ${FRONTEND_SHIELDED_ADDR:0:28}…"
+        else
+          warn "could not publish the frontend wallet's address to the console — the Bridge tab's"
+          warn "  'use the frontend wallet' button will be absent; paste the address instead."
+        fi
+      fi
     fi
   fi
 fi
@@ -811,6 +838,12 @@ if [[ " $PROFILES " == *" signet "* ]]; then
   info "                  the stack holds BOTH halves of the MPC root key, and the attestation is"
   info "                  recovered by eth_call replay when the RPC has no debug_traceTransaction."
   info "                  It proves the protocol end to end; it is not a signer nobody here controls."
+  info "Bridge tab        the console's Bridge tab is live: deposit an ERC20 to your account or to any"
+  info "                  Midnight shielded address, and withdraw back. Caps ${AA_BRIDGE_CAP_USDC:-5} USDC /"
+  info "                  ${AA_BRIDGE_CAP_WEENUS:-50} WEENUS / ${AA_BRIDGE_CAP_ETH:-0.05} ETH per stack lifetime."
+  info "                  ⚠ EVERY deposit address is derived from the vault CONTRACT address, so it dies"
+  info "                    with './down.sh -v'. Fund, start, relay and complete in ONE session; use"
+  info "                    './down.sh' WITHOUT -v to keep them across a restart."
 elif [[ " $PROFILES " == *" aa "* ]]; then
   info "MPC               none — the bridge vault is initialised against a LOCAL STUB key whose"
   info "                  private half is public. Bridge circuits are deployed; no funds can cross."

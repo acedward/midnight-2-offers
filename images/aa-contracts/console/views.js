@@ -6,6 +6,7 @@
 
 const HEAD_NOTES = {
   aa: "The AA Wallet — your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (~1–2 min) and submits to Midnight. The wallet never sees a Midnight key.",
+  bridge: "The ERC20 bridge: Sepolia tokens become shielded Midnight coins in your account or in any Midnight wallet, and go back. The MPC signs the Ethereum side; this stack holds both halves of its root key, so the bridge is demo-grade by construction.",
   aainfra: "The AA plumbing: the stack's contracts and wallets, token faucets and funding, and every account on the Manager.",
   solver: "The offer book, and the ported COW solver observed live over its relay WebSocket boundary — received by a demo sink that can never send it work.",
   infra: "Every component of the compose stack, probed over the internal network by the console's relay service.",
@@ -14,7 +15,7 @@ const HEAD_NOTES = {
   faucet: "The local test-token faucet: six issuers deployed onto THIS chain, and the site that mints from them. It needs an injected DApp-connector wallet — it has none of its own.",
   repos: "The exact branches, commits and pull requests every piece of this stack is built from.",
 };
-const VIEW_NAMES = ["aa", "aainfra", "aamid", "solver", "faucet", "infra", "memos", "repos"];
+const VIEW_NAMES = ["aa", "bridge", "aainfra", "aamid", "solver", "faucet", "infra", "memos", "repos"];
 
 // One lazy iframe, shared by the two tabs that embed another site of this stack. The src is
 // set on FIRST activation only, and it comes from /api/info rather than from a constant: both

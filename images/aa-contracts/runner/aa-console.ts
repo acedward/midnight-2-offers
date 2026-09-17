@@ -34,7 +34,7 @@
 
 import "./passport-env.ts";
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as Rx from "rxjs";
 
@@ -50,6 +50,10 @@ import {
   UnshieldedAddress,
 } from "@midnightntwrk/wallet-sdk-address-format";
 
+import { ethers } from "ethers";
+
+import * as VaultModule from "../passport/contracts/erc20-vault/managed/Erc20Vault/contract/index.js";
+
 import { parseMidnightBech32m } from "./midnight-bech32m.ts";
 import { shieldedUserRecipient, unshieldedUserRecipient } from "./mint-recipient.ts";
 import { buildKernelOffer } from "./aa-offer.ts";
@@ -61,6 +65,7 @@ import {
   SWAP_CIRCUIT,
   WALLET_PROOF_SERVER,
   CONTRACT_PROOF_SERVER,
+  VAULT_ZK_PATH,
   bytes32,
   coinPublicKeyBytes,
   consoleAccountCircuits,
@@ -77,6 +82,45 @@ import {
   zkConfigPath,
 } from "./passport.ts";
 import {
+  AccountBridge,
+  ATTESTATION_NOTE,
+  EVM_GAS,
+  GAS_BUDGET_WEI,
+  GAS_FUNDING_WEI,
+  MPC_TIMEOUT_MS,
+  assertCapHeadroom,
+  attestationLabelFor,
+  bridgeAvailability,
+  bridgeConfigFor,
+  bridgedToken,
+  bridgedTokens,
+  capView,
+  chargeCap,
+  depositAddressOf,
+  deserialiseRelay,
+  evmProvider,
+  findRequest,
+  formatEth,
+  fromRaw,
+  loadBridgeStore,
+  newRequestRecord,
+  randomNonce as randomMintNonce,
+  recipientEither,
+  recipientLabel,
+  requireBridge,
+  requireRequest,
+  resolveToken,
+  serialiseRelay,
+  toRaw,
+  upsertRequest,
+  vaultColour,
+  vaultEvmAddressFor,
+  ERC20_ABI,
+  type BridgeRecipient,
+  type BridgeRequest,
+  type BridgedToken,
+} from "./aa-bridge.ts";
+import {
   coinStoreOf,
   findByAddress,
   findByOwner,
@@ -89,6 +133,7 @@ import {
 import { CustodyAccount, deployEvmAccount } from "../passport/src/wallet/account.js";
 import {
   EvmDevice,
+  authArgs,
   authorise,
   eip191Digest,
   evmChallengeFor,
@@ -116,7 +161,8 @@ import {
 import { buildTypedData, computeDigest } from "../passport/src/wallet/eip712.js";
 import { generateEncKeyPair } from "../passport/src/wallet/inbox.js";
 import { depositAsThirdParty, inboxWalkPortable } from "../passport/src/wallet/deposit.js";
-import { candidateIndices } from "../passport/src/wallet/capture.js";
+import { candidateIndices, mtIndexForSingleOutput } from "../passport/src/wallet/capture.js";
+import { sealInboxEntry } from "../passport/src/wallet/inbox.js";
 import {
   buildOpenSwapTypedData,
   freshWantNonce,
@@ -185,6 +231,13 @@ type TokenInfo = {
   decimals: number;
   issuer: string;
   label: string;
+  /** Where the colour comes from. `faucet` tokens are minted by one of the six local
+   *  mint-test-tokens issuers; `bridged` ones are minted by the ERC20 VAULT and have no
+   *  issuer at all, so every mint path must refuse them by name rather than by a null
+   *  dereference three calls later. */
+  source?: "faucet" | "bridged";
+  /** Bridged tokens only: the ERC20 on the EVM chain this colour represents. */
+  erc20?: string;
 };
 const tokens: { list: TokenInfo[]; registryRevision: string | null; error: string | null } = {
   list: [], registryRevision: null, error: null,
@@ -243,7 +296,8 @@ async function resolveTokens() {
       });
     }
     if (list.length === 0) throw new Error("the registry carries no ACTIVE token");
-    tokens.list = list;
+    for (const t of list) t.source = "faucet";
+    tokens.list = [...list, ...bridged.list];
     tokens.registryRevision = doc.registryRevision ?? doc.revision ?? null;
     tokens.error = null;
     log(`tokens resolved from ${url}: ` +
@@ -251,6 +305,104 @@ async function resolveTokens() {
   } catch (e) {
     tokens.error = e instanceof Error ? e.message : String(e);
     log(`token resolution FAILED (faucet profile down?): ${tokens.error} — token ops will error until it succeeds`);
+  }
+}
+
+// ── the bridged colours: a SECOND token source (spec FR-008) ─────────────────
+//
+// The console's list used to be the faucet registry and nothing else. A bridged colour has
+// no issuer, no faucet and no entry there: it is `tokenType(vaultTokenDomainSeparator(erc20),
+// vault)`, and its decimals are the ERC20's — 6 for USDC and 18 for WEENUS, which is why
+// every amount on every surface is rendered by decimals rather than assumed (question Q6).
+// They are appended AFTER the faucet tokens so the positional defaults the page uses
+// ("the Nth shielded token") keep pointing at what they pointed at before.
+
+const bridged: { list: TokenInfo[]; error: string | null; registered: string[] } = {
+  list: [], error: null, registered: [],
+};
+
+async function resolveBridgedTokens(): Promise<void> {
+  if (!bridgeAvailability().available) {
+    bridged.list = [];
+    return;
+  }
+  try {
+    const { tokens: found, errors } = await bridgedTokens();
+    bridged.list = found.map((t) => ({
+      name: t.symbol,
+      label: `${t.name} (bridged from ${t.erc20.slice(0, 10)}…)`,
+      family: "shielded" as const,
+      color: t.colour,
+      decimals: t.decimals,
+      issuer: "",
+      source: "bridged" as const,
+      erc20: t.erc20,
+    }));
+    bridged.error = Object.keys(errors).length ? JSON.stringify(errors) : null;
+    // Keep the merged list current even when the faucet registry has not moved.
+    const faucetOnly = tokens.list.filter((t) => t.source !== "bridged");
+    tokens.list = [...faucetOnly, ...bridged.list];
+    if (bridged.list.length) {
+      log(`bridged colours: ${bridged.list.map((t) => `${t.name}=${t.color.slice(0, 8)}…/${t.decimals}d`).join(" ")}`);
+    }
+  } catch (e) {
+    bridged.error = e instanceof Error ? e.message : String(e);
+    log(`bridged-token resolution failed: ${bridged.error}`);
+  }
+}
+
+/**
+ * Put the bridged colours in the kernel's name registry (spec FR-009), so the offer-files
+ * frontend renders an offer in them as "1 USDC" and "10 WEENUS" rather than as 1000000 and
+ * 10000000000000000000.
+ *
+ * Idempotent and fail-soft. `POST /v1/known-tokens` is the only write route the kernel has —
+ * there is no PUT and no DELETE — and `name` is UNIQUE, so a row that already names ANOTHER
+ * colour cannot be repaired from here. That is reported loudly and the console carries on:
+ * the registry is a display convenience, and nothing about custody depends on it.
+ */
+async function registerBridgedColours(): Promise<void> {
+  if (!bridged.list.length) return;
+  let rows: any[] = [];
+  try {
+    const res = await fetch(`${KERNEL_URL}/v1/known-tokens`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`GET /v1/known-tokens -> ${res.status}`);
+    const body: any = await res.json();
+    rows = Array.isArray(body) ? body : (body.tokens ?? body.knownTokens ?? []);
+  } catch (e) {
+    log(`kernel token registry unreachable (${e instanceof Error ? e.message : String(e)}) — `
+      + "bridged colours will be registered on a later pass");
+    return;
+  }
+  for (const t of bridged.list) {
+    const want = t.name.toUpperCase();
+    if (bridged.registered.includes(want)) continue;
+    const row = rows.find((r: any) => String(r.name ?? "").toUpperCase() === want);
+    const colour = String(row?.color ?? row?.token_color ?? "").toLowerCase().replace(/^0x/, "");
+    if (row && colour === t.color) {
+      bridged.registered.push(want);
+      continue;
+    }
+    if (row) {
+      log(`WARNING: the kernel's '${want}' row names colour ${colour.slice(0, 16)}…, not this vault's `
+        + `${t.color.slice(0, 16)}…. The kernel has no update route, so the offer-files frontend will show `
+        + "the wrong symbol for this colour until that row is corrected out of band");
+      continue;
+    }
+    try {
+      const res = await fetch(`${KERNEL_URL}/v1/known-tokens`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ color: t.color, name: want, kind: "shielded", decimals: t.decimals }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 160)}`);
+      bridged.registered.push(want);
+      log(`registered the bridged colour ${want} (${t.decimals}d, ${t.color.slice(0, 16)}…) in the kernel registry`);
+    } catch (e) {
+      log(`could not register ${want} in the kernel registry: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }
 
@@ -329,6 +481,13 @@ const MTT_MODULE = { shielded: "contract-mtt-shielded", unshielded: "contract-mt
 
 async function joinIssuer(walletCtx: any, token: TokenInfo) {
   if (tokens.list.length === 0) await resolveTokens();
+  if (token.source === "bridged") {
+    throw new Error(
+      `${token.name} is a BRIDGED colour: it is minted by the ERC20 vault against tokens that arrived `
+      + "on the EVM chain, and no faucet can create it. Use the Bridge tab (or /api/bridge/…) to bring "
+      + "more of it in",
+    );
+  }
   if (!token.issuer) throw new Error(`${token.name}: the registry carries no issuer address (${tokens.error ?? "?"})`);
   const name = MTT_MODULE[token.family];
   const zkPath = resolve("/aa", name, "src", "managed");
@@ -639,6 +798,14 @@ type Prepared = {
     useCounter: bigint;
     request?: AuthRequest;
     offer?: { call: OfferCallArgs; coin: any; giveToken: string; wantToken: string };
+    /** Everything the bridge start jobs need that the AuthRequest does not carry. */
+    bridge?: {
+      token: BridgedToken;
+      amountRaw: bigint;
+      depositAddress?: string;
+      destEvmAddress?: string;
+      evmNonce: bigint;
+    };
   };
 };
 const prepared = new Map<string, Prepared>();
@@ -819,6 +986,157 @@ async function buildAction(body: any): Promise<Prepared> {
       { token: token.name, amount: String(amount), toAccount: target.address, via: "funder wallet (one hop)" },
     );
     return { ...prepared, kind: "send-to-account", exec: { ...prepared.exec!, toAccount: target.address, token: token.name } as any };
+  }
+
+  // ── the bridge's two DEVICE-GATED starts ───────────────────────────────────
+  //
+  // Both spend GAS from an MPC-derived Ethereum account — the account's own deposit address
+  // on the way in, the vault's on the way out — so the gas fields are part of what the
+  // wallet signs (00034 PR-G). That is also why the EVM NONCE is read here, at prepare time,
+  // and carried verbatim into the job: the MPC signs a transaction FROM that address, and a
+  // stale nonce produces one the chain will not accept.
+
+  if (kind === "bridge-deposit-start") {
+    requireBridge();
+    const token = await resolveToken(String(body.token ?? ""));
+    const amountRaw = toRaw(String(body.amount ?? "0"), token.decimals);
+    if (amountRaw <= 0n) throw new Error("amount must be positive");
+    // Stateless custody keeps ONE coin per colour in this console's store and there is no
+    // in-circuit merge, so a second bridged coin of the same colour would displace the first
+    // (it would still be the account's, and still discoverable by an inbox walk — but not by
+    // this console). Refused here rather than after the tokens have moved on Sepolia.
+    if (record.coins[token.colour]) {
+      throw new Error(
+        `this account already holds a bridged ${token.symbol} coin of ` +
+        `${fromRaw(record.coins[token.colour]!.value, token.decimals)}. Stateless custody has no ` +
+        "in-circuit merge and this console keeps one coin per colour: spend, withdraw or offer it first",
+      );
+    }
+    assertCapHeadroom(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
+    const cfg = bridgeConfigFor(token.erc20);
+    const recipient: BridgeRecipient = { kind: "account", accountId: address };
+    const depositAddress = depositAddressOf(cfg, recipient);
+    const provider = evmProvider();
+    let evmNonce: bigint;
+    let held: { token: bigint; eth: bigint };
+    try {
+      const erc20 = new ethers.Contract(token.erc20, ERC20_ABI, provider);
+      const [nonce, bal, eth] = await Promise.all([
+        provider.getTransactionCount(depositAddress, "latest"),
+        (erc20 as any).balanceOf(depositAddress) as Promise<bigint>,
+        provider.getBalance(depositAddress),
+      ]);
+      evmNonce = BigInt(nonce);
+      held = { token: BigInt(bal), eth: BigInt(eth) };
+    } finally {
+      provider.destroy();
+    }
+    // FR-004: refuse BEFORE any Midnight transaction, naming the exact shortfall. A start
+    // whose deposit address is empty burns DUST and a device entry for a request whose
+    // Ethereum leg can only ever return false.
+    if (held.token < amountRaw) {
+      throw new Error(
+        `${depositAddress} holds ${fromRaw(held.token, token.decimals)} ${token.symbol}, and this ` +
+        `deposit needs ${fromRaw(amountRaw, token.decimals)}. Send ` +
+        `${fromRaw(amountRaw - held.token, token.decimals)} ${token.symbol} to that address first`,
+      );
+    }
+    if (held.eth < GAS_BUDGET_WEI) {
+      throw new Error(
+        `${depositAddress} holds ${formatEth(held.eth)} ETH, and the MPC-signed transfer can cost up to ` +
+        `${formatEth(GAS_BUDGET_WEI)} ETH. Send ${formatEth(GAS_FUNDING_WEI - held.eth)} ETH to that address first`,
+      );
+    }
+    const preparedDeposit = finish(
+      { op: "bridgeDepositStart", erc20: hexToBytes(token.erc20), amount: amountRaw, evm: { ...EVM_GAS, nonce: evmNonce } },
+      {
+        direction: "deposit", recipient: "my account", token: token.symbol,
+        amount: `${fromRaw(amountRaw, token.decimals)} ${token.symbol}`,
+        amountRaw: String(amountRaw), erc20: token.erc20, colour: token.colour,
+        depositAddress, depositAddressHolds: `${fromRaw(held.token, token.decimals)} ${token.symbol} / ${formatEth(held.eth)} ETH`,
+        evmNonce: String(evmNonce), gasBudgetEth: formatEth(GAS_BUDGET_WEI),
+        attestation: ATTESTATION_NOTE,
+      },
+    );
+    return {
+      ...preparedDeposit,
+      exec: { ...preparedDeposit.exec!, bridge: { token, amountRaw, depositAddress, evmNonce } },
+    };
+  }
+
+  if (kind === "bridge-withdraw-start") {
+    requireBridge();
+    const token = await resolveToken(String(body.token ?? ""));
+    const amountRaw = toRaw(String(body.amount ?? "0"), token.decimals);
+    if (amountRaw <= 0n) throw new Error("amount must be positive");
+    const held = record.coins[token.colour];
+    if (!held) throw new Error(`this account holds no bridged ${token.symbol} coin`);
+    if (BigInt(held.value) < amountRaw) {
+      throw new Error(
+        `the account's ${token.symbol} coin is ${fromRaw(held.value, token.decimals)}; stateless custody ` +
+        "has no in-circuit merge, so at most that can be withdrawn in one call",
+      );
+    }
+    const dest = String(body.dest ?? `0x${owner}`).trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) throw new Error("dest must be a 0x…20-byte EVM address");
+    // A withdrawal moves tokens OUT of the bridge, so it does not consume the token cap —
+    // but its gas does leave the operator's wallet, so the ETH half is checked.
+    assertCapHeadroom(token.symbol, 0n, token.decimals, GAS_FUNDING_WEI);
+    const cfg = bridgeConfigFor(token.erc20);
+    const vaultEvm = vaultEvmAddressFor(cfg);
+    const provider = evmProvider();
+    let evmNonce: bigint;
+    let vaultEth: bigint;
+    let vaultToken: bigint;
+    try {
+      const erc20 = new ethers.Contract(token.erc20, ERC20_ABI, provider);
+      const [nonce, eth, bal] = await Promise.all([
+        provider.getTransactionCount(vaultEvm, "latest"),
+        provider.getBalance(vaultEvm),
+        (erc20 as any).balanceOf(vaultEvm) as Promise<bigint>,
+      ]);
+      evmNonce = BigInt(nonce);
+      vaultEth = BigInt(eth);
+      vaultToken = BigInt(bal);
+    } finally {
+      provider.destroy();
+    }
+    // A withdrawal is paid out of the VAULT's own Ethereum account and its gas comes from
+    // there too, so both have to be present before the coin is surrendered.
+    if (vaultToken < amountRaw) {
+      throw new Error(
+        `the vault's Ethereum account ${vaultEvm} holds ${fromRaw(vaultToken, token.decimals)} ${token.symbol}, ` +
+        `less than the ${fromRaw(amountRaw, token.decimals)} this withdrawal pays out`,
+      );
+    }
+    if (vaultEth < GAS_BUDGET_WEI) {
+      throw new Error(
+        `the vault's Ethereum account ${vaultEvm} holds ${formatEth(vaultEth)} ETH and the MPC-signed ` +
+        `transfer can cost up to ${formatEth(GAS_BUDGET_WEI)}. Send ${formatEth(GAS_FUNDING_WEI - vaultEth)} ETH there first`,
+      );
+    }
+    const coin = {
+      nonce: hexToBytes(held.nonceHex), color: hexToBytes(held.colorHex),
+      value: BigInt(held.value), mt_index: BigInt(held.mtIndex),
+    };
+    const preparedWithdraw = finish(
+      {
+        op: "bridgeWithdrawStart",
+        dest: hexToBytes(dest), color: hexToBytes(token.colour), amount: amountRaw,
+        erc20: hexToBytes(token.erc20), coin, evm: { ...EVM_GAS, nonce: evmNonce },
+      },
+      {
+        direction: "withdraw", token: token.symbol,
+        amount: `${fromRaw(amountRaw, token.decimals)} ${token.symbol}`,
+        amountRaw: String(amountRaw), erc20: token.erc20, colour: token.colour,
+        dest, vaultEvmAddress: vaultEvm, evmNonce: String(evmNonce),
+        gasBudgetEth: formatEth(GAS_BUDGET_WEI), attestation: ATTESTATION_NOTE,
+      },
+    );
+    return {
+      ...preparedWithdraw,
+      exec: { ...preparedWithdraw.exec!, bridge: { token, amountRaw, destEvmAddress: dest, evmNonce } },
+    };
   }
 
   if (kind === "swap") {
@@ -1025,6 +1343,12 @@ function gatedJob(prep: Prepared, signatureHex: string): Job {
     jlog(j, `re-deriving the ${prep.kind} authorisation from the prepared context (authNonce ${exec.ctx.authNonce})`);
     const auth = await authorise(device, exec.ctx, exec.request!, exec.useCounter);
     jlog(j, `signature verified: the point recovered from it hashes to 0x${prep.owner}`);
+
+    // The two bridge starts run their own transport: each is followed by an off-chain MPC
+    // round trip and a settle, which cannot live inside one wallet session (ONE FACADE PER
+    // TRANSACTION, master plan T7.5).
+    if (exec.request!.op === "bridgeDepositStart") return await runBridgeDepositStart(j, prep, auth);
+    if (exec.request!.op === "bridgeWithdrawStart") return await runBridgeWithdrawStart(j, prep, auth);
 
     await withProveRetry(j, prep.kind, () => session(prep.kind, async (walletCtx) => {
       const t0 = Date.now();
@@ -1410,6 +1734,521 @@ function clearLiveOffer(offerId: string): void {
   if (rec) writeRecord({ ...rec, liveOffer: null });
 }
 
+// ── the ERC20 bridge (project 00035 PR-B) ────────────────────────────────────
+//
+// FOUR ACTS, AND THE MIDDLE ONE IS NOT ON MIDNIGHT. Nothing on Midnight can wait for an
+// Ethereum transaction inside one proof, so a round trip is always: a START transaction that
+// asks the MPC for a signature, a RELAY (poll the singleton, broadcast, poll for the
+// attestation) that happens off-chain, and a SETTLE transaction that verifies the
+// attestation in-circuit. The start is device-gated on the account path and permissionless
+// at the vault's root on the wallet path; the settle is permissionless either way, which is
+// what makes `POST /api/bridge/relay/:id` able to finish a request the operator started
+// hours ago (spec FR-006).
+//
+// THE RECORD IS THE RESUME KEY. Everything a settle needs — the request id, the relay
+// result, the planned coin — is written to /aa/out/aa-bridge.json as it is learned, so a
+// console restart loses time and nothing else. What it CANNOT survive is `./down.sh -v`:
+// every deposit address is derived from the vault CONTRACT address and the chain is new
+// (question Q13), so funds parked at a wiped stack's deposit address need the static root
+// and a manual tool to recover. The UI says so where it shows the address.
+
+const bridgeVaultCompiled = () =>
+  CompiledContract.make("Erc20Vault", (VaultModule as any).Contract).pipe(
+    CompiledContract.withVacantWitnesses,
+    CompiledContract.withCompiledFileAssets(VAULT_ZK_PATH),
+  );
+
+/** Connect a wallet to the deployed vault — the WALLET-recipient path's transport. The
+ *  vault is witness-free, so its private state is `{}` and its zk bundle is a LEAF: the
+ *  proof provider still spans the whole artefact root (providersFor), because a call tree
+ *  needs every contract's keys. */
+async function connectVault(walletCtx: any): Promise<{ handle: any; providers: any; privateStateId: string }> {
+  requireBridge();
+  const providers = await providersFor(walletCtx, VAULT_ZK_PATH);
+  const privateStateId = `Erc20Vault-console-${Date.now().toString(36)}`;
+  const handle: any = await (findDeployedContract as any)(providers, {
+    contractAddress: VAULT_ADDRESS!,
+    compiledContract: bridgeVaultCompiled(),
+    privateStateId,
+    initialPrivateState: {},
+  });
+  return { handle, providers, privateStateId };
+}
+
+/** The value a circuit returned, whichever spelling this midnight-js build uses. Same four
+ *  candidates the fork's own `bridge.ts` tries; it keeps the shape private, and duplicating
+ *  four property names is better than reaching into it. */
+function circuitResultOf(r: any): any {
+  for (const v of [r?.private?.result, r?.private?.circuitResult, r?.private?.returnValue, r?.result]) {
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+const txIdOf = (r: any): string => String(r?.public?.txId ?? r?.public?.transactionHash ?? "");
+
+/** An `AccountBridge` with no account behind it: enough for `relay()` and `plannedCoin()`,
+ *  which read only the public data provider and the config. The fork's own driver builds the
+ *  same stub to derive a deposit address without touching the chain. */
+const readOnlyBridge = (cfg: any) =>
+  new AccountBridge({ providers: { publicDataProvider: publicData } } as never, cfg, new Uint8Array(32));
+
+/** The open request ids in one direction, read straight from the vault's ledger state. */
+async function vaultRequestIds(cfg: any, kind: "deposit" | "withdraw"): Promise<string[]> {
+  return await readOnlyBridge(cfg).pendingRequests(kind);
+}
+
+/** A shielded address (or a raw 64-hex coin public key, for a caller that has one) as a
+ *  bridge recipient. The ENCRYPTION key is what makes the minted coin visible to its owner
+ *  (00034 question Q42), and only the bech32m address carries both halves — so a bare coin
+ *  public key is accepted for the derivation but refused for a deposit. */
+function walletRecipientFrom(shieldedAddress: string): BridgeRecipient {
+  const a = String(shieldedAddress ?? "").trim();
+  if (!a.startsWith("mn_shield-addr")) {
+    throw new Error("a Midnight recipient must be a mn_shield-addr… address: it carries BOTH the coin "
+      + "public key and the encryption key, and without the second one the bridged coin lands where "
+      + "its owner cannot see it (00034 Q42)");
+  }
+  const dec: any = parseMidnightBech32m(a).decode(ShieldedAddress as any, CONFIG.networkId as any);
+  return {
+    kind: "wallet",
+    coinPublicKey: String(dec.coinPublicKeyString()).replace(/^0x/, "").toLowerCase(),
+    encryptionPublicKey: String(dec.encryptionPublicKeyString()).replace(/^0x/, "").toLowerCase(),
+    shieldedAddress: a,
+  };
+}
+
+/** The frontend wallet's shielded address, if this stack published one. PUBLIC data: the
+ *  console is never given the seed (the SPA's page already exposes that to anyone who can
+ *  load it, which docs/KNOWN-LIMITATIONS.md records). */
+function frontendWalletAddress(): string | null {
+  const fromEnv = (process.env["AA_FRONTEND_WALLET_SHIELDED_ADDRESS"] ?? "").trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const doc = JSON.parse(readFileSync("/aa/out/frontend-wallet.json", "utf-8"));
+    const a = String(doc.shielded ?? "").trim();
+    return a.startsWith("mn_shield-addr") ? a : null;
+  } catch {
+    return null;
+  }
+}
+
+function bridgeLog(rec: BridgeRequest, j: Job | null, line: string): BridgeRequest {
+  if (j) jlog(j, line);
+  else log(`bridge ${rec.requestId.slice(0, 8)} ${line}`);
+  return upsertRequest({ ...rec, log: [...rec.log, `${new Date().toISOString().slice(11, 19)} ${line}`] });
+}
+
+/**
+ * The relayer loop for one request: wait for the MPC's signature, broadcast the signed
+ * Ethereum transaction, wait until an attestation verifies. Idempotent — a request whose
+ * relay result is already recorded returns it rather than asking the MPC again, which is
+ * what makes `POST /api/bridge/relay/:id` safe to press twice.
+ */
+async function runRelay(j: Job, rec0: BridgeRequest): Promise<BridgeRequest> {
+  let rec = rec0;
+  if (rec.relay) {
+    bridgeLog(rec, j, "the attestation is already recorded — going straight to the settle");
+    return rec;
+  }
+  const token = await bridgedToken(rec.erc20);
+  const cfg = bridgeConfigFor(token.erc20);
+  const expectedSigner = rec.direction === "deposit" ? rec.depositAddress! : vaultEvmAddressFor(cfg);
+  rec = bridgeLog(rec, j, `relay: the MPC must sign as ${expectedSigner}; waiting up to `
+    + `${Math.round(MPC_TIMEOUT_MS / 60000)} min`);
+  const t0 = Date.now();
+  const result: any = await readOnlyBridge(cfg).relay(rec.direction, rec.requestId, expectedSigner, {
+    timeoutMs: MPC_TIMEOUT_MS,
+    log: (line) => jlog(j, `  ${line.trim()}`),
+  });
+  const seconds = ((Date.now() - t0) / 1000).toFixed(0);
+  rec = upsertRequest({
+    ...rec,
+    relay: serialiseRelay(result),
+    evmTxHash: result.evmTxHash ?? null,
+    evmStatus: result.evmStatus ?? null,
+    attestedKind: result.kind,
+    attestationLabel: attestationLabelFor(String(result.kind)),
+    state: "attested",
+  });
+  rec = bridgeLog(rec, j, `attested ${result.kind} after ${seconds}s`
+    + (result.evmTxHash ? `; EVM tx ${result.evmTxHash} status ${String(result.evmStatus)}` : " (not broadcast)"));
+  // The block number is a second read, and a failure to get it must not lose the relay.
+  if (result.evmTxHash) {
+    const provider = evmProvider();
+    try {
+      const receipt = await provider.getTransactionReceipt(result.evmTxHash);
+      if (receipt) rec = upsertRequest({ ...rec, evmBlock: Number(receipt.blockNumber) });
+    } catch { /* the hash and the status are already recorded */ } finally { provider.destroy(); }
+  }
+  return rec;
+}
+
+/** Settle a deposit into an ACCOUNT: `bridge_deposit_complete` claims the mint, files its
+ *  inbox entry and returns the coin, whose tree position is then captured so `held_coin`
+ *  can spend it (question Q68 — a position we cannot read is a coin we cannot spend). */
+async function settleDepositToAccount(j: Job, rec0: BridgeRequest): Promise<BridgeRequest> {
+  let rec = rec0;
+  const record = requireRecord(rec.accountId!);
+  const token = await bridgedToken(rec.erc20);
+  const cfg = bridgeConfigFor(token.erc20);
+  const relayResult = deserialiseRelay(rec.relay);
+  await withProveRetry(j, "bridge_deposit_complete", () => session("bridge-deposit-complete", async (walletCtx) => {
+    const account = await connectAccount(walletCtx, record);
+    const bridge = new AccountBridge(account, cfg, hexToBytes(record.encPublicKey));
+    const planned = rec.planned
+      ? {
+        mintNonce: hexToBytes(rec.planned.mintNonceHex), nonce: hexToBytes(rec.planned.mintNonceHex),
+        color: hexToBytes(rec.planned.colourHex), value: BigInt(rec.planned.value),
+      }
+      : await bridge.plannedCoin("deposit", rec.requestId, randomMintNonce());
+    rec = upsertRequest({
+      ...rec,
+      planned: {
+        mintNonceHex: toHex(planned.mintNonce), colourHex: toHex(planned.color), value: String(planned.value),
+      },
+    });
+    jlog(j, `proving bridge_deposit_complete (k=18) — claiming `
+      + `${fromRaw(planned.value, token.decimals)} ${token.symbol} and sealing its inbox entry`);
+    const out = await bridge.completeDeposit(rec.requestId, relayResult, planned);
+    rec = upsertRequest({ ...rec, settleTxId: out.txId });
+    if (!out.coin) {
+      rec = upsertRequest({ ...rec, state: "closed-false" });
+      rec = bridgeLog(rec, j, `settled with NO mint — the ERC20 transfer returned false. The tokens are `
+        + `still at ${rec.depositAddress} and a new deposit can sweep them`);
+      return;
+    }
+    if (!out.entryMatchesCoin) {
+      jlog(j, "WARNING: the coin the circuit returned is not the one the inbox entry describes — the coin "
+        + "is claimed, but a client rebuilding from chain data alone would not find it (backfill needed)");
+    }
+    const captured = await captureCoin(record, out.txId, out.coin as any, j);
+    rec = bridgeLog(rec, j, `settled — tx=${out.txId}; the account now holds `
+      + `${fromRaw(BigInt((captured.coins[token.colour] ?? { value: "0" }).value), token.decimals)} ${token.symbol}`);
+    rec = upsertRequest({ ...rec, state: "completed" });
+  }, { requireFunds: true }));
+  return rec;
+}
+
+/**
+ * Settle a deposit to a WALLET key: the vault mints straight to that key at the transaction
+ * root, and the console never holds anything of the recipient's.
+ *
+ * `callTx` cannot carry the recipient's encryption key, so this builds, proves, balances and
+ * submits by hand with `additionalCoinEncPublicKeyMappings` — the same three lines
+ * midnight-js's own `submitTxCore` runs, and the same shape `CustodyAccount.withdrawShieldedToWallet`
+ * uses for the identical reason (00034 question Q42). Without the mapping the coin still
+ * belongs to the recipient and they simply cannot SEE it, which is a silent failure.
+ */
+async function settleDepositToWallet(j: Job, rec0: BridgeRequest): Promise<BridgeRequest> {
+  let rec = rec0;
+  const token = await bridgedToken(rec.erc20);
+  const cfg = bridgeConfigFor(token.erc20);
+  const relayResult = deserialiseRelay(rec.relay);
+  const recipient = rec.recipient as Extract<BridgeRecipient, { kind: "wallet" }>;
+  await withProveRetry(j, "vault completeDeposit", () => session("bridge-wallet-complete", async (walletCtx) => {
+    const { handle, providers, privateStateId } = await connectVault(walletCtx);
+    void handle;
+    const planned = rec.planned
+      ? {
+        mintNonce: hexToBytes(rec.planned.mintNonceHex),
+        color: hexToBytes(rec.planned.colourHex), value: BigInt(rec.planned.value),
+      }
+      : await (async () => {
+        const p = await readOnlyBridge(cfg).plannedCoin("deposit", rec.requestId, randomMintNonce());
+        return { mintNonce: p.mintNonce, color: p.color, value: p.value };
+      })();
+    rec = upsertRequest({
+      ...rec,
+      planned: { mintNonceHex: toHex(planned.mintNonce), colourHex: toHex(planned.color), value: String(planned.value) },
+    });
+    const { createUnprovenCallTx } = await import("@midnight-ntwrk/midnight-js-contracts");
+    // BOTH SPELLINGS. midnight-js normalises the map's keys with `parseCoinPublicKeyToHex`,
+    // and the SDK's own wallet state renders these keys 0x-prefixed while the address codec
+    // renders them bare. Offering both costs one map entry and removes a class of silent
+    // "the coin landed and nobody can see it" failures.
+    const mappings = new Map<any, any>([
+      [recipient.coinPublicKey, recipient.encryptionPublicKey],
+      [`0x${recipient.coinPublicKey}`, `0x${recipient.encryptionPublicKey}`],
+    ]);
+    jlog(j, `proving the vault's completeDeposit at ROOT — minting `
+      + `${fromRaw(planned.value, token.decimals)} ${token.symbol} to ${recipientLabel(recipient)}`);
+    const built: any = await (createUnprovenCallTx as any)(providers, {
+      compiledContract: bridgeVaultCompiled(),
+      contractAddress: VAULT_ADDRESS!,
+      circuitId: "completeDeposit",
+      args: [hexToBytes(rec.requestId), relayResult.event, relayResult.serializedOutput, planned.mintNonce],
+      privateStateId,
+      additionalCoinEncPublicKeyMappings: mappings,
+    });
+    // prove → balance → submit, in that order and with NOTHING in between: the wallet
+    // balances through `balanceUnboundTransaction`, so binding first is refused after a
+    // successful proof (00034 S-L finding, recorded in the fork's account.ts).
+    const proven: any = await providers.proofProvider.proveTx(built.private.unprovenTx);
+    const balanced: any = await providers.walletProvider.balanceTx(proven);
+    const submitted: any = await providers.midnightProvider.submitTx(balanced);
+    const txId = String(
+      (typeof submitted === "string" ? submitted : submitted?.txId)
+      ?? balanced?.transactionHash?.()?.toString?.() ?? balanced?.transactionHash ?? "",
+    );
+    const claimed = circuitResultOf(built.private) ?? circuitResultOf(built);
+    const minted = claimed === undefined ? null : (claimed.is_some === undefined ? claimed : (claimed.is_some ? claimed.value : null));
+    rec = upsertRequest({ ...rec, settleTxId: txId, state: minted ? "completed" : "closed-false" });
+    rec = bridgeLog(rec, j, minted
+      ? `settled — tx=${txId}; ${fromRaw(BigInt(minted.value), token.decimals)} ${token.symbol} minted to `
+        + `${recipient.shieldedAddress ?? recipientLabel(recipient)}. That wallet sees it by syncing; this console holds none of its keys`
+      : `settled with NO mint — the ERC20 transfer returned false; the tokens are still at ${rec.depositAddress}`);
+  }, { requireFunds: true }));
+  return rec;
+}
+
+/** Settle a withdrawal. A successful one mints nothing back; a `transfer` that returned
+ *  false, or one that never executed, re-mints to the account, which claims it here. */
+async function settleWithdraw(j: Job, rec0: BridgeRequest): Promise<BridgeRequest> {
+  let rec = rec0;
+  const record = requireRecord(rec.accountId!);
+  const token = await bridgedToken(rec.erc20);
+  const cfg = bridgeConfigFor(token.erc20);
+  const relayResult = deserialiseRelay(rec.relay);
+  const neverExecuted = relayResult.kind === "never-executed";
+  await withProveRetry(j, "bridge_withdraw_settle", () => session("bridge-withdraw-settle", async (walletCtx) => {
+    const account = await connectAccount(walletCtx, record);
+    const bridge = new AccountBridge(account, cfg, hexToBytes(record.encPublicKey));
+    const planned = await bridge.plannedCoin("withdraw", rec.requestId, randomMintNonce());
+    jlog(j, neverExecuted
+      ? "the transaction never executed — proving bridge_withdraw_refund (the amount is re-minted)"
+      : "proving bridge_withdraw_complete");
+    const out = neverExecuted
+      ? await bridge.refundWithdraw(rec.requestId, relayResult, planned)
+      : await bridge.completeWithdraw(rec.requestId, relayResult, planned);
+    rec = upsertRequest({ ...rec, settleTxId: out.txId });
+    if (out.coin) {
+      await captureCoin(record, out.txId, out.coin as any, j);
+      rec = upsertRequest({ ...rec, state: neverExecuted ? "refunded" : "closed-false" });
+      rec = bridgeLog(rec, j, `settled — tx=${out.txId}; `
+        + `${fromRaw(BigInt(out.coin.value), token.decimals)} ${token.symbol} came back to the account`);
+    } else {
+      rec = upsertRequest({ ...rec, state: "completed" });
+      rec = bridgeLog(rec, j, `settled — tx=${out.txId}; the tokens are on `
+        + `${rec.destEvmAddress} and nothing was minted back, which is what a successful withdrawal looks like`);
+    }
+  }, { requireFunds: true }));
+  return rec;
+}
+
+/** Relay (if it has not happened yet) and settle. The one place the two halves are joined,
+ *  used by every start job and by `POST /api/bridge/relay/:id`. */
+async function relayAndSettle(j: Job, rec0: BridgeRequest): Promise<void> {
+  let rec = rec0;
+  try {
+    rec = await runRelay(j, rec);
+    rec = rec.direction === "withdraw"
+      ? await settleWithdraw(j, rec)
+      : rec.recipient.kind === "account"
+        ? await settleDepositToAccount(j, rec)
+        : await settleDepositToWallet(j, rec);
+    j.txId = rec.settleTxId ?? j.txId;
+    j.data = { ...(j.data as any ?? {}), request: findRequest(rec.requestId) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    upsertRequest({ ...(findRequest(rec.requestId) ?? rec), error: msg });
+    jlog(j, `the request is PERSISTED as ${rec.requestId} — resume with `
+      + `POST /api/bridge/relay/${rec.requestId} once the cause is cleared`);
+    throw e;
+  }
+}
+
+/** Resume a request from its persisted id (spec FR-006). The start is never redone. */
+function bridgeResumeJob(requestId: string): Job {
+  return enqueue("bridge-resume", async (j) => {
+    const rec = requireRequest(requestId);
+    if (rec.state === "completed" || rec.state === "refunded" || rec.state === "closed-false") {
+      jlog(j, `request ${rec.requestId.slice(0, 16)}… is already ${rec.state} — nothing to do`);
+      j.data = { request: rec };
+      return;
+    }
+    jlog(j, `resuming ${rec.direction} ${rec.requestId.slice(0, 16)}… from state '${rec.state}'`);
+    await relayAndSettle(j, upsertRequest({ ...rec, jobId: j.id, error: null }));
+  });
+}
+
+/**
+ * The WALLET-recipient deposit start: the console's relay wallet calls the vault at ROOT
+ * with `recipient = left(coin public key)`.
+ *
+ * No signature is involved and none is possible — the account arm is not in this path at
+ * all. What protects the funds is the derivation: the deposit address is
+ * `f(root key, vault, depositPath(recipient))`, so tokens sent there can only ever be minted
+ * to that recipient, whoever submits the calls (spec FR-017 of project 00034).
+ */
+function bridgeWalletDepositJob(token: BridgedToken, amountRaw: bigint, recipient: BridgeRecipient): Job {
+  return enqueue("bridge-deposit-wallet", async (j) => {
+    requireBridge();
+    const cfg = bridgeConfigFor(token.erc20);
+    const depositAddress = depositAddressOf(cfg, recipient);
+    const provider = evmProvider();
+    let evmNonce = 0n;
+    try {
+      const erc20 = new ethers.Contract(token.erc20, ERC20_ABI, provider);
+      const [nonce, bal, eth] = await Promise.all([
+        provider.getTransactionCount(depositAddress, "latest"),
+        (erc20 as any).balanceOf(depositAddress) as Promise<bigint>,
+        provider.getBalance(depositAddress),
+      ]);
+      evmNonce = BigInt(nonce);
+      if (BigInt(bal) < amountRaw) {
+        throw new Error(`${depositAddress} holds ${fromRaw(BigInt(bal), token.decimals)} ${token.symbol}, `
+          + `and this deposit needs ${fromRaw(amountRaw, token.decimals)}`);
+      }
+      if (BigInt(eth) < GAS_BUDGET_WEI) {
+        throw new Error(`${depositAddress} holds ${formatEth(BigInt(eth))} ETH and the MPC-signed transfer `
+          + `can cost up to ${formatEth(GAS_BUDGET_WEI)} — send ${formatEth(GAS_FUNDING_WEI - BigInt(eth))} ETH there first`);
+      }
+    } finally {
+      provider.destroy();
+    }
+    chargeCap(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
+    jlog(j, `deposit ${fromRaw(amountRaw, token.decimals)} ${token.symbol} → ${recipientLabel(recipient)}`);
+    jlog(j, `deposit address ${depositAddress}, its Ethereum nonce ${evmNonce}`);
+
+    const before = new Set(await vaultRequestIds(cfg, "deposit"));
+    let requestId = "";
+    let startTxId = "";
+    await withProveRetry(j, "vault startDeposit", () => session("bridge-wallet-start", async (walletCtx) => {
+      const { handle } = await connectVault(walletCtx);
+      jlog(j, "proving the vault's startDeposit at ROOT (vault → SignetSigner.signBidirectional)…");
+      const r = await handle.callTx.startDeposit(
+        evmNonce, EVM_GAS.gasLimit, EVM_GAS.maxFeePerGas, EVM_GAS.maxPriorityFeePerGas, EVM_GAS.keyVersion,
+        hexToBytes(token.erc20), amountRaw, recipientEither(recipient),
+      );
+      startTxId = txIdOf(r);
+    }));
+    const after = await vaultRequestIds(cfg, "deposit");
+    const fresh = after.filter((id) => !before.has(id));
+    requestId = (fresh[fresh.length - 1] ?? after[after.length - 1] ?? "").toString();
+    if (!requestId) throw new Error("the vault records no open deposit request after the start");
+    let rec = upsertRequest(newRequestRecord({
+      requestId, direction: "deposit", recipient,
+      accountId: null, erc20: token.erc20, symbol: token.symbol, decimals: token.decimals,
+      colour: token.colour, amountRaw: String(amountRaw),
+      depositAddress, startTxId, jobId: j.id, state: "started",
+    }));
+    j.txId = startTxId;
+    rec = bridgeLog(rec, j, `start tx ${startTxId}; request ${requestId}`);
+    await relayAndSettle(j, rec);
+  });
+}
+
+
+/**
+ * The ACCOUNT-path deposit start, after the browser has signed.
+ *
+ * This is `AccountBridge.startDeposit`'s body minus the `authorise` step: the console
+ * authorises in a separate HTTP round trip (prepare → wallet → submit), so it re-derives the
+ * authorisation from the PREPARED context and then makes the same call the library makes.
+ * The fork's own driver calls `callTx` directly for the same reason in several places.
+ */
+async function runBridgeDepositStart(j: Job, prep: Prepared, auth: unknown): Promise<void> {
+  requireBridge();
+  const exec = prep.exec!;
+  const record = requireRecord(exec.address);
+  const { token, amountRaw, depositAddress, evmNonce } = exec.bridge!;
+  const req = exec.request as Extract<AuthRequest, { op: "bridgeDepositStart" }>;
+  const cfg = bridgeConfigFor(token.erc20);
+  // Charged HERE, one line before the only transaction that commits anything (FR-017).
+  chargeCap(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
+  jlog(j, `deposit ${fromRaw(amountRaw, token.decimals)} ${token.symbol} → account ${exec.address.slice(0, 18)}…`);
+  jlog(j, `deposit address ${depositAddress}, its Ethereum nonce ${evmNonce}`);
+
+  const before = new Set(await vaultRequestIds(cfg, "deposit"));
+  let startTxId = "";
+  await withProveRetry(j, "bridge_deposit_start_with_evm", () => session("bridge-deposit-start", async (walletCtx) => {
+    const account = await connectAccount(walletCtx, record);
+    jlog(j, "proving bridge_deposit_start_with_evm (k=18; account → vault → SignetSigner, one transaction, "
+      + "three contract calls)…");
+    const r = await account.callTx.bridge_deposit_start_with_evm(
+      req.erc20, req.amount, req.evm.nonce, req.evm.gasLimit, req.evm.maxFeePerGas,
+      req.evm.maxPriorityFeePerGas, req.evm.keyVersion, ...authArgs(auth as any),
+    );
+    startTxId = txIdOf(r);
+    await persistAccount(account, record);
+  }));
+  const after = await vaultRequestIds(cfg, "deposit");
+  const fresh = after.filter((id) => !before.has(id));
+  const requestId = String(fresh[fresh.length - 1] ?? after[after.length - 1] ?? "");
+  if (!requestId) throw new Error("the vault records no open deposit request after the start");
+  j.txId = startTxId;
+  let rec = upsertRequest(newRequestRecord({
+    requestId, direction: "deposit",
+    recipient: { kind: "account", accountId: exec.address },
+    accountId: exec.address,
+    erc20: token.erc20, symbol: token.symbol, decimals: token.decimals, colour: token.colour,
+    amountRaw: String(amountRaw), depositAddress, startTxId, jobId: j.id, state: "started",
+  }));
+  rec = bridgeLog(rec, j, `start tx ${startTxId}; request ${requestId}`);
+  await relayAndSettle(j, rec);
+}
+
+/** The ACCOUNT-path withdraw start, after the browser has signed. The account sends the coin
+ *  to the vault, the vault claims it and calls the singleton — one transaction. The change,
+ *  if any, comes back to the account and is captured here; it has NO inbox entry (the nonce
+ *  the standard library gives it is not derivable in advance, 00034 question Q46), which is
+ *  said in the log rather than papered over. */
+async function runBridgeWithdrawStart(j: Job, prep: Prepared, auth: unknown): Promise<void> {
+  requireBridge();
+  const exec = prep.exec!;
+  let record = requireRecord(exec.address);
+  const { token, amountRaw, destEvmAddress } = exec.bridge!;
+  const req = exec.request as Extract<AuthRequest, { op: "bridgeWithdrawStart" }>;
+  const cfg = bridgeConfigFor(token.erc20);
+  chargeCap(token.symbol, 0n, token.decimals, GAS_FUNDING_WEI);
+  jlog(j, `withdraw ${fromRaw(amountRaw, token.decimals)} ${token.symbol} → ${destEvmAddress}`);
+
+  const before = new Set(await vaultRequestIds(cfg, "withdraw"));
+  let startTxId = "";
+  let change: any = null;
+  const colour = token.colour;
+  await withProveRetry(j, "bridge_withdraw_start_with_evm", () => session("bridge-withdraw-start", async (walletCtx) => {
+    const { result, record: after } = await spendWithCandidates(j, record, colour, walletCtx, async (account) => {
+      jlog(j, "proving bridge_withdraw_start_with_evm (k=18)…");
+      return await account.callTx.bridge_withdraw_start_with_evm(
+        req.dest, req.color, req.amount, req.evm.nonce, req.evm.gasLimit, req.evm.maxFeePerGas,
+        req.evm.maxPriorityFeePerGas, req.evm.keyVersion, req.erc20, new Uint8Array(192),
+        ...authArgs(auth as any),
+      );
+    });
+    record = after;
+    startTxId = txIdOf(result);
+    const r = circuitResultOf(result);
+    change = r && r.is_some ? r.value : null;
+  }));
+  // The surrendered coin is gone from the account's custody whatever happens next.
+  let next = { ...record, coins: { ...record.coins } };
+  delete next.coins[colour];
+  writeRecord(next);
+  if (change) {
+    jlog(j, `the withdrawal left ${fromRaw(BigInt(change.value), token.decimals)} ${token.symbol} of change — capturing it`);
+    next = await captureCoin(next, startTxId, change, j);
+    jlog(j, "note: the change coin has NO inbox entry (its nonce is not derivable in advance, 00034 Q46) — "
+      + "file one with Append inbox if a client must rediscover it from chain data");
+  }
+  const after = await vaultRequestIds(cfg, "withdraw");
+  const fresh = after.filter((id) => !before.has(id));
+  const requestId = String(fresh[fresh.length - 1] ?? after[after.length - 1] ?? "");
+  if (!requestId) throw new Error("the vault records no open withdraw request after the start");
+  j.txId = startTxId;
+  let rec = upsertRequest(newRequestRecord({
+    requestId, direction: "withdraw",
+    recipient: { kind: "account", accountId: exec.address },
+    accountId: exec.address,
+    erc20: token.erc20, symbol: token.symbol, decimals: token.decimals, colour: token.colour,
+    amountRaw: String(amountRaw), destEvmAddress: destEvmAddress ?? null,
+    startTxId, jobId: j.id, state: "started",
+  }));
+  rec = bridgeLog(rec, j, `start tx ${startTxId}; request ${requestId}`);
+  await relayAndSettle(j, rec);
+}
+
 // ── HTTP ─────────────────────────────────────────────────────────────────────
 
 const json = (data: unknown, status = 200) =>
@@ -1630,16 +2469,155 @@ Bun.serve({
           tokens: tokens.list.map((t) => ({
             name: t.name, label: t.label, family: t.family, color: t.color,
             decimals: t.decimals, issuer: t.issuer,
+            source: t.source ?? "faucet", ...(t.erc20 ? { erc20: t.erc20 } : {}),
           })),
           tokensError: tokens.error,
+          // UNCHANGED, and deliberately: scripts/verify-aa.sh greps for this exact string, and
+          // it names where the FAUCET colours come from. The bridged ones are a second source
+          // and say so per token (`source: "bridged"`), which is what a consumer needs.
           tokensSource: "mint-test-tokens",
+          bridgedTokensSource: "erc20-vault colours (AA_BRIDGE_TOKENS)",
+          bridgedTokensError: bridged.error,
           tokensRegistryRevision: tokens.registryRevision,
           kernelUrl: KERNEL_URL,
           solverFrontendUrl: SOLVER_FRONTEND_PUBLIC_URL,
           faucetUrl: `${FAUCET_PUBLIC_URL.replace(/\/+$/, "")}/?network=${NETWORK_KEY}`,
           devSigner: DEV_SIGNER ? { address: DEV_ADDR } : null,
-          // The bridge tab is only meaningful when the image carries the bridge circuits.
-          bridge: BUILD.withBridge ? { available: true, vault: artifact?.vault ?? null } : { available: false },
+          // The Bridge tab's gate (spec FR-001). `available` is now three facts, not one:
+          // the image's prover keys, a vault whose MPC root somebody actually holds, and an
+          // EVM endpoint. `reasons` says which is missing, so the page can explain itself.
+          // THE RPC URL IS NEVER HERE — it carries the operator's provider key.
+          bridge: {
+            ...bridgeAvailability(),
+            frontendWallet: frontendWalletAddress(),
+            gas: {
+              gasLimit: String(EVM_GAS.gasLimit),
+              maxFeePerGasWei: String(EVM_GAS.maxFeePerGas),
+              budgetEth: formatEth(GAS_BUDGET_WEI),
+              fundEth: formatEth(GAS_FUNDING_WEI),
+            },
+          },
+        });
+      }
+      // ── the bridge (project 00035) ─────────────────────────────────────────
+      //
+      // The two DEVICE-GATED starts are not here: they are `kind: bridge-deposit-start` and
+      // `kind: bridge-withdraw-start` on the existing /api/prepare → wallet → /api/submit
+      // path, because the browser has to sign them. What is here is everything that needs no
+      // signature — the quote, the wallet-recipient deposit, and the resumable relay/settle.
+      if (path === "/api/bridge/tokens") {
+        const a = bridgeAvailability();
+        if (!a.available) return json({ available: false, reasons: a.reasons, tokens: [], errors: {} });
+        const { tokens, errors } = await bridgedTokens();
+        return json({
+          available: true, chainId: a.chainId, attestation: a.attestation,
+          vaultEvmAddress: tokens.length ? vaultEvmAddressFor(bridgeConfigFor(tokens[0]!.erc20)) : null,
+          tokens: tokens.map((t) => ({ ...t, cap: capView(t) })), errors,
+        });
+      }
+      if (path === "/api/bridge/quote" && req.method === "POST") {
+        const body = await req.json();
+        const direction = String(body.direction ?? "deposit");
+        const token = await resolveToken(String(body.token ?? ""));
+        const amountRaw = body.amount === undefined || body.amount === ""
+          ? 0n : toRaw(String(body.amount), token.decimals);
+        const cfg = bridgeConfigFor(token.erc20);
+        const vaultEvmAddress = vaultEvmAddressFor(cfg);
+        if (direction === "withdraw") {
+          const provider = evmProvider();
+          try {
+            const erc20 = new ethers.Contract(token.erc20, ERC20_ABI, provider);
+            const [eth, bal] = await Promise.all([
+              provider.getBalance(vaultEvmAddress),
+              (erc20 as any).balanceOf(vaultEvmAddress) as Promise<bigint>,
+            ]);
+            return json({
+              direction, token, vaultEvmAddress,
+              requiredTokenRaw: String(amountRaw), requiredToken: fromRaw(amountRaw, token.decimals),
+              requiredEthWei: String(GAS_FUNDING_WEI), requiredEth: formatEth(GAS_FUNDING_WEI),
+              gasBudgetEth: formatEth(GAS_BUDGET_WEI),
+              balances: {
+                token: fromRaw(BigInt(bal), token.decimals), tokenRaw: String(bal),
+                eth: formatEth(BigInt(eth)), ethWei: String(eth),
+              },
+              ready: BigInt(bal) >= amountRaw && BigInt(eth) >= GAS_BUDGET_WEI,
+              cap: capView(token),
+              attestation: bridgeAvailability().attestation,
+              note: "a withdrawal is paid out of the vault's OWN Ethereum account and its gas comes from "
+                + "there too — the operator sends that ETH, the console never holds a key",
+            });
+          } finally { provider.destroy(); }
+        }
+        const recipient: BridgeRecipient = body.recipient?.shieldedAddress
+          ? walletRecipientFrom(String(body.recipient.shieldedAddress))
+          : { kind: "account", accountId: String(body.recipient?.account ?? body.accountId ?? "") };
+        if (recipient.kind === "account" && !recipient.accountId) {
+          throw new Error("recipient must be {account: <contract address>} or {shieldedAddress: mn_shield-addr…}");
+        }
+        const depositAddress = depositAddressOf(cfg, recipient);
+        const provider = evmProvider();
+        try {
+          const erc20 = new ethers.Contract(token.erc20, ERC20_ABI, provider);
+          const [bal, eth, nonce] = await Promise.all([
+            (erc20 as any).balanceOf(depositAddress) as Promise<bigint>,
+            provider.getBalance(depositAddress),
+            provider.getTransactionCount(depositAddress, "latest"),
+          ]);
+          const shortToken = amountRaw > BigInt(bal) ? amountRaw - BigInt(bal) : 0n;
+          const shortEth = GAS_BUDGET_WEI > BigInt(eth) ? GAS_FUNDING_WEI - BigInt(eth) : 0n;
+          return json({
+            direction: "deposit", token, depositAddress, vaultEvmAddress,
+            recipient: recipient.kind === "account"
+              ? { kind: "account", accountId: recipient.accountId }
+              : { kind: "wallet", shieldedAddress: recipient.shieldedAddress, coinPublicKey: recipient.coinPublicKey },
+            requiredTokenRaw: String(amountRaw), requiredToken: fromRaw(amountRaw, token.decimals),
+            requiredEthWei: String(GAS_FUNDING_WEI), requiredEth: formatEth(GAS_FUNDING_WEI),
+            gasBudgetEth: formatEth(GAS_BUDGET_WEI),
+            balances: {
+              token: fromRaw(BigInt(bal), token.decimals), tokenRaw: String(bal),
+              eth: formatEth(BigInt(eth)), ethWei: String(eth), evmNonce: String(nonce),
+            },
+            shortfall: {
+              token: fromRaw(shortToken, token.decimals), tokenRaw: String(shortToken),
+              eth: formatEth(shortEth), ethWei: String(shortEth),
+            },
+            ready: shortToken === 0n && shortEth === 0n && amountRaw > 0n,
+            cap: capView(token),
+            attestation: bridgeAvailability().attestation,
+            warning: "this deposit address is derived from the VAULT CONTRACT address, so it dies with "
+              + "`./down.sh -v`: fund it, start, relay and complete within one stack session (question Q13)",
+          });
+        } finally { provider.destroy(); }
+      }
+      if (path === "/api/bridge/deposit/start" && req.method === "POST") {
+        // The WALLET-recipient path only. An account recipient is device-gated and goes
+        // through /api/prepare with kind `bridge-deposit-start`.
+        const body = await req.json();
+        const shielded = String(body.recipient?.shieldedAddress ?? body.shieldedAddress ?? "").trim();
+        if (!shielded) {
+          return bad("this route starts a deposit to a MIDNIGHT WALLET (recipient.shieldedAddress). "
+            + "A deposit to the connected account is device-gated: POST /api/prepare "
+            + "{kind:'bridge-deposit-start', owner, accountId, token, amount} and sign it in the browser");
+        }
+        const token = await resolveToken(String(body.token ?? ""));
+        const amountRaw = toRaw(String(body.amount ?? "0"), token.decimals);
+        if (amountRaw <= 0n) return bad("amount must be positive");
+        assertCapHeadroom(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
+        return json({ jobId: bridgeWalletDepositJob(token, amountRaw, walletRecipientFrom(shielded)).id });
+      }
+      if (/^\/api\/bridge\/(relay|settle)\/[0-9a-fA-F]{64}$/.test(path) && req.method === "POST") {
+        // ONE resume route, two names. `relay` and `settle` are the same act from the
+        // record's point of view: whatever has already happened is skipped (the relay result
+        // is persisted), and whatever has not is done. A withdrawal whose transaction never
+        // executed settles through `bridge_withdraw_refund` automatically — the attestation
+        // says which branch, not the caller.
+        return json({ jobId: bridgeResumeJob(path.slice(path.lastIndexOf("/") + 1)).id });
+      }
+      if (path === "/api/bridge/requests") {
+        const store = loadBridgeStore();
+        return json({
+          requests: store.requests, spent: store.spent,
+          frontendWallet: frontendWalletAddress(),
         });
       }
       if (path === "/api/accounts") {
@@ -1886,5 +2864,19 @@ const resolveTokensWithRetry = async (): Promise<void> => {
   }
 };
 void resolveTokensWithRetry();
+
+// The bridged colours are independent of the faucet registry: they resolve as soon as the
+// EVM endpoint answers, and the kernel registration is retried until it lands (the kernel
+// comes up after the console on a cold `--all` bring-up). Both are cheap reads; the interval
+// is long because an ERC20's symbol and decimals never change.
+const BRIDGE_REFRESH_MS = Number(process.env["AA_BRIDGE_REFRESH_MS"] ?? 60_000);
+void (async () => {
+  for (;;) {
+    await resolveBridgedTokens().catch(() => {});
+    await registerBridgedColours().catch(() => {});
+    await new Promise((r) => setTimeout(r, BRIDGE_REFRESH_MS));
+  }
+})();
+
 await checkWallet("relay");
 await checkWallet("taker");

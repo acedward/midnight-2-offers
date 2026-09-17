@@ -67,6 +67,8 @@
   .seg.small button { padding: 5px 12px; font-size: 12px; }
   .actpane { display: none; }
   .actpane.active { display: block; }
+  .brpane { display: none; }
+  .brpane.active { display: block; }
   .activity-sticky {
     position: sticky; bottom: 10px; z-index: 5;
     box-shadow: 0 -10px 28px rgba(0, 0, 0, .5);
@@ -142,6 +144,7 @@
      through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.</p>
   <nav class="seg" id="seg">
     <button data-view="aa" class="active">AA + EVM</button>
+    <button data-view="bridge" id="tab-bridge" style="display:none">Bridge</button>
     <button data-view="aainfra">AA infra</button>
     <button data-view="aamid">AA + Midnight</button>
     <button data-view="solver">Offers + Solver</button>
@@ -310,6 +313,113 @@
     <h2 id="act-head" style="cursor:pointer;margin:0">Activity <span id="job-state"></span>
       <span style="float:right;color:var(--dim)">▾</span></h2>
     <div id="joblog" style="margin-top:10px">idle — actions appear here (proving an execute takes ~1–2 minutes)</div>
+  </section>
+</main>
+
+<main id="view-bridge" class="view">
+  <section class="wide" id="bridge-unavailable" style="display:none;border-color:#8a6d2f">
+    <h2>Bridge — not available on this stack</h2>
+    <ul class="note" id="bridge-reasons" style="margin:6px 0 0 18px"></ul>
+    <p class="note">The bridge needs three things: an image built with <code>AA_WITH_BRIDGE=1</code>,
+    a vault whose MPC root a responder actually holds (<code>mpc.provenance = fakenet</code>), and an
+    EVM endpoint. <code>./up.sh --with aa --with signet</code> arranges all three.</p>
+  </section>
+
+  <section class="wide" id="bridge-main" style="display:none">
+    <h2>ERC20 bridge <span class="pill dim" id="bridge-chain">—</span> <span class="pill warn" id="bridge-attestation">—</span></h2>
+    <p class="note">Tokens on the EVM chain become SHIELDED coins on Midnight, one colour per
+    ERC20 per vault. A round trip is always three acts: a <b>start</b> transaction that asks the MPC
+    to sign, an off-chain <b>relay</b> (the MPC signs, we broadcast, the MPC attests), and a
+    <b>settle</b> transaction that verifies the attestation in-circuit. Nothing on Midnight can wait
+    for an Ethereum transaction inside one proof, which is why it cannot be one click.</p>
+    <p class="note warn" id="bridge-vault-note">—</p>
+    <nav class="seg small" id="bridge-seg">
+      <button data-bridge="deposit" class="active">Deposit</button>
+      <button data-bridge="withdraw">Withdraw</button>
+      <button data-bridge="requests">Requests</button>
+    </nav>
+
+    <div id="bridge-deposit" class="brpane active">
+      <div class="row">
+        <div><label>token</label><select id="br-token"></select></div>
+        <div style="flex:2"><label>or an ERC20 address</label><input id="br-token-custom" placeholder="0x…"></div>
+        <div><label>amount (in the token's own decimals)</label><input id="br-amount" value="1"></div>
+      </div>
+      <label>recipient</label>
+      <div class="row" style="align-items:center">
+        <div style="flex:0 0 auto">
+          <label style="margin:0"><input type="radio" name="br-rec" id="br-rec-account" value="account" checked style="width:auto"> my account</label>
+        </div>
+        <div style="flex:0 0 auto">
+          <label style="margin:0"><input type="radio" name="br-rec" value="wallet" id="br-rec-wallet" style="width:auto"> a Midnight shielded address</label>
+        </div>
+        <div style="flex:2"><input id="br-rec-address" placeholder="mn_shield-addr_undeployed1…" disabled></div>
+        <div style="flex:0 0 auto"><button type="button" class="ghost" id="br-use-frontend">use the frontend wallet</button></div>
+      </div>
+      <p class="note">A deposit to <b>your account</b> is signed by your wallet (the account's EVM arm
+      authorises it). A deposit to <b>a shielded address</b> is paid by this console's relay wallet at
+      the vault's root, and the console never receives that wallet's keys — the address alone carries
+      the coin and encryption public keys the mint needs.</p>
+
+      <div class="wl-balcard" id="br-quote" style="display:none">
+        <div class="kv">
+          <dt>send to</dt><dd><span id="br-deposit-address">—</span>
+            <button type="button" class="ghost" id="br-copy" style="padding:1px 8px;font-size:11px">copy</button></dd>
+          <dt>required</dt><dd id="br-required">—</dd>
+          <dt>that address holds</dt><dd id="br-holds">—</dd>
+          <dt>cap headroom</dt><dd id="br-cap">—</dd>
+        </div>
+        <p class="note" id="br-ready">—</p>
+        <p class="note warn">⚠ This address is derived from the vault's CONTRACT address, so it dies
+        with <code>./down.sh -v</code>. Fund it, start, relay and complete within one stack session;
+        <code>./down.sh</code> without <code>-v</code> keeps it across a restart.</p>
+        <div class="row">
+          <div><button type="button" class="ghost" id="br-refresh">↻ re-check balances</button></div>
+          <div><button type="button" id="br-start" disabled>Start deposit</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="bridge-withdraw" class="brpane">
+      <div class="row">
+        <div><label>coin</label><select id="brw-token"></select></div>
+        <div><label>amount</label><input id="brw-amount" value="0.2"></div>
+        <div style="flex:2"><label>destination EVM address</label><input id="brw-dest" placeholder="0x…"></div>
+      </div>
+      <div class="wl-balcard" id="brw-quote" style="display:none">
+        <div class="kv">
+          <dt>the vault's own EVM account</dt><dd id="brw-vault">—</dd>
+          <dt>it holds</dt><dd id="brw-holds">—</dd>
+          <dt>gas it needs</dt><dd id="brw-gas">—</dd>
+          <dt>your account holds</dt><dd id="brw-account-holds">—</dd>
+        </div>
+        <p class="note" id="brw-ready">—</p>
+        <p class="note">A withdrawal is paid out of the vault's OWN Ethereum account, and its gas comes
+        from there too — send that ETH from your wallet. On a transfer that never executed the amount is
+        re-minted back to your account automatically (the attestation decides the branch, not you).</p>
+        <div class="row">
+          <div><button type="button" class="ghost" id="brw-refresh">↻ re-check balances</button></div>
+          <div><button type="button" id="brw-start" disabled>Start withdrawal</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="bridge-requests" class="brpane">
+      <p class="note">Every request this console has started, with the state it reached. A request is
+      resumable from its id: the start is never redone, and pressing Resume on a finished one changes
+      nothing.</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>request</th><th>direction</th><th>amount</th><th>recipient</th><th>EVM tx</th>
+          <th>attested</th><th>state</th><th></th></tr></thead>
+        <tbody id="br-requests"></tbody>
+      </table></div>
+      <p class="note" id="br-spent">—</p>
+    </div>
+  </section>
+
+  <section id="activity-bridge" class="wide">
+    <h2>Activity <span id="job-state3"></span></h2>
+    <div id="joblog3" style="margin-top:10px;background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:10px 12px;min-height:90px;max-height:300px;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dim)">idle — a bridge round trip is start → MPC → settle, and each half is minutes</div>
   </section>
 </main>
 
@@ -575,5 +685,6 @@
 
 <script src="/app.js"></script>
 <script src="/views.js"></script>
+<script src="/bridge.js"></script>
 </body>
 </html>

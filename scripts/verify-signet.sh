@@ -28,8 +28,10 @@
 #                 is one the responder will never sweep.
 #   allow-list    the responder's own startup log names the singleton it watches and the ONE
 #                 caller it serves, and that caller is this stack's vault (00034 question Q64).
-#   no signing    zero requests have been served. Nothing on this profile raises one, so a
-#                 `respond` in the log means the responder is answering a caller it should not.
+#   no FOREIGN    every request the responder SERVED came from this stack's own vault. It used
+#   signing       to be "zero requests, ever", which stopped being true the moment the Bridge
+#                 tab could raise one (project 00035 PR-B); what must stay zero is a request
+#                 from any other caller, which is what the allow-list exists to prevent.
 #   evm chain     a READ-ONLY eth_chainId through the responder's own RPC equals the chain the
 #                 vault is pinned to. It is the cheapest possible proof that the endpoint the
 #                 operator supplied is the chain they think it is — and a mismatch is how funds
@@ -217,14 +219,33 @@ else
   FAILURES=$(( FAILURES + 1 ))
 fi
 
-# Zero signing activity. Nothing on this profile raises a request, so any of these means the
-# responder is answering something it was not asked to.
+# Signing activity, and WHOSE.
+#
+# ⚠ THIS CHECK CHANGED IN PROJECT 00035 PR-B, and the reason is worth stating. Before the
+# Bridge tab existed, nothing on this stack could raise a signature request, so ANY signing
+# line meant the responder was answering something it was not asked to — and the check was a
+# flat "zero". A stack that has bridged a token has served requests, correctly, and a gate that
+# fails on that would be a gate an operator learns to ignore.
+#
+# What stays an error is a FOREIGN request: one whose caller is not this stack's vault. The
+# allow-list makes that impossible by construction (00034 question Q64), and this is the
+# assertion that the allow-list is doing its job rather than being merely configured.
 SIGNED="$(printf '%s' "$LOGS" | grep -cE 'Midnight: Signed tx|New request .* from contract|response posted for' || true)"
-if [[ "${SIGNED:-0}" -eq 0 ]]; then
-  ok "zero signature requests served — nothing on this profile raises one yet"
-else
-  err "${SIGNED} signing log line(s) — the responder has answered a request it should not have"
+FOREIGN="$(printf '%s' "$LOGS" \
+  | grep -oE 'New request [^ ]+ from contract [0-9a-fx]+' \
+  | awk '{print tolower($NF)}' | sed 's/^0x//' \
+  | grep -v -F -x "$(printf '%s' "$VAULT" | tr 'A-Z' 'a-z' | sed 's/^0x//')" | wc -l | tr -d ' ')"
+IGNORED="$(printf '%s' "$LOGS" | grep -cE 'ignoring requests from contract' || true)"
+if [[ "${FOREIGN:-0}" -ne 0 ]]; then
+  err "${FOREIGN} request(s) from a contract that is NOT this stack's vault were SERVED — the allow-list is not holding"
   FAILURES=$(( FAILURES + 1 ))
+elif [[ "${SIGNED:-0}" -eq 0 ]]; then
+  ok "zero signature requests served — nothing has used the bridge on this stack yet"
+else
+  ok "${SIGNED} signing log line(s), every one of them for this stack's own vault (bridge traffic)"
+fi
+if [[ "${IGNORED:-0}" -ne 0 ]]; then
+  ok "${IGNORED} request(s) from other callers were IGNORED — the allow-list is doing its job"
 fi
 
 # ── the EVM endpoint, read-only ──────────────────────────────────────────────
