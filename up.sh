@@ -461,6 +461,34 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" aa "* ]]; then
   fi
 fi
 
+# ── the frontend's in-page wallet: OPT-IN NIGHT + DUST ───────────────────────
+#
+# The stack's own `demo-spa` wallet is `funding: none` and that is correct: both halves of a swap
+# go through the batcher, so the page needs tokens (the faucet profile's `spa` grant) and no
+# NIGHT at all. Giving it NIGHT would also make it a second funded facade for no benefit.
+#
+# It stops being correct the moment FRONTEND_WALLET_SEED is somebody's REAL wallet — a demo where
+# the page's wallet is also opened in a browser extension, receives a bridged coin and is expected
+# to pay for something itself. Hence an opt-in, default OFF: `--with frontend` on its own behaves
+# exactly as before.
+if (( ! FAILED )) && [[ " $PROFILES " == *" frontend "* ]] \
+   && [[ "${FRONTEND_WALLET_FUND:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  FRONTEND_WALLET_SEED_VALUE="${FRONTEND_WALLET_SEED:-5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe}"
+  if [[ -z "$FRONTEND_WALLET_SEED_VALUE" ]]; then
+    warn "FRONTEND_WALLET_FUND is set but FRONTEND_WALLET_SEED is empty — the page's wallet is a"
+    warn "  random one per load, and there is nothing to fund."
+  else
+    # fund-wallet.sh takes 64- OR 128-hex seeds, so a BIP-39 master seed needs no special case.
+    log "funding the frontend's in-page wallet (NIGHT + DUST; FRONTEND_WALLET_FUND is set)…"
+    if "$REPO_ROOT/scripts/fund-wallet.sh" "$FRONTEND_WALLET_SEED_VALUE"; then
+      log "frontend wallet funded"
+    else
+      warn "funding the frontend wallet failed — the page still loads and batcher-sponsored swaps"
+      warn "  still work; only the wallet's own fee-paying does not."
+    fi
+  fi
+fi
+
 # ── signet: the MPC responder ────────────────────────────────────────────────
 #
 # It starts only after aa-deploy has completed (compose gates it), so its healthcheck covers
