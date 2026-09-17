@@ -503,9 +503,22 @@ export function assertCapHeadroom(symbol: string, amountRaw: bigint, decimals: n
   }
 }
 
-/** Charge the caps. Called at START, which is the only moment a console action commits the
- *  operator to sending anything: the tokens are the deposit (or withdrawal) amount, and the
- *  ETH is the gas budget the console is about to ask for. Throws BEFORE anything is spent. */
+/**
+ * Charge the caps. Called at START, which is the only moment a console action commits the
+ * operator to sending anything: the tokens are the deposit (or withdrawal) amount, and the ETH
+ * is the gas budget the console is about to ask for. Throws BEFORE anything is spent.
+ *
+ * IT COUNTS WHAT WAS AUTHORISED, NOT WHAT MOVED, and there is no refund. A start that is
+ * charged and then fails — the vault refusing it, the proof failing, the operator abandoning it —
+ * leaves the charge standing, so the ledger drifts ABOVE the truth over a stack's lifetime.
+ * Measured on B's own run: 45 WEENUS charged against 25 actually bridged, because one start was
+ * refused by the vault's Uint<64> assertion after the cap had been taken.
+ *
+ * That is the direction a spend ceiling should drift. A cap is a bound on exposure, not an
+ * accountant: under-counting would let a stack quietly exceed the number its owner agreed to,
+ * and over-counting costs nothing but a `./down.sh -v` (which resets it with the chain, because
+ * the vault and every address it protects are new after a wipe anyway).
+ */
 export function chargeCap(symbol: string, amountRaw: bigint, decimals: number, ethWei: bigint): void {
   assertCapHeadroom(symbol, amountRaw, decimals, ethWei);
   const store = loadBridgeStore();
