@@ -18,43 +18,7 @@ The **first** bring-up (and the first after `./down.sh -v`) also downloads and v
 ~223 MB shared proof-data generation once, about a minute. Every later run finds it already
 active. The proof servers deliberately cannot start until that check passes.
 
-> ### ⚠ Upgrading a checkout that ran an older kernel pin: `./down.sh -v` is REQUIRED
->
-> **At the `5d794f9` pin the offer-files CONTRACT IS GONE.** Kernel PRs #69/#70 deleted it:
-> no deploy, no `mint_shielded`/`mint_unshielded`, no `packages/contracts-midnight`, no
-> compactc in the kernel image, and `GET /v1/midnight/config` no longer answers a
-> `contractAddress`. The `offerfiles-deploy` and `register-tokens` services are gone with it,
-> and so is the `offerfiles-deploy` volume that held the address.
->
-> **The tokens are external now**, and this stack issues them itself: the `faucet` profile
-> deploys six `mint-test-tokens` issuers, `registry-bridge` names their colours in the kernel,
-> `registry-env` renders their ids onto the shared volume and `faucet-mint` prefunds the offer
-> poster. Consequences worth knowing before the first `./up.sh`:
->
-> * **`--with poster` now needs `--with faucet`.** The poster no longer mints — it selects an
->   existing coin of exactly `OFFER_POSTER_GIVE_AMOUNT` — and both of its token ids are
->   explicit 64-hex values that only exist once the issuers are deployed. `up.sh` refuses the
->   combination rather than letting compose fail on a missing service.
-> * **Decimals are per token, not 6 everywhere**: twBTC 8, twETH 18, twUSDC/twUSDM/utwUSDC 6,
->   utwBTC 8. Every amount in this stack is base units at the token's own scale.
-> * The `aa-out` volume goes too: the AA console now mints through the local issuers, and its
->   image carries their artifacts.
->
-> The kernel also moved to the unified `ledger-v9` line, which adds the token price
-> service — new tables (`asset_prices`, `price_feed_status`, `known_tokens.decimals`) with
-> seeded reference prices, all in `migrations/000-init.sql`. **The kernel applies that file
-> only on an EMPTY database.** A `postgres-data` volume created before that pin therefore
-> comes up looking healthy while `/v1/prices` prices nothing, `/v1/quote` cannot size a leg,
-> the batcher's sponsorship gate treats every offer as unpriced, and the offer poster stalls.
->
-> ```bash
-> ./down.sh -v && ./up.sh --all      # the only supported upgrade path
-> ```
->
-> `verify.sh`'s kernel section asserts the seeded table and fails with this instruction, so
-> the database half is loud rather than silent — but it is a **full reset**: the local chain,
-> book and contract address all go with it. That is correct, not collateral damage: the book
-> is a projection of the chain the reset destroys.
+> **⚠ Upgrading a checkout that ran an older pin?** `./down.sh -v && ./up.sh --all` is the only supported path: it is a full reset (chain, book, volumes), and `verify.sh` fails loudly if you skip it. Details: `docs/KNOWN-LIMITATIONS.md`.
 
 Open the console at **http://127.0.0.1:10700** when it is up.
 
