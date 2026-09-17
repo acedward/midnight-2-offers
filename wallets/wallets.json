@@ -245,6 +245,29 @@
       }
     },
     {
+      "name": "signet-responder",
+      "role": "the signet MPC responder's fee payer (profile `signet`) — pays for the TWO contract writes the fakenet posts per bridge leg",
+      "$comment": [
+        "A wallet of its OWN rather than a shared one: the responder writes CONCURRENTLY with",
+        "everything else on the stack, and two long-lived facades on one seed force each other's",
+        "connection down (the ONE FACADE PER SEED rule above). Project 00034's stagenet run had to",
+        "schedule the responder and the driver around a single shared seed instead (question Q63);",
+        "on this stack a dedicated seed costs one fund-wallet.sh call and removes the hazard.",
+        "The fakenet builds this wallet LAZILY, on its first request, so the container starts",
+        "healthy before ./up.sh has finished funding it — but it must be funded before the first",
+        "bridge deposit, which is why ./up.sh funds it on bring-up like the aa-console wallet."
+      ],
+      "seed": "51e751e751e751e751e751e751e751e751e751e751e751e751e751e751e751e7",
+      "seedBytes": 32,
+      "funding": "fund-script",
+      "addresses": {
+        "unshielded": "mn_addr_undeployed1wmzvqgcj665a64zcryznn8mjjp0yj4f45aqett8cmhsm87devyjq7ct6we",
+        "shielded": "mn_shield-addr_undeployed1fv5lhxf4qj38lepeufnkm7uswkx97q5vmwyu35y8cze25ev7df8yfz9qp5qxmh75x98pdw2xrm5zzq6f23jcu6kagts9nf3qxfqs4fq0ehllu",
+        "dust": "mn_dust_undeployed1w0re29g56364htchslgqsn2dcdnp4qxadalze4uwl05sasazyvkry2ggvql",
+        "userAddress": "76c4c02312d6a9dd54581905399f72905e495535a74195acf8dde1b3f9b96124"
+      }
+    },
+    {
       "name": "shielded-night-deployer",
       "role": "deploys the ShieldedNight wrapper contract ONCE per stack (profile `shielded-night`)",
       "$comment": [
@@ -402,7 +425,16 @@
         "",
         "ONE FACADE PER SEED still applies, and this one is held by a BROWSER. Do not import it",
         "into Lace while the SPA has it connected; `lace-test` (a51c86de\u2026) is the seed kept free",
-        "for exactly that."
+        "for exactly that.",
+        "",
+        "SUBSTITUTABLE, AND THAT IS A FEATURE (project 00035). FRONTEND_WALLET_SEED overrides the",
+        "seed below, and since 00035 the frontend entrypoint accepts a 128-hex BIP-39 MASTER SEED",
+        "as well as a 32-byte one. The SPA derives its wallet with HDWallet.fromSeed and the",
+        "standard m/44'/2400'/0'/<role>'/0' roles, which is the SAME derivation Lace uses, so",
+        "handing it the master seed of a mnemonic makes the in-page wallet THAT wallet, address",
+        "for address. A demo that wants the operator's own Midnight wallet in the page sets",
+        "FRONTEND_WALLET_SEED to that master seed in the UNCOMMITTED .env; it is a secret and",
+        "never appears here."
       ],
       "seed": "5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe5eedcafe",
       "seedBytes": 32,

@@ -35,7 +35,7 @@ Options:
                      A profile is a compose fragment in compose/, named after the profile. An
                      unknown name is an error, not a no-op.
                      Available now: aa, evm, faucet, frontend, offerfiles, poster,
-                     prices, shielded-night, solver.
+                     prices, shielded-night, signet, solver.
   --all              bring up every shipped profile in compose/, EXCEPT `prices` unless
                      COINGECKO_API_KEY is set — that profile is the only one that needs a
                      third-party secret, and a host without one must still be able to run
@@ -60,7 +60,9 @@ without it (that profile only).
 
 Every shipped profile is complete: offerfiles includes Celestia, the kernel and batcher;
 frontend is the immutable-upstream + ledger-v9-patch zswap-da SPA (branch midnight-1, contract-free:
-its Faucet link needs the faucet profile); aa deploys and serves its console; solver is
+its Faucet link needs the faucet profile); aa deploys and serves its console; signet runs the MPC responder that makes the aa profile's
+bridge vault real on a live EVM chain (it NEEDS aa, and it needs SIGNET_EVM_RPC_URL in the env
+file — see .env.example); solver is
 the observation-mode solver, its authenticated sink and the read-only monitor site; poster funds a dedicated
 wallet and keeps the book non-empty by minting one coin and posting one offer per interval (it needs
 offerfiles); prices runs the CoinGecko feed that refreshes the kernel's reference prices (it needs
@@ -84,6 +86,7 @@ Examples:
   ./up.sh --with shielded-night # …and the Shielded NIGHT dApp (needs nothing but core)
   ./up.sh --with faucet         # …and the six local test tokens + their mint site
   ./up.sh --with offerfiles --with prices   # …and live CoinGecko reference prices (needs a key)
+  ./up.sh --with aa --with signet           # …and a REAL bridge MPC on Sepolia (needs SIGNET_EVM_RPC_URL)
   ./up.sh --converge            # core ONLY: stop every optional profile that is up
   ENV_FILE=.env.ci ./up.sh      # a second, port-shifted instance
 EOF
@@ -230,6 +233,48 @@ if [[ " $PROFILES " == *" poster "* && " $PROFILES " != *" faucet "* ]]; then
   info "      ./up.sh --with faucet --with offerfiles --with poster"
   info "  (or ./up.sh --all, which includes every profile)."
   exit 2
+fi
+
+# ── `signet` requires `aa`, and requires the operator's EVM RPC ──────────────
+#
+# The responder exists to answer ONE vault's signature requests, and the vault, the singleton
+# and the per-stack MPC root secret are all produced by the `aa` profile's aa-deploy one-shot.
+# Without it compose/signet.yml renders fine and the container then dies on a missing receipt,
+# three minutes into a bring-up. Said once, here, before anything is built.
+#
+# NOT auto-added, for the same reason `poster` does not auto-add `faucet`: the aa profile
+# deploys three contracts and proves two mints, which is minutes, and is not a thing to start
+# on somebody's behalf.
+if [[ " $PROFILES " == *" signet "* ]]; then
+  if [[ " $PROFILES " != *" aa "* ]]; then
+    err "the 'signet' profile needs 'aa' too"
+    info "  signet runs the MPC responder for the bridge vault the aa profile deploys. It reads"
+    info "  the vault address, the singleton address and this stack's MPC root secret out of the"
+    info "  aa-out volume that aa-deploy writes; on its own it has nothing to answer for."
+    info "      ./up.sh --with aa --with signet"
+    exit 2
+  fi
+  # THE ONE SECRET THIS PROFILE CANNOT DERIVE. It is the operator's keyed Sepolia endpoint and
+  # it lives only in the uncommitted env file. Failing here, by name, is the whole of the
+  # "fail fast" requirement: nothing is built, nothing is started, nothing is spent.
+  if [[ -z "${SIGNET_EVM_RPC_URL:-}" ]]; then
+    err "the 'signet' profile needs SIGNET_EVM_RPC_URL and it is empty"
+    info "  It is the EVM endpoint the responder broadcasts and attests on — an operator SECRET"
+    info "  (it carries the provider key), so it lives only in ${ENV_FILE} and never in git."
+    info "      echo 'SIGNET_EVM_RPC_URL=https://<your sepolia endpoint>' >> ${ENV_FILE}"
+    info "  A free-tier endpoint is fine: the responder falls back to an eth_call replay when the"
+    info "  RPC has no debug_traceTransaction, which is DEMO-GRADE (00034 question Q62)."
+    exit 2
+  fi
+  # aa-deploy reads both of these. They are EXPORTS rather than an overlay of aa.yml's
+  # `aa-deploy` service from compose/signet.yml, deliberately: an overlay would make the order
+  # of the `-f` arguments load-bearing, so `--with signet --with aa` would render a different
+  # stack from `--with aa --with signet` (questions Q12).
+  export AA_SIGNET=1
+  # Sepolia unless the operator pinned another chain. It must be the chain SIGNET_EVM_RPC_URL
+  # actually serves: the vault pins it at `initialise` and every derived deposit address is
+  # scoped to it, so a mismatch strands funds rather than erroring.
+  export AA_EVM_CHAIN_ID="${AA_EVM_CHAIN_ID:-11155111}"
 fi
 
 log "demo stack: project '${COMPOSE_PROJECT_NAME}'"
@@ -412,6 +457,38 @@ if (( ! FAILED )) && [[ " $PROFILES " == *" aa "* ]]; then
       log "aa-taker wallet funded"
     else
       warn "funding the aa-taker wallet failed — the book's Settle action will not work; retry: ./scripts/fund-wallet.sh <aa-taker seed> --shielded-amount 100000000"
+    fi
+  fi
+fi
+
+# ── signet: the MPC responder ────────────────────────────────────────────────
+#
+# It starts only after aa-deploy has completed (compose gates it), so its healthcheck covers
+# the whole of that wait too. `healthy` here means the responder's helper API answers, and the
+# server starts that API only after its Midnight monitor has CONNECTED — so it means "watching
+# the singleton", not merely "process running".
+if (( ! FAILED )) && [[ " $PROFILES " == *" signet "* ]]; then
+  wait_compose_healthy signet-fakenet "${SIGNET_WAIT_TIMEOUT:-600}" || FAILED=1
+
+  # The responder's fee payer. It posts TWO contract writes per bridge leg (`respond`, then
+  # `respondBidirectional`), so it needs NIGHT and a registered DUST address like any other
+  # wallet that writes. MidnightMonitor builds this wallet LAZILY, on the first request, which
+  # is why the container is already healthy at this point and why funding it after the wait is
+  # correct rather than late — but it must be funded before the first deposit, and an
+  # unfunded responder is a silent, hour-long failure in the middle of a bridge (00034 Q63).
+  #
+  # Unconditional, unlike the console wallets': there is no /healthz to ask, and
+  # fund-wallet.sh is idempotent — it sends NIGHT and registers DUST, and a second run on an
+  # already-registered wallet is a no-op plus one more UTXO.
+  if (( ! FAILED )); then
+    log "funding the signet responder wallet (NIGHT + DUST, no shielded)…"
+    SIGNET_RESPONDER_SEED="${SIGNET_RESPONDER_SEED:-51e751e751e751e751e751e751e751e751e751e751e751e751e751e751e751e7}"
+    if "$REPO_ROOT/scripts/fund-wallet.sh" "$SIGNET_RESPONDER_SEED"; then
+      log "signet responder wallet funded"
+    else
+      warn "funding the signet responder wallet failed — the responder will start but cannot PAY for"
+      warn "  its two writes per bridge leg, which looks like an MPC that never answers."
+      warn "  retry: ./scripts/fund-wallet.sh <signet-responder seed from wallets/wallets.json>"
     fi
   fi
 fi
@@ -697,6 +774,19 @@ if [[ " $PROFILES " == *" evm "* ]]; then
 fi
 if [[ " $PROFILES " == *" aa "* ]]; then
   info "AA web console    http://${HOST_ADDR}:${AA_CONSOLE_HOST_PORT:-10700}   (browser EVM wallet → relay → the user's OWN Passport account contract)"
+fi
+if [[ " $PROFILES " == *" signet "* ]]; then
+  # No URL: the responder publishes no host port. What an operator needs to read here is WHAT
+  # is signing and how far to trust it, and both halves of that are said every run rather than
+  # left to a document.
+  info "MPC               our fakenet on EVM chain ${AA_EVM_CHAIN_ID:-11155111} (replay attestation, demo-grade)"
+  info "                  the stack holds BOTH halves of the MPC root key, and the attestation is"
+  info "                  recovered by eth_call replay when the RPC has no debug_traceTransaction."
+  info "                  It proves the protocol end to end; it is not a signer nobody here controls."
+elif [[ " $PROFILES " == *" aa "* ]]; then
+  info "MPC               none — the bridge vault is initialised against a LOCAL STUB key whose"
+  info "                  private half is public. Bridge circuits are deployed; no funds can cross."
+  info "                  Add --with signet (and SIGNET_EVM_RPC_URL) for a real one."
 fi
 if [[ " $PROFILES " == *" offerfiles "* ]]; then
   info "celestia DA RPC   ${CELESTIA_DA_URL}   (namespace ${CELESTIA_NAMESPACE})"
