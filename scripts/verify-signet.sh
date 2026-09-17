@@ -230,11 +230,20 @@ fi
 # What stays an error is a FOREIGN request: one whose caller is not this stack's vault. The
 # allow-list makes that impossible by construction (00034 question Q64), and this is the
 # assertion that the allow-list is doing its job rather than being merely configured.
+#
+# ⚠ AND THE PIPELINES BELOW ARE `|| true`-TERMINATED FOR A MEASURED REASON (00035 sub-plan C,
+# 2026-09-17). This file runs under `set -euo pipefail`, and on a stack that has never bridged
+# EVERY grep in the FOREIGN pipeline matches nothing — so the pipeline's status is 1, the
+# command substitution inherits it, and `set -e` killed the script mid-way with NO message and
+# exit 1, after printing only OK lines. That is the worst failure shape a gate can have: it
+# looked like a pass and answered like a fail. Each substitution now ends in `|| true`, and the
+# empty case is handled where it is read.
 SIGNED="$(printf '%s' "$LOGS" | grep -cE 'Midnight: Signed tx|New request .* from contract|response posted for' || true)"
-FOREIGN="$(printf '%s' "$LOGS" \
+FOREIGN="$( { printf '%s' "$LOGS" \
   | grep -oE 'New request [^ ]+ from contract [0-9a-fx]+' \
   | awk '{print tolower($NF)}' | sed 's/^0x//' \
-  | grep -v -F -x "$(printf '%s' "$VAULT" | tr 'A-Z' 'a-z' | sed 's/^0x//')" | wc -l | tr -d ' ')"
+  | grep -v -F -x "$(printf '%s' "$VAULT" | tr 'A-Z' 'a-z' | sed 's/^0x//')" \
+  | wc -l | tr -d ' '; } || true)"
 IGNORED="$(printf '%s' "$LOGS" | grep -cE 'ignoring requests from contract' || true)"
 if [[ "${FOREIGN:-0}" -ne 0 ]]; then
   err "${FOREIGN} request(s) from a contract that is NOT this stack's vault were SERVED — the allow-list is not holding"

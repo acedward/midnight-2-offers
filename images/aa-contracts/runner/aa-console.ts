@@ -1970,15 +1970,21 @@ async function reconcileAccountNow(
     report.kernelStatus = status;
     if (error) say(`the kernel's book could not be read (${error}) — asking the chain instead`);
 
-    // `consumed` is the kernel's word for it. A book that has forgotten the offer, or a
-    // kernel that is down, is not evidence either way — so the chain decides, and it is the
-    // same query the reconcile needs anyway.
-    const settlement = status === "consumed" ? true : await (async () => {
-      const found = await findSettlement(rec.address).catch(() => null);
-      if (found) say(`the kernel says '${status ?? "nothing"}', but the account's own history carries a `
-        + `${SWAP_CIRCUIT} call in block ${found.blockHeight} — the chain wins`);
-      return Boolean(found);
-    })();
+    // `consumed` is the kernel's word for it, and it is the cheap one. A kernel that says the
+    // offer is still on its book is believed; a kernel that is DOWN, or that has forgotten the
+    // offer, is not evidence either way — and then the chain decides, with the same query the
+    // reconcile needs anyway. That ordering matters: the chain query is a websocket replay of
+    // the account's whole action history, and running it every 15 s for an offer nobody has
+    // touched would be a poll that costs more than what it watches.
+    const OPEN_STATES = ["live", "open", "pending", "batching", "batched", "submitted", "unconfirmed"];
+    const settlement = status === "consumed" ? true
+      : status && OPEN_STATES.includes(status) ? false
+      : await (async () => {
+        const found = await findSettlement(rec.address).catch(() => null);
+        if (found) say(`the kernel says '${status ?? "nothing"}', but the account's own history carries a `
+          + `${SWAP_CIRCUIT} call in block ${found.blockHeight} — the chain wins`);
+        return Boolean(found);
+      })();
 
     if (!settlement) {
       say(`offer ${offerId.slice(0, 16)}… is still ${status ?? "open (kernel unreachable)"} — nothing to reconcile`);
