@@ -170,6 +170,28 @@ services:
       CELESTIA_NAMESPACE: '${CELESTIA_NAMESPACE:-6d6e2d737761702d7631}'
       CELESTIA_NETWORK: '${CELESTIA_NETWORK:-devnet}'
       CELESTIA_START_HEIGHT: '1'
+      # ⚠ WITHOUT THIS, `./down.sh` + `./up.sh` LEAVES THE KERNEL IN A CRASH LOOP.
+      #
+      # The sync node records the `mainNtp` protocol's start time in its database and refuses to
+      # start when the value it computes now disagrees — which it always does after a restart,
+      # because the value is "when this container started". The refusal is loud and it names the
+      # escape hatch:
+      #
+      #   [config-snapshot] CRITICAL: Immutable config fields have changed for protocol "mainNtp".
+      #     startTime: saved=…, current=…
+      #   set the USE_DB_STARTHEIGHT environment variable and restart the service
+      #
+      # …but the variable was not plumbed through this fragment, so the hatch could not be used
+      # (measured 2026-09-17, project 00035 sub-plan C: the demo stack's kernel restarted forever
+      # after a plain stop/start, and `docker restart kernel` could not recover it either).
+      #
+      # Defaulting it ON is right FOR THIS STACK specifically: the kernel's database lives in the
+      # same compose volumes as the chain it indexes, so `./down.sh -v` wipes both together and the
+      # saved start height can never describe a chain that no longer exists. Resuming from the
+      # stored value is therefore exactly what a restart should do — and it is what makes the
+      # question-Q13 habit (`./down.sh` WITHOUT `-v` to stop and restart) actually work.
+      # Set it to 0 to get the refusal back.
+      USE_DB_STARTHEIGHT: '${USE_DB_STARTHEIGHT:-1}'
       # Accept offers whose MAKER IS A CONTRACT CALL — the AA console's open
       # swap is exactly that. Such an offer cannot pass `wellFormed` against the
       # validator's blank reference state ("call to non-existant contract"), and
