@@ -420,9 +420,23 @@ const spend = await session("spend", E2E_SEED, async (walletCtx) => {
     } catch (e) {
       lastError = e;
       const msg = e instanceof Error ? e.message : String(e);
-      // A wrong index fails while PROVING. Anything else is a real failure and must not be
-      // retried against every candidate.
-      if (!/merkle|mt_index|proof|prove|witness|commitment|invalid/i.test(msg)) throw e;
+      // A wrong index fails BEFORE anything is submitted, so retrying is free of on-chain
+      // effect — but it does not always fail the same way, and this list was one shape short.
+      //
+      // ⚠ MEASURED 2026-09-17 (project 00035 sub-plan C, running this file as a regression):
+      // a wrong candidate can trap inside the LEDGER WASM while the unproven transaction is
+      // still being BUILT, well before proving —
+      //
+      //   RuntimeError: Unreachable code should not be executed
+      //     (evaluating 'wasm.zswapinput_newContractOwned(...)')
+      //     at zswapStateToSegmentedOffer → createUnprovenLedgerCallTx
+      //
+      // — wrapped by midnight-js as "Unexpected error executing scoped transaction". None of
+      // the words below appear in it, so the first candidate of four ended the run with a
+      // stack trace instead of moving to the second. The account's own spend path
+      // (aa-console.ts `spendWithCandidates`) has never had this bug: it retries every
+      // candidate and only rethrows on the last.
+      if (!/merkle|mt_index|proof|prove|witness|commitment|invalid|unreachable|newContractOwned|zswapinput|scoped transaction/i.test(msg)) throw e;
       log(`  mt_index ${idx} rejected (${msg.slice(0, 80)}) — next candidate`);
     }
   }
