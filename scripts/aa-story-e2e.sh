@@ -6,6 +6,7 @@
 #   ./scripts/aa-story-e2e.sh [--evidence <dir>] [--take batcher|node]
 #                             [--give-amount 1] [--want-amount 10] [--bridge-want 10]
 #                             [--no-withdraw-back]
+#                             [--resume <accountId>] [--skip-bridge] [--owner-key 0x…]
 #
 #   register an account → bridge WEENUS to the OWNER'S OWN Midnight wallet (the offer-files
 #   frontend's in-page wallet) → bridge USDC into the account → publish an OPEN offer giving
@@ -59,6 +60,9 @@ load_env
 PROFILES="${PROFILES:-} aa"
 
 EVIDENCE_DIR=""
+RESUME_ACCOUNT="${AA_STORY_ACCOUNT_ID:-}"
+SKIP_BRIDGE="${AA_STORY_SKIP_BRIDGE:-0}"
+OWNER_KEY_ARG="${AA_STORY_OWNER_KEY:-}"
 TAKE_VIA="${AA_STORY_TAKE_VIA:-batcher}"
 GIVE_AMOUNT="${AA_STORY_GIVE_AMOUNT:-1}"
 WANT_AMOUNT="${AA_STORY_WANT_AMOUNT:-10}"
@@ -72,6 +76,13 @@ while [[ $# -gt 0 ]]; do
     --want-amount) WANT_AMOUNT="${2:?--want-amount needs a decimal amount}"; shift 2 ;;
     --bridge-want) BRIDGE_WANT="${2:?--bridge-want needs a decimal amount}"; shift 2 ;;
     --no-withdraw-back) WITHDRAW_BACK=0; shift ;;
+    # RESUME. A run that moves real money cannot repeat its own spend to retry a later step —
+    # measured, on this file's first live run, which died at step 4's last read on a transient
+    # TLS failure with 1 USDC and 10 WEENUS already bridged. --resume names the account that
+    # run created; --skip-bridge says its coins are already in place (and they are ASSERTED).
+    --resume) RESUME_ACCOUNT="${2:?--resume needs an account id (64 hex)}"; SKIP_BRIDGE=1; shift 2 ;;
+    --skip-bridge) SKIP_BRIDGE=1; shift ;;
+    --owner-key) OWNER_KEY_ARG="${2:?--owner-key needs a 0x… private key}"; shift 2 ;;
     -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
     *) err "unknown argument: $1"; exit 2 ;;
   esac
@@ -153,7 +164,9 @@ dc run --rm --no-deps \
   -e "AA_STORY_WITHDRAW_BACK=${WITHDRAW_BACK}" \
   -e "AA_STORY_OUT=${AA_STORY_OUT:-/aa/out/aa-story-e2e.json}" \
   -e "AA_STORY_RECONCILE_MS=${AA_STORY_RECONCILE_MS:-60000}" \
-  ${AA_STORY_OWNER_KEY:+-e "AA_STORY_OWNER_KEY=${AA_STORY_OWNER_KEY}"} \
+  -e "AA_STORY_ACCOUNT_ID=${RESUME_ACCOUNT}" \
+  -e "AA_STORY_SKIP_BRIDGE=${SKIP_BRIDGE}" \
+  ${OWNER_KEY_ARG:+-e "AA_STORY_OWNER_KEY=${OWNER_KEY_ARG}"} \
   --entrypoint sh aa-deploy -c '. /run/aa-story-e2e.env && exec bun /aa/runner/aa-story-e2e.ts'
 RC=$?
 set -e

@@ -1770,10 +1770,10 @@ async function reconcileSettledOffer(
   settleTxIdHint: string | null,
   j?: Job,
   report?: ReconcileReport,
-): Promise<void> {
+): Promise<boolean> {
   const store = readStore();
   const rec = store.accounts.find((a) => a.liveOffer?.offerId === offerId);
-  if (!rec?.liveOffer) return;
+  if (!rec?.liveOffer) return false;
   const offer = rec.liveOffer;
   const say = (line: string) => {
     if (j) jlog(j, line); else log(line);
@@ -1833,16 +1833,24 @@ async function reconcileSettledOffer(
     say(`the inbox walk failed (${e instanceof Error ? e.message : String(e)}) — falling back to the sealed nonce`);
   }
 
+  // ⚠ NOTHING IS WRITTEN WITHOUT A COMMITMENT WINDOW, and the offer stays live.
+  //
+  // The kernel can report `consumed` a beat before the indexer has the settling block, and the
+  // window is the ONLY thing that says where the received coin sits in the Zswap tree. Writing
+  // the coin with a guessed position and clearing `liveOffer` would look like success and leave
+  // an unspendable coin plus no second chance — the poller would never look again. So: say why,
+  // change nothing, and let the next pass (15 s away) or the Refresh button try again.
   if (list.length === 0) {
-    say("no commitment window could be found for the settlement: the coin's Merkle position is "
-      + "unknown, so the account's next spend will try its stored candidates. Press Refresh once "
-      + "the settling block has been indexed");
+    say("the settlement is on chain but its commitment window is not indexed yet — the received "
+      + "coin's Merkle position is unknown, so NOTHING has been changed and the offer stays live. "
+      + "The next poll (or Refresh) will try again");
+    return false;
   }
   coins[offer.wantColour] = {
     nonceHex: wantNonce, colorHex: offer.wantColour,
     value: wantValue, mtIndex: list[0] ?? "0",
   };
-  if (list.length) mtCandidates[offer.wantColour] = list;
+  mtCandidates[offer.wantColour] = list;
   say(`the want coin (${offer.want}) is in the store`);
   if (offer.changeValue && offer.changeNonceHex) {
     // The change coin's nonce was PREDICTED before the offer was proved (the circuit's own
@@ -1852,10 +1860,11 @@ async function reconcileSettledOffer(
       nonceHex: offer.changeNonceHex, colorHex: offer.giveColour,
       value: offer.changeValue, mtIndex: list[0] ?? "0",
     };
-    if (list.length) mtCandidates[offer.giveColour] = list;
+    mtCandidates[offer.giveColour] = list;
     say(`the change (${offer.changeValue} base units of the give colour) is back in the store`);
   }
   writeRecord({ ...rec, coins, mtCandidates, liveOffer: null });
+  return true;
 }
 
 function clearLiveOffer(offerId: string): void {
@@ -1992,9 +2001,12 @@ async function reconcileAccountNow(
       reconciles.set(address, report);
       return report;
     }
-    report.settled = true;
     say(`offer ${offerId.slice(0, 16)}… has been SETTLED by a taker — reconciling the coin store from chain data`);
-    await reconcileSettledOffer(offerId, null, j, report);
+    // `settled` means "this reconcile CHANGED the account", not "a settlement exists". The
+    // difference is the case above: a settlement seen before its block is indexed leaves the
+    // offer live and the store untouched, and a caller polling for the new balances must keep
+    // waiting rather than read a half-applied one.
+    report.settled = await reconcileSettledOffer(offerId, null, j, report);
     report.balancesAfter = snapshot(requireRecord(address));
   } catch (e) {
     report.error = e instanceof Error ? e.message : String(e);

@@ -72,6 +72,41 @@ for (const pkg of ["@metamask/eth-sig-util", "@midnightntwrk/ledger-v9", "@effec
 const { personalSign, signTypedData, SignTypedDataVersion } = await import("@metamask/eth-sig-util");
 
 const TAG = "[aa-story-e2e]";
+
+const RPC_URL = process.env["AA_STORY_RPC_URL"] ?? "";
+const FUNDER_KEY = process.env["AA_STORY_FUNDER_KEY"] ?? "";
+
+// ── NOTHING THIS PROCESS PRINTS MAY CARRY THE OPERATOR'S RPC URL ────────────
+//
+// Measured, on the first live run of this file: a transient TLS failure inside ethers came
+// out of Bun as
+//
+//     error: unknown certificate verification error
+//       path: "https://eth-sepolia.g.alchemy.com/v2/<the operator's key>"
+//
+// — an uncaught throw, printed by the runtime, with the provider key in it, into a log that
+// was about to become evidence. The URL is a secret (spec FR-015) and the error path that
+// prints it is one this file does not control. So every line this process writes goes through
+// `redact` first, and an uncaught error is caught rather than left to the runtime.
+function redact(text: string): string {
+  let out = String(text);
+  for (const secret of [RPC_URL, FUNDER_KEY, FUNDER_KEY.replace(/^0x/, "")]) {
+    if (secret && secret.length >= 8) out = out.split(secret).join("<REDACTED-SECRET>");
+  }
+  // …and the SHAPE, for a URL this process never saw verbatim (a redirect, a proxied host).
+  out = out.replace(/(https?:\/\/[^\s"'`]*\/v2\/)[A-Za-z0-9_\-]{8,}/g, "$1<REDACTED-PROVIDER-KEY>");
+  return out;
+}
+const rawLog = console.log.bind(console);
+const rawErr = console.error.bind(console);
+const scrub = (a: unknown): unknown => {
+  if (typeof a === "string") return redact(a);
+  const text = (() => { try { return Bun.inspect(a); } catch { return String(a); } })();
+  return redact(text) === text ? a : redact(text);
+};
+console.log = (...a: unknown[]) => rawLog(...a.map(scrub));
+console.error = (...a: unknown[]) => rawErr(...a.map(scrub));
+
 const log = (...a: unknown[]) => console.log(TAG, ...a);
 
 const t0 = Date.now();
@@ -82,7 +117,8 @@ const OUT = process.env["AA_STORY_OUT"] ?? "/aa/out/aa-story-e2e.json";
 /** A failure writes the report anyway — sub-plan B's lesson, paid for on a real chain: the
  *  first bridge run failed at its last step and took the record of three successful legs
  *  with it. Sepolia transactions are not repeatable for free. */
-const fail = (msg: string): never => {
+const fail = (msg0: string): never => {
+  const msg = redact(String(msg0));
   console.error(`${TAG} FAIL ${msg}`);
   try {
     mkdirSync(OUT.slice(0, OUT.lastIndexOf("/")), { recursive: true });
@@ -103,8 +139,6 @@ const KERNEL = (process.env["AA_STORY_KERNEL_URL"] ?? "http://kernel:9999").repl
 const BATCHER = (process.env["AA_STORY_BATCHER_URL"] ?? "http://batcher:3334").replace(/\/+$/, "");
 const CONFIG_URL = process.env["AA_STORY_CONFIG_URL"] ?? "http://frontend:10600/config.js";
 const TAKE_VIA = (process.env["AA_STORY_TAKE_VIA"] ?? "batcher").toLowerCase();
-const RPC_URL = process.env["AA_STORY_RPC_URL"] ?? "";
-const FUNDER_KEY = process.env["AA_STORY_FUNDER_KEY"] ?? "";
 /** A throwaway EVM key: the run's "MetaMask". Public by design, like every seed in this repo.
  *  `||` rather than `??` — the wrapper passes an EMPTY string when the operator named none,
  *  and an empty string is not nullish (sub-plan B paid for that distinction). */
@@ -123,6 +157,18 @@ const BRIDGE_WANT_AMOUNT = process.env["AA_STORY_BRIDGE_WANT"] ?? WANT_AMOUNT;
  *  vault's EVM account near zero AND it is the strongest assertion the reconcile has, because
  *  a coin whose Merkle position was recovered wrongly fails at proving and never spends. */
 const WITHDRAW_BACK = !/^(0|false|no)$/i.test(process.env["AA_STORY_WITHDRAW_BACK"] ?? "1");
+/**
+ * RESUME. A run that moves real money cannot repeat its own spend to retry a later step, and
+ * the first live run of this file proved that is not hypothetical: it died at step 4's LAST
+ * read, on a transient TLS failure, with 1 USDC and 10 WEENUS already bridged and in place.
+ *
+ * `AA_STORY_ACCOUNT_ID` names an account that already exists (skipping step 1) and
+ * `AA_STORY_SKIP_BRIDGE=1` says its coins and the owner's wallet's coins are already there
+ * (skipping steps 3 and 4). Both are then ASSERTED rather than assumed — a resume that starts
+ * from a state it has not checked is a run whose result means nothing.
+ */
+const RESUME_ACCOUNT = (process.env["AA_STORY_ACCOUNT_ID"] ?? "").replace(/^0x/, "").toLowerCase();
+const SKIP_BRIDGE = /^(1|true|yes)$/i.test(process.env["AA_STORY_SKIP_BRIDGE"] ?? "");
 const JOB_TIMEOUT_MS = Number(process.env["AA_STORY_JOB_TIMEOUT_MS"] ?? 2_400_000);
 /** SC-005: "within 60 s without any manual action". The default is that number. */
 const RECONCILE_WAIT_MS = Number(process.env["AA_STORY_RECONCILE_MS"] ?? 60_000);
@@ -131,6 +177,13 @@ const SYNC_MS = Number(process.env["AA_STORY_SYNC_MS"] ?? 420_000);
 const TTL_MS = Number(process.env["TX_TTL_MS"] ?? 600_000);
 /** The SPA's own value: the 32-byte Midnight address type in the batcher's input envelope. */
 const MIDNIGHT_ADDRESS_TYPE = 5;
+
+// The safety net. A run that dies without writing its report takes the record of everything it
+// already did on a real chain with it (sub-plan B paid for that lesson once); a run that dies
+// through the RUNTIME'S printer also prints whatever the error happens to carry. Both are
+// closed here: every terminal path goes through `fail`, which redacts and writes the report.
+process.on("uncaughtException", (e: any) => fail(`uncaught: ${redact(String(e?.stack ?? e))}`));
+process.on("unhandledRejection", (e: any) => fail(`unhandled rejection: ${redact(String(e?.stack ?? e))}`));
 
 if (!RPC_URL) fail("AA_STORY_RPC_URL is required (the EVM endpoint this run funds through)");
 if (!FUNDER_KEY) fail("AA_STORY_FUNDER_KEY is required (scripts/aa-story-e2e.sh reads it from the operator's env)");
@@ -354,122 +407,168 @@ steps["0-stack"] = {
 // 1. register — step 1 of the story
 // ═══════════════════════════════════════════════════════════════════════════
 log("");
-log(`── 1. register an account for ${OWNER} (two transactions, k=18 proving) ──`);
-const reg = await signedAction({ kind: "register" }, "register");
-const accountId = String(reg.job.data?.address ?? reg.job.txId ?? "");
-if (!/^[0-9a-f]{64}$/i.test(accountId)) fail("register finished without an account address");
-log(`account ${accountId}`);
-steps["1-register"] = { owner: OWNER, accountId, seconds: Math.round((Date.now() - t0) / 1000) };
+let accountId: string;
+if (RESUME_ACCOUNT) {
+  log(`── 1. RESUMING on an existing account (AA_STORY_ACCOUNT_ID) ──`);
+  const mine = await api(`/api/accounts?owner=${OWNER}`);
+  const row = (mine.accounts ?? []).find((a: any) => String(a.address).toLowerCase() === RESUME_ACCOUNT);
+  if (!row) {
+    fail(`this console has no account ${RESUME_ACCOUNT.slice(0, 18)}… for ${OWNER} — a resume must name `
+      + `an account the SAME throwaway key owns (set AA_STORY_OWNER_KEY to the key that registered it)`);
+  }
+  if (row.liveOffer) {
+    fail(`account ${RESUME_ACCOUNT.slice(0, 18)}… already has a live offer (${row.liveOffer.give} for `
+      + `${row.liveOffer.want}). One live offer per account: settle it, or clear it with POST /api/offer/forget`);
+  }
+  accountId = String(row.address);
+  log(`account ${accountId} — holding ${JSON.stringify(row.balancesDecimal ?? {})}`);
+  steps["1-register"] = { owner: OWNER, accountId, resumed: true, holdings: row.balancesDecimal ?? null };
+} else {
+  log(`── 1. register an account for ${OWNER} (two transactions, k=18 proving) ──`);
+  const reg = await signedAction({ kind: "register" }, "register");
+  accountId = String(reg.job.data?.address ?? reg.job.txId ?? "");
+  if (!/^[0-9a-f]{64}$/i.test(accountId)) fail("register finished without an account address");
+  log(`account ${accountId}`);
+  steps["1-register"] = { owner: OWNER, accountId, seconds: Math.round((Date.now() - t0) / 1000) };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 3. bridge the WANT token to the OWNER'S OWN Midnight wallet
 // ═══════════════════════════════════════════════════════════════════════════
-log("");
-log(`── 3. bridge ${BRIDGE_WANT_AMOUNT} ${WANT.symbol} to the owner's own Midnight wallet ──`);
-const quoteW = await api("/api/bridge/quote", {
-  direction: "deposit", token: WANT.erc20, amount: BRIDGE_WANT_AMOUNT,
-  recipient: { shieldedAddress: ownerWallet.shieldedAddress },
-});
-log(`  deposit address ${quoteW.depositAddress} (required ETH ${quoteW.requiredEth})`);
-const fundW = await fundAddress(
-  quoteW.depositAddress, WANT.erc20, WANT.symbol, WANT.decimals, bridgeWantRaw, BigInt(quoteW.requiredEthWei));
-const vaultWantBefore = await balanceOf(WANT.erc20, vaultEvm);
-const startW = await api("/api/bridge/deposit/start", {
-  token: WANT.erc20, amount: BRIDGE_WANT_AMOUNT,
-  recipient: { shieldedAddress: ownerWallet.shieldedAddress },
-});
-const jobW = await awaitJob(startW.jobId, "bridge-to-owner-wallet");
-const recW = (jobW.data as any)?.request;
-if (!recW || recW.state !== "completed") fail(`the wallet deposit ended in state '${recW?.state}': ${recW?.error}`);
-const receiptW = await provider.getTransactionReceipt(recW.evmTxHash);
-if (!receiptW || receiptW.status !== 1) fail(`the wallet deposit's ERC20 transfer did not succeed (${recW.evmTxHash})`);
-const vaultWantAfter = await balanceOf(WANT.erc20, vaultEvm);
-if (vaultWantAfter - vaultWantBefore !== bridgeWantRaw) {
-  fail(`the vault's EVM account moved by ${vaultWantAfter - vaultWantBefore} of ${WANT.symbol}, expected ${bridgeWantRaw}`);
-}
-
-// The assertion the wallet path exists for: the recipient, syncing on its own, SEES the coin.
-// A coin minted to a key with no encryption-key mapping in the settle still belongs to its
-// owner and is invisible to them (00034 question Q42) — a silent failure the console cannot
-// detect from its side, which is why it is checked from the wallet's.
-const ownerSeesWant = await withFrontendWallet("sees-want", async (ctx) => {
-  const deadline = Date.now() + SYNC_MS;
-  for (;;) {
-    const st = await syncedState(ctx);
-    const have = shieldedOf(st)[WANT.colour] ?? 0n;
-    if (have >= bridgeWantRaw) return have;
-    if (Date.now() > deadline) return have;
-    await new Promise((r) => setTimeout(r, 8000));
+if (SKIP_BRIDGE) {
+  // A resume: steps 3 and 4 already happened, on a real chain, and repeating them would spend
+  // again. What is NOT skipped is the ASSERTION that their result is actually in place —
+  // otherwise everything after this proves nothing.
+  log("");
+  log("── 3 + 4. SKIPPED (AA_STORY_SKIP_BRIDGE): asserting the coins are already where they belong ──");
+  const ownerHas = await withFrontendWallet("resume-check", async (ctx) => shieldedOf(await syncedState(ctx)));
+  const ownerWant = ownerHas[WANT.colour] ?? 0n;
+  if (ownerWant < wantRaw) {
+    fail(`a resume needs the owner's wallet to already hold at least ${WANT_AMOUNT} ${WANT.symbol}; it holds `
+      + `${fromRaw(ownerWant, WANT.decimals)}. Run without AA_STORY_SKIP_BRIDGE to bridge it`);
   }
-});
-if (ownerSeesWant < bridgeWantRaw) {
-  fail(`the owner's wallet sees ${ownerSeesWant} of the bridged ${WANT.symbol} colour, expected at least `
-    + `${bridgeWantRaw}. That is the Q42 failure: the coin is theirs and invisible to them`);
-}
-log(`step 3 OK — EVM ${recW.evmTxHash} status 1; the owner's wallet sees `
-  + `${fromRaw(ownerSeesWant, WANT.decimals)} ${WANT.symbol} by syncing with nothing but its own configuration`);
-steps["3-bridge-to-wallet"] = {
-  recipient: ownerWallet.shieldedAddress, depositAddress: quoteW.depositAddress, funding: fundW,
-  requestId: recW.requestId, startTxId: recW.startTxId, settleTxId: recW.settleTxId,
-  evmTxHash: recW.evmTxHash, evmStatus: recW.evmStatus, evmBlock: recW.evmBlock,
-  attested: recW.attestedKind, attestationLabel: recW.attestationLabel,
-  amount: BRIDGE_WANT_AMOUNT, amountRaw: String(bridgeWantRaw), colour: WANT.colour,
-  ownerWalletSeesRaw: String(ownerSeesWant), ownerWalletSees: fromRaw(ownerSeesWant, WANT.decimals),
-  vaultEvmDelta: String(vaultWantAfter - vaultWantBefore),
-};
+  const resumeRows = await api(`/api/accounts?owner=${OWNER}`);
+  const resumeRow = (resumeRows.accounts ?? []).find((a: any) => a.address === accountId);
+  const accHas = BigInt(resumeRow?.shielded?.[GIVE.symbol] ?? "0");
+  if (accHas < giveRaw) {
+    fail(`a resume needs the account to already hold at least ${GIVE_AMOUNT} ${GIVE.symbol}; it holds `
+      + `${fromRaw(accHas, GIVE.decimals)}. Run without AA_STORY_SKIP_BRIDGE to bridge it`);
+  }
+  log(`the owner's wallet holds ${fromRaw(ownerWant, WANT.decimals)} ${WANT.symbol} and the account holds `
+    + `${fromRaw(accHas, GIVE.decimals)} ${GIVE.symbol} — both bridged by an earlier run of this file`);
+  steps["3-bridge-to-wallet"] = { skipped: "AA_STORY_SKIP_BRIDGE — bridged by an earlier run",
+    ownerWalletSees: fromRaw(ownerWant, WANT.decimals) };
+  steps["4-bridge-to-account"] = { skipped: "AA_STORY_SKIP_BRIDGE — bridged by an earlier run",
+    accountHolds: fromRaw(accHas, GIVE.decimals) };
+} else {
+  log("");
+  log(`── 3. bridge ${BRIDGE_WANT_AMOUNT} ${WANT.symbol} to the owner's own Midnight wallet ──`);
+  const quoteW = await api("/api/bridge/quote", {
+    direction: "deposit", token: WANT.erc20, amount: BRIDGE_WANT_AMOUNT,
+    recipient: { shieldedAddress: ownerWallet.shieldedAddress },
+  });
+  log(`  deposit address ${quoteW.depositAddress} (required ETH ${quoteW.requiredEth})`);
+  const fundW = await fundAddress(
+    quoteW.depositAddress, WANT.erc20, WANT.symbol, WANT.decimals, bridgeWantRaw, BigInt(quoteW.requiredEthWei));
+  const vaultWantBefore = await balanceOf(WANT.erc20, vaultEvm);
+  const startW = await api("/api/bridge/deposit/start", {
+    token: WANT.erc20, amount: BRIDGE_WANT_AMOUNT,
+    recipient: { shieldedAddress: ownerWallet.shieldedAddress },
+  });
+  const jobW = await awaitJob(startW.jobId, "bridge-to-owner-wallet");
+  const recW = (jobW.data as any)?.request;
+  if (!recW || recW.state !== "completed") fail(`the wallet deposit ended in state '${recW?.state}': ${recW?.error}`);
+  const receiptW = await provider.getTransactionReceipt(recW.evmTxHash);
+  if (!receiptW || receiptW.status !== 1) fail(`the wallet deposit's ERC20 transfer did not succeed (${recW.evmTxHash})`);
+  const vaultWantAfter = await balanceOf(WANT.erc20, vaultEvm);
+  if (vaultWantAfter - vaultWantBefore !== bridgeWantRaw) {
+    fail(`the vault's EVM account moved by ${vaultWantAfter - vaultWantBefore} of ${WANT.symbol}, expected ${bridgeWantRaw}`);
+  }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 4. bridge the GIVE token into the ACCOUNT
-// ═══════════════════════════════════════════════════════════════════════════
-log("");
-log(`── 4. bridge ${GIVE_AMOUNT} ${GIVE.symbol} into the account ──`);
-const quoteG0 = await api("/api/bridge/quote", {
-  direction: "deposit", token: GIVE.erc20, amount: GIVE_AMOUNT, recipient: { account: accountId },
-});
-if (quoteG0.ready) fail("the quote says READY for an address nothing has funded");
-if (quoteG0.depositAddress === quoteW.depositAddress) {
-  fail("the account and the wallet derived the SAME deposit address — the recipient is not in the derivation");
+  // The assertion the wallet path exists for: the recipient, syncing on its own, SEES the coin.
+  // A coin minted to a key with no encryption-key mapping in the settle still belongs to its
+  // owner and is invisible to them (00034 question Q42) — a silent failure the console cannot
+  // detect from its side, which is why it is checked from the wallet's.
+  const ownerSeesWant = await withFrontendWallet("sees-want", async (ctx) => {
+    const deadline = Date.now() + SYNC_MS;
+    for (;;) {
+      const st = await syncedState(ctx);
+      const have = shieldedOf(st)[WANT.colour] ?? 0n;
+      if (have >= bridgeWantRaw) return have;
+      if (Date.now() > deadline) return have;
+      await new Promise((r) => setTimeout(r, 8000));
+    }
+  });
+  if (ownerSeesWant < bridgeWantRaw) {
+    fail(`the owner's wallet sees ${ownerSeesWant} of the bridged ${WANT.symbol} colour, expected at least `
+      + `${bridgeWantRaw}. That is the Q42 failure: the coin is theirs and invisible to them`);
+  }
+  log(`step 3 OK — EVM ${recW.evmTxHash} status 1; the owner's wallet sees `
+    + `${fromRaw(ownerSeesWant, WANT.decimals)} ${WANT.symbol} by syncing with nothing but its own configuration`);
+  steps["3-bridge-to-wallet"] = {
+    recipient: ownerWallet.shieldedAddress, depositAddress: quoteW.depositAddress, funding: fundW,
+    requestId: recW.requestId, startTxId: recW.startTxId, settleTxId: recW.settleTxId,
+    evmTxHash: recW.evmTxHash, evmStatus: recW.evmStatus, evmBlock: recW.evmBlock,
+    attested: recW.attestedKind, attestationLabel: recW.attestationLabel,
+    amount: BRIDGE_WANT_AMOUNT, amountRaw: String(bridgeWantRaw), colour: WANT.colour,
+    ownerWalletSeesRaw: String(ownerSeesWant), ownerWalletSees: fromRaw(ownerSeesWant, WANT.decimals),
+    vaultEvmDelta: String(vaultWantAfter - vaultWantBefore),
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 4. bridge the GIVE token into the ACCOUNT
+  // ═══════════════════════════════════════════════════════════════════════════
+  log("");
+  log(`── 4. bridge ${GIVE_AMOUNT} ${GIVE.symbol} into the account ──`);
+  const quoteG0 = await api("/api/bridge/quote", {
+    direction: "deposit", token: GIVE.erc20, amount: GIVE_AMOUNT, recipient: { account: accountId },
+  });
+  if (quoteG0.ready) fail("the quote says READY for an address nothing has funded");
+  if (quoteG0.depositAddress === quoteW.depositAddress) {
+    fail("the account and the wallet derived the SAME deposit address — the recipient is not in the derivation");
+  }
+  log(`  deposit address ${quoteG0.depositAddress} (required ETH ${quoteG0.requiredEth})`);
+  const fundG = await fundAddress(
+    quoteG0.depositAddress, GIVE.erc20, GIVE.symbol, GIVE.decimals, giveRaw, BigInt(quoteG0.requiredEthWei));
+  const quoteG1 = await api("/api/bridge/quote", {
+    direction: "deposit", token: GIVE.erc20, amount: GIVE_AMOUNT, recipient: { account: accountId },
+  });
+  if (!quoteG1.ready) fail(`the address is funded and the quote still says not ready: ${JSON.stringify(quoteG1.shortfall)}`);
+  const vaultGiveBefore = await balanceOf(GIVE.erc20, vaultEvm);
+  const depG = await signedAction(
+    { kind: "bridge-deposit-start", accountId, token: GIVE.erc20, amount: GIVE_AMOUNT }, "bridge-to-account");
+  const recG = (depG.job.data as any)?.request;
+  if (!recG) fail("the deposit job carries no bridge request record");
+  if (recG.state !== "completed") fail(`the deposit ended in state '${recG.state}': ${recG.error ?? "(no error)"}`);
+  const receiptG = await provider.getTransactionReceipt(recG.evmTxHash);
+  if (!receiptG || receiptG.status !== 1) fail(`the deposit's ERC20 transfer did not succeed (${recG.evmTxHash})`);
+  const vaultGiveAfter = await balanceOf(GIVE.erc20, vaultEvm);
+  if (vaultGiveAfter - vaultGiveBefore !== giveRaw) {
+    fail(`the vault's EVM account moved by ${vaultGiveAfter - vaultGiveBefore}, expected ${giveRaw}`);
+  }
+  const accountsAfterG = await api(`/api/accounts?owner=${OWNER}`);
+  const rowG = (accountsAfterG.accounts ?? []).find((a: any) => a.address === accountId);
+  if (BigInt(rowG?.shielded?.[GIVE.symbol] ?? "0") !== giveRaw) {
+    fail(`the account's coin store holds ${rowG?.shielded?.[GIVE.symbol] ?? "0"} of ${GIVE.symbol}, expected ${giveRaw}`);
+  }
+  // FR-008 on the console's own surface: the same number, in the token's units.
+  if (String(rowG?.balancesDecimal?.[GIVE.symbol] ?? "") !== GIVE_AMOUNT) {
+    fail(`the console renders the account's ${GIVE.symbol} as `
+      + `'${rowG?.balancesDecimal?.[GIVE.symbol]}', expected '${GIVE_AMOUNT}' (FR-008)`);
+  }
+  log(`step 4 OK — EVM ${recG.evmTxHash} status 1, attested ${recG.attestationLabel}; the account holds `
+    + `${rowG.balancesDecimal[GIVE.symbol]} ${GIVE.symbol}`);
+  steps["4-bridge-to-account"] = {
+    depositAddress: quoteG0.depositAddress, funding: fundG, requestId: recG.requestId,
+    startTxId: recG.startTxId, settleTxId: recG.settleTxId,
+    evmTxHash: recG.evmTxHash, evmStatus: recG.evmStatus, evmBlock: recG.evmBlock,
+    attested: recG.attestedKind, attestationLabel: recG.attestationLabel,
+    amount: GIVE_AMOUNT, amountRaw: String(giveRaw), colour: GIVE.colour,
+    accountHolds: rowG.balancesDecimal[GIVE.symbol], accountHoldsRaw: rowG.shielded[GIVE.symbol],
+    inboxCount: rowG.inboxCount, vaultEvmDelta: String(vaultGiveAfter - vaultGiveBefore),
+  };
+
 }
-log(`  deposit address ${quoteG0.depositAddress} (required ETH ${quoteG0.requiredEth})`);
-const fundG = await fundAddress(
-  quoteG0.depositAddress, GIVE.erc20, GIVE.symbol, GIVE.decimals, giveRaw, BigInt(quoteG0.requiredEthWei));
-const quoteG1 = await api("/api/bridge/quote", {
-  direction: "deposit", token: GIVE.erc20, amount: GIVE_AMOUNT, recipient: { account: accountId },
-});
-if (!quoteG1.ready) fail(`the address is funded and the quote still says not ready: ${JSON.stringify(quoteG1.shortfall)}`);
-const vaultGiveBefore = await balanceOf(GIVE.erc20, vaultEvm);
-const depG = await signedAction(
-  { kind: "bridge-deposit-start", accountId, token: GIVE.erc20, amount: GIVE_AMOUNT }, "bridge-to-account");
-const recG = (depG.job.data as any)?.request;
-if (!recG) fail("the deposit job carries no bridge request record");
-if (recG.state !== "completed") fail(`the deposit ended in state '${recG.state}': ${recG.error ?? "(no error)"}`);
-const receiptG = await provider.getTransactionReceipt(recG.evmTxHash);
-if (!receiptG || receiptG.status !== 1) fail(`the deposit's ERC20 transfer did not succeed (${recG.evmTxHash})`);
-const vaultGiveAfter = await balanceOf(GIVE.erc20, vaultEvm);
-if (vaultGiveAfter - vaultGiveBefore !== giveRaw) {
-  fail(`the vault's EVM account moved by ${vaultGiveAfter - vaultGiveBefore}, expected ${giveRaw}`);
-}
-const accountsAfterG = await api(`/api/accounts?owner=${OWNER}`);
-const rowG = (accountsAfterG.accounts ?? []).find((a: any) => a.address === accountId);
-if (BigInt(rowG?.shielded?.[GIVE.symbol] ?? "0") !== giveRaw) {
-  fail(`the account's coin store holds ${rowG?.shielded?.[GIVE.symbol] ?? "0"} of ${GIVE.symbol}, expected ${giveRaw}`);
-}
-// FR-008 on the console's own surface: the same number, in the token's units.
-if (String(rowG?.balancesDecimal?.[GIVE.symbol] ?? "") !== GIVE_AMOUNT) {
-  fail(`the console renders the account's ${GIVE.symbol} as `
-    + `'${rowG?.balancesDecimal?.[GIVE.symbol]}', expected '${GIVE_AMOUNT}' (FR-008)`);
-}
-log(`step 4 OK — EVM ${recG.evmTxHash} status 1, attested ${recG.attestationLabel}; the account holds `
-  + `${rowG.balancesDecimal[GIVE.symbol]} ${GIVE.symbol}`);
-steps["4-bridge-to-account"] = {
-  depositAddress: quoteG0.depositAddress, funding: fundG, requestId: recG.requestId,
-  startTxId: recG.startTxId, settleTxId: recG.settleTxId,
-  evmTxHash: recG.evmTxHash, evmStatus: recG.evmStatus, evmBlock: recG.evmBlock,
-  attested: recG.attestedKind, attestationLabel: recG.attestationLabel,
-  amount: GIVE_AMOUNT, amountRaw: String(giveRaw), colour: GIVE.colour,
-  accountHolds: rowG.balancesDecimal[GIVE.symbol], accountHoldsRaw: rowG.shielded[GIVE.symbol],
-  inboxCount: rowG.inboxCount, vaultEvmDelta: String(vaultGiveAfter - vaultGiveBefore),
-};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 5. publish the offer — give 1 USDC, get 10 WEENUS, both bridged colours
