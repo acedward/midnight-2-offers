@@ -696,9 +696,36 @@ async function captureCoin(
   return next;
 }
 
-/** Run a spend, advancing the coin's mt_index through the stored candidates on a proving
- *  failure. Nothing is submitted until a candidate proves, so a retry is free of on-chain
- *  effect — only of time. */
+/** The failure shapes a WRONG `mt_index` produces. There are three, and the list is measured
+ *  rather than guessed: the circuit's own merkle/witness complaints, the ledger wasm trapping
+ *  while the unproven transaction is still being BUILT (`zswapinput_newContractOwned` →
+ *  "Unreachable code should not be executed", wrapped by midnight-js as "Unexpected error
+ *  executing scoped transaction"), and the qualified-coin asserts. Anything else — a proof
+ *  server that fell over, a closed socket — is a REAL failure and must surface as itself. */
+const WRONG_MT_INDEX =
+  /merkle|mt_index|witness|commitment|unreachable|newContractOwned|zswapinput|qualified/i;
+
+/**
+ * Run a device-gated spend against the coin's stored `mt_index`.
+ *
+ * ⚠ THIS USED TO LOOP OVER EVERY STORED CANDIDATE, AND THAT WAS WRONG HERE — measured on a real
+ * chain, 2026-09-17. Both callers are DEVICE-GATED: the browser signed an EIP-712 struct whose
+ * challenge covers the witness coin, `mt_index` and all. Proving with a different index therefore
+ * cannot succeed; it fails with `failed assert: invalid signature`, every time, by construction.
+ *
+ * What that cost in practice: the bridge withdraw's first attempt hit a transient
+ * `'prove' returned an error: Failed Proof Server`, the loop decided that meant "wrong index" and
+ * tried the next one, and the run died with "invalid signature" — a message about a signature
+ * that was perfectly good, hiding a proof server that had merely fallen over. `withProveRetry`
+ * wraps this call and its `TRANSIENT_PROVE` pattern matches `'prove' returned an error` exactly;
+ * the loop defeated the retry that already existed.
+ *
+ * So: ONE attempt. A failure that is not index-shaped is rethrown untouched, which is what lets
+ * `withProveRetry` do its job. An index-shaped failure ADVANCES the stored index to the next
+ * candidate and says so — the operator prepares and signs again, and that signature covers the
+ * new index. (`aa-e2e.ts` still loops, correctly: it holds the device and re-authorises per
+ * attempt, which the console cannot do.)
+ */
 async function spendWithCandidates<T>(
   j: Job,
   record: AccountRecord,
@@ -707,30 +734,40 @@ async function spendWithCandidates<T>(
   run: (account: CustodyAccount, record: AccountRecord) => Promise<T>,
 ): Promise<{ result: T; record: AccountRecord }> {
   const all = record.mtCandidates?.[colour] ?? [record.coins[colour]?.mtIndex ?? "0"];
-  let current = record;
-  let lastError: unknown = null;
-  for (let i = 0; i < all.length; i++) {
-    const idx = all[i]!;
-    if (current.coins[colour]) {
-      current = { ...current, coins: { ...current.coins, [colour]: { ...current.coins[colour]!, mtIndex: idx } } };
+  const idx = record.coins[colour]?.mtIndex ?? all[0] ?? "0";
+  const account = await connectAccount(walletCtx, record);
+  try {
+    const result = await run(account, record);
+    // The index that proved is the right one; drop the alternatives.
+    const current = await persistAccount(account, {
+      ...record,
+      mtCandidates: { ...(record.mtCandidates ?? {}), [colour]: [idx] },
+    });
+    return { result, record: current };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!WRONG_MT_INDEX.test(msg)) throw e;
+    const rest = all.filter((x) => x !== idx);
+    if (rest.length === 0) {
+      jlog(j, `mt_index ${idx} was rejected and there is no other candidate for this colour — `
+        + "press Refresh to re-read the account's commitments from the chain");
+      throw e;
     }
-    const account = await connectAccount(walletCtx, current);
-    try {
-      const result = await run(account, current);
-      // The index that proved is the right one; drop the alternatives.
-      current = await persistAccount(account, {
-        ...current,
-        mtCandidates: { ...(current.mtCandidates ?? {}), [colour]: [idx] },
-      });
-      return { result, record: current };
-    } catch (e) {
-      lastError = e;
-      const msg = e instanceof Error ? e.message : String(e);
-      if (i === all.length - 1) throw e;
-      jlog(j, `mt_index ${idx} did not prove (${msg.slice(0, 120)}) — trying the next candidate`);
-    }
+    // Persist the advance so the NEXT prepare builds its challenge over the next candidate.
+    writeRecord({
+      ...record,
+      coins: { ...record.coins, [colour]: { ...record.coins[colour]!, mtIndex: rest[0]! } },
+      mtCandidates: { ...(record.mtCandidates ?? {}), [colour]: rest },
+    });
+    jlog(j, `mt_index ${idx} is not this coin's position (${msg.slice(0, 100)}). The store now says `
+      + `${rest[0]}${rest.length > 1 ? ` (${rest.length - 1} more candidate(s) after it)` : ""} — `
+      + "prepare and sign this action again, because the signature you gave covers the old index");
+    throw new Error(
+      `the coin's Merkle position was wrong (tried ${idx}, ${rest.length} candidate(s) left). The ` +
+      "store has been advanced to the next one; repeat this action and sign it again — a device " +
+      "signature covers the witness coin, so it cannot be reused with a different index.",
+    );
   }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // ── relay / taker wallet status ──────────────────────────────────────────────
