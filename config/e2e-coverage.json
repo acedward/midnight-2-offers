@@ -409,6 +409,35 @@
       ]
     },
     {
+      "service": "signet-fakenet",
+      "fragment": "compose/signet.yml",
+      "profile": "signet",
+      "kind": "service",
+      "why": "the MPC responder that makes the aa profile's bridge vault real: it watches this stack's Signet singleton, serves ONLY this stack's vault, signs with the per-stack MPC root key and broadcasts on the operator's EVM RPC.",
+      "checks": [
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-signet.sh",
+          "assertion": "the vault was initialised against this stack's own MPC root (mpc.provenance=fakenet)",
+          "behavioural": true,
+          "note": "the vault's own EVM address and the MPC response key are RE-DERIVED from the per-stack root secret inside this container, with Sig Network's own @sig-net/midnight, and compared to the deploy receipt. Deriving them with the fork's client — the code that wrote the receipt — would be circular."
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-signet.sh",
+          "assertion": "the responder serves exactly one caller, and it is this stack's vault",
+          "behavioural": true
+        },
+        {
+          "step": "4a verify.sh",
+          "script": "scripts/verify-signet.sh",
+          "assertion": "zero signature requests served",
+          "behavioural": true,
+          "note": "nothing on this profile raises a request, so a `respond` in the log means the responder answered a caller it should not have."
+        }
+      ]
+    },
+    {
       "service": "faucet-fund",
       "fragment": "compose/faucet.yml",
       "profile": "faucet",

@@ -200,6 +200,11 @@ PASSPORT_EXPECTED="${PASSPORT_REF:-ee1ffedab40f1abe8f3041a9423ae24e89b90bc2}"
 SIGNET_PKG_VERSION_EXPECTED="${SIGNET_PKG_VERSION:-0.22.0-rc.1}"
 SIGNET_PKG_SHA256_EXPECTED="${SIGNET_PKG_SHA256:-0e7414d52b225e31def3d776cae376ff1e6c2bf7b592f02dc422b5bb6fb6fd71}"
 UMBRA_EXPECTED="${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}"
+# The `signet` profile's MPC responder: OUR FORK of sig-net/solana-signet-program. The commit is
+# the image's whole identity here — it is upstream `fakenet-v0.23.0` plus two local patches, and
+# an image built from upstream instead would look identical, start cleanly, and then fail to
+# attest on a free-tier RPC while answering every caller on the singleton.
+SIGNET_FAKENET_EXPECTED="${SIGNET_FAKENET_REF:-a1a7798f35cab07d5279cfd9785777944b94a572}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-400880ceb6814738d1ae193dae18ad5128922edc}"
 # effectstream/shielded-night branch `main` @ the merge of upstream PR #16, which brought the
 # `undeployed` lane onto this dApp's 2.x profile (MN_ENV=undeployed on the contracts/v2
@@ -341,6 +346,21 @@ fi
 
 if present evm-rpc; then
   assert_pin umbra-evm "${EVM_IMAGE:-midnight-2-offers/umbra-evm:local}" /app/.umbra-commit "$UMBRA_EXPECTED"
+fi
+if present signet-fakenet; then
+  assert_pin signet-fakenet "${SIGNET_FAKENET_IMAGE:-midnight-2-offers/signet-fakenet:local}" \
+    /app/.signet-fakenet-commit "$SIGNET_FAKENET_EXPECTED"
+  # …and the two patches themselves, read off the image's own source tree. The commit label is
+  # written by the build and would survive a Dockerfile that stopped applying them; these two
+  # greps are the thing that cannot.
+  if docker run --rm --entrypoint sh "${SIGNET_FAKENET_IMAGE:-midnight-2-offers/signet-fakenet:local}" -c \
+       'grep -q replayCallOutput /app/fakenet-signer/src/modules/ethereum/EthereumMonitor.ts &&
+        grep -q MIDNIGHT_CALLER_ALLOWLIST /app/fakenet-signer/src/config/EnvConfig.ts' >/dev/null 2>&1; then
+    ok "the signet responder carries both local patches (eth_call replay + caller allow-list)"
+  else
+    err "the signet responder image is MISSING one of the two local patches — it was built from upstream, not from the fork"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
 fi
 if present frontend; then
   assert_pin zswap-da "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" /.zswap-da-commit "$FRONTEND_EXPECTED"

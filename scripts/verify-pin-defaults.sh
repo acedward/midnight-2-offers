@@ -65,7 +65,8 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 #                harmless tidy-up: `"${ARR[@]}"` on an empty array is an unbound-variable
 #                error under `set -u` on the bash 3.2 macOS ships.)
 COMMIT_PINS=(KERNEL_REF SOLVER_REF FRONTEND_REF PASSPORT_REF UMBRA_REF SHIELDED_NIGHT_REF
-             MINT_TEST_TOKENS_REF MINT_TEST_TOKENS_CLIENT_V1_REV MINT_TEST_TOKENS_CLIENT_V2_REV)
+             MINT_TEST_TOKENS_REF MINT_TEST_TOKENS_CLIENT_V1_REV MINT_TEST_TOKENS_CLIENT_V2_REV
+             SIGNET_FAKENET_REF)
 HASH_PINS=(SIGNET_PKG_SHA256)
 VERSION_PINS=(SIGNET_PKG_VERSION)
 

@@ -72,6 +72,9 @@ FRONTEND_IMAGE=midnight-2-offers/zswap-da:${IMAGE_TAG_SUFFIX}
 # which is how the first version of this comment printed ":local: command not found".
 AA_IMAGE=midnight-2-offers/aa-contracts:${IMAGE_TAG_SUFFIX}
 SOLVER_IMAGE=midnight-2-offers/cow-solver:${IMAGE_TAG_SUFFIX}
+# The signet profile's MPC responder. Built from our fork of sig-net/solana-signet-program at a
+# pinned commit; it publishes no host port, so only the tag has to be run-specific.
+SIGNET_FAKENET_IMAGE=midnight-2-offers/signet-fakenet:${IMAGE_TAG_SUFFIX}
 SOLVER_SINK_IMAGE=midnight-2-offers/cow-solver-sink:${IMAGE_TAG_SUFFIX}
 # ONE build context, TWO runtime targets (nginx page server + node/bun deploy/verify one-shot), so
 # two image names. Both must carry the run-specific tag or a second stack on this daemon would
@@ -156,4 +159,6 @@ SHIELDED_NIGHT_WAIT_TIMEOUT=${SHIELDED_NIGHT_WAIT_TIMEOUT:-900}
 # cold chain, and a read-only verification that re-queries every one of them. On the 2.x line
 # proving runs 1.25-1.6x slower than on 1.x, so this is minutes.
 FAUCET_WAIT_TIMEOUT=${FAUCET_WAIT_TIMEOUT:-1500}
+# The signet responder is gated on aa-deploy COMPLETING, so this covers that whole deploy too.
+SIGNET_WAIT_TIMEOUT=${SIGNET_WAIT_TIMEOUT:-600}
 EOF

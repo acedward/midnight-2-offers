@@ -119,6 +119,20 @@ Every step's console output is also written to `.ci-logs/<project>/NN-<step>.log
 | `aa-console` | service | 4a verify.sh | `scripts/verify-aa.sh` | `aa-console takes its token set from the local mint-test-tokens registry` |
 | ↳ |  | 4a verify.sh --aa-mint | `scripts/verify-aa.sh` | `console mint: one shielded and one unshielded token minted through the local issuers and deposited` **·B** |
 
+#### `compose/signet.yml` — profile `signet` (needs `aa`)
+
+The MPC responder that turns the `aa` profile's bridge vault from "the circuits are deployed"
+into "funds can cross". Its central assertion is a SECOND derivation: the vault's own EVM address
+and the MPC response key are re-derived from the per-stack root secret *inside the responder's own
+image*, with Sig Network's `@sig-net/midnight`, and compared with the deploy receipt — deriving
+them with the fork's client, which is the code that wrote the receipt, would be circular.
+
+| Service | Kind | Gate step | Script | Assertion |
+|---|---|---|---|---|
+| `signet-fakenet` | service | 4a verify.sh | `scripts/verify-signet.sh` | `the vault was initialised against this stack's own MPC root (mpc.provenance=fakenet)` **·B** |
+| ↳ |  | 4a verify.sh | `scripts/verify-signet.sh` | `the responder serves exactly one caller, and it is this stack's vault` **·B** |
+| ↳ |  | 4a verify.sh | `scripts/verify-signet.sh` | `zero signature requests served` **·B** |
+
 #### `compose/faucet.yml` — profile `faucet`
 
 | Service | Kind | Gate step | Script | Assertion |
