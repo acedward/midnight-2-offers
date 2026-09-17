@@ -97,9 +97,13 @@ const readConfig = (name: string): string => {
 };
 const SEED       = readConfig("DEMO_WALLET_SEED");
 const NETWORK_ID = readConfig("MIDNIGHT_NETWORK_ID");
-if (!/^[0-9a-f]{64}$/i.test(SEED)) {
-  fail(`/config.js carries no 64-hex DEMO_WALLET_SEED (got ${JSON.stringify(SEED)}) — the page's ` +
-       `in-page wallet would be a random empty one, and nothing could ever fund it`);
+// 64 hex = a 32-byte seed (the stack's own demo wallet); 128 hex = a BIP-39 master seed,
+// which is how an operator puts THEIR wallet in the page (project 00035, question Q10). Both
+// go through the same `HDWallet.fromSeed` import, so both are valid here; anything else means
+// the page has no fixed wallet at all.
+if (!/^[0-9a-f]{64}$/i.test(SEED) && !/^[0-9a-f]{128}$/i.test(SEED)) {
+  fail(`/config.js carries no 64- or 128-hex DEMO_WALLET_SEED (got ${JSON.stringify(SEED)}) — the ` +
+       `page's in-page wallet would be a random empty one, and nothing could ever fund it`);
 }
 if (!NETWORK_ID) fail("/config.js carries no MIDNIGHT_NETWORK_ID");
 log(`config.js: network=${NETWORK_ID} seed=${SEED.slice(0, 8)}…${SEED.slice(-6)} ` +
