@@ -696,14 +696,24 @@ async function captureCoin(
   return next;
 }
 
-/** The failure shapes a WRONG `mt_index` produces. There are three, and the list is measured
- *  rather than guessed: the circuit's own merkle/witness complaints, the ledger wasm trapping
- *  while the unproven transaction is still being BUILT (`zswapinput_newContractOwned` →
- *  "Unreachable code should not be executed", wrapped by midnight-js as "Unexpected error
- *  executing scoped transaction"), and the qualified-coin asserts. Anything else — a proof
- *  server that fell over, a closed socket — is a REAL failure and must surface as itself. */
+/** The failure shapes a WRONG `mt_index` produces. The list is measured rather than guessed:
+ *
+ *   * the circuit's own merkle/witness/qualified-coin complaints;
+ *   * the ledger wasm trapping while the unproven transaction is still being BUILT
+ *     (`zswapinput_newContractOwned` → "Unreachable code should not be executed", wrapped by
+ *     midnight-js as "Unexpected error executing scoped transaction");
+ *   * ⚠ and an opaque **400 Bad Request from the proof server**, which is the one a reader would
+ *     not guess. Measured 2026-09-17: proving a withdraw against the wrong commitment index
+ *     failed with nothing more than
+ *         'prove' returned an error: Failed Proof Server response: … code="400"
+ *     while the SERVER's own log carried the actual reason —
+ *         midnight_zkir::ir_vm: Public transcript input mismatch idx=13 expected=… computed=…
+ *     The client never sees that line. A 400 is the prover saying "your input is wrong", which is
+ *     exactly this case; a prover that fell over answers with a 5xx or a closed socket, and those
+ *     stay out of this pattern so `withProveRetry` still owns them.
+ */
 const WRONG_MT_INDEX =
-  /merkle|mt_index|witness|commitment|unreachable|newContractOwned|zswapinput|qualified/i;
+  /merkle|mt_index|witness|commitment|unreachable|newContractOwned|zswapinput|qualified|code="400"|Bad Request/i;
 
 /**
  * Run a device-gated spend against the coin's stored `mt_index`.
