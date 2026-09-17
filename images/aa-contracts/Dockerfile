@@ -52,7 +52,7 @@
 # The Passport fork. A full 40-hex commit, never a branch: the account's verifier keys
 # are what a deployed account is, so "the tip of a branch" is not an identity.
 ARG PASSPORT_REPO=https://github.com/acedward/passport.git
-ARG PASSPORT_REF=34c71a48ee3ef475479a0582c50cda5b12feec80
+ARG PASSPORT_REF=ee1ffedab40f1abe8f3041a9423ae24e89b90bc2
 
 # The kernel tree, for the compactc pin and its checksums ONLY (as before). The kernel
 # image itself is built elsewhere; nothing of it runs here.

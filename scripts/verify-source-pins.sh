@@ -193,7 +193,7 @@ SOLVER_EXPECTED="${SOLVER_REF:-5d794f9a27f6d65529bf176650405f740531d430}"
 # singleton, the test faucet and the TypeScript client, all compiled INSIDE the aa image. A
 # deployed account IS its verifier keys, so this is the pin that decides whether the console
 # in front of an operator can talk to the accounts on this chain at all.
-PASSPORT_EXPECTED="${PASSPORT_REF:-34c71a48ee3ef475479a0582c50cda5b12feec80}"
+PASSPORT_EXPECTED="${PASSPORT_REF:-ee1ffedab40f1abe8f3041a9423ae24e89b90bc2}"
 # The Signet protocol's Compact module. TWO kinds of identity and only the second decides
 # which bytes: the version is the URL, the SHA-256 is the tarball. (They replaced the retired
 # MinoCrab release's three, project 00034.)

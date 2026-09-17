@@ -295,7 +295,7 @@ const REPOS = [
   {
     repo: "acedward/passport", url: "https://github.com/acedward/passport",
     role: "THE ACCOUNT MODEL — a fork of midnightntwrk/passport with a third authorisation arm whose device is an Ethereum EOA (`evm`), an open ZSwap offer circuit, a witness-free ERC20 bridge vault, and the TypeScript client this console runs on. One contract PER USER; there is no shared Manager any more",
-    ref: "00034-passport-evm-account-zswap @ 34c71a48 (sha-pinned as PASSPORT_REF)",
+    ref: "00034-passport-evm-account-zswap @ ee1ffeda (sha-pinned as PASSPORT_REF)",
     notes: [
       ["", "", "the image compiles the whole CALL TREE with ONE compactc 0.34.0 — the Signet singleton, then the vault that calls it, then the account that calls the vault — because the compiler embeds a fingerprint of each callee's verifier key and the runtime compares it"],
       ["", "", "every gated `evm` circuit is k=18 (keccak + EIP-712 + ECDSA in-circuit); the offer circuit's prover key is 570 MB, which is why the image keeps a NAMED set of prover keys rather than all of them"],

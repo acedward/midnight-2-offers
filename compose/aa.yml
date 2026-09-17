@@ -65,7 +65,7 @@ x-aa-build: &aa-build
     # asserted in the image — a deployed account IS its verifier keys, so "the tip of a
     # branch" is not an identity.
     PASSPORT_REPO: '${PASSPORT_REPO:-https://github.com/acedward/passport.git}'
-    PASSPORT_REF: '${PASSPORT_REF:-34c71a48ee3ef475479a0582c50cda5b12feec80}'
+    PASSPORT_REF: '${PASSPORT_REF:-ee1ffedab40f1abe8f3041a9423ae24e89b90bc2}'
     # The kernel tree, for the compactc pin (infra/compact-version.txt) and its SHA-256
     # checksums ONLY. ONE compactc compiles the account, the vault, the singleton and the
     # faucet, and must agree with the runtime the mint-test-tokens artifacts were built for.
