@@ -17,7 +17,7 @@
 # ONE service, because everything else it would have needed already exists:
 #
 #   signet-fakenet   our patched fakenet MPC responder (images/signet-fakenet/, built from
-#                    acedward/solana-signet-program @ a1a7798 = fork PR #1). It watches the
+#                    acedward/solana-signet-program @ a1a7798, on the fork's default branch `00034-develop-base`; fork PR #1 merged). It watches the
 #                    singleton `aa-deploy` deployed, serves ONLY the vault `aa-deploy` deployed
 #                    (MIDNIGHT_CALLER_ALLOWLIST, 00034 question Q64), signs with the per-stack
 #                    root key, broadcasts on the operator's Sepolia RPC and posts the attestation

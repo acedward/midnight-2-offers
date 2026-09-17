@@ -11,7 +11,7 @@
 # exists so it can be built WITHOUT a stack — in CI, on a fresh clone, or to refresh it after the
 # fork moves — and so the provenance is stated in one place a person can read.
 #
-# WHAT IS BEING BUILT. acedward/solana-signet-program, branch `00034-trace-fallback`, pinned
+# WHAT IS BEING BUILT. acedward/solana-signet-program, default branch `00034-develop-base` (fork PR #1 merged 2026-09-17), pinned
 # commit a1a7798f… — our fork of sig-net/solana-signet-program (MIT; fork PR #1), which is
 # upstream `develop` @ 13fd0e8e (tag fakenet-v0.23.0, the commit behind
 # ghcr.io/sig-net/fakenet:0.23.0) plus two local patches:

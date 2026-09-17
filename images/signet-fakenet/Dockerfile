@@ -1,9 +1,9 @@
 # signet-fakenet — the MPC responder of the `signet` profile.
 #
-# Source: acedward/solana-signet-program, branch `00034-trace-fallback`, pinned commit
+# Source: acedward/solana-signet-program, default branch `00034-develop-base` (fork PR #1 merged 2026-09-17), pinned commit
 # a1a7798f… — our fork of sig-net/solana-signet-program (MIT) with TWO local patches on top
 # of upstream `develop` @ 13fd0e8e (= tag fakenet-v0.23.0, the commit behind
-# ghcr.io/sig-net/fakenet:0.23.0). Fork PR: acedward/solana-signet-program#1.
+# ghcr.io/sig-net/fakenet:0.23.0). Fork PR acedward/solana-signet-program#1 is merged; the default branch's head has the same tree as the pin.
 #
 #   58c39d5  `eth_call` replay when the RPC has no debug_traceTransaction (project 00034,
 #            question Q62). Alchemy's free tier rejects `debug_traceTransaction`, which is

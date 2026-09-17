@@ -93,7 +93,7 @@
     },
     {
       "component": "**Passport accounts** — account contract, ERC20 vault, client",
-      "source": "[`acedward/passport`](https://github.com/acedward/passport) `00034-passport-evm-account-zswap`; the whole call tree compiled in-image with the kernel's compactc 0.34.0",
+      "source": "[`acedward/passport`](https://github.com/acedward/passport) `main` — fork PRs #1 and #2 merged 2026-09-17, `PASSPORT_REF` is a commit on it; the whole call tree compiled in-image with the kernel's compactc 0.34.0",
       "pin": "{commit:PASSPORT_REF@acedward/passport}",
       "pinnedIn": "{files:PASSPORT_REF}"
     },
@@ -105,7 +105,7 @@
     },
     {
       "component": "**signet MPC responder** — the `signet` profile's fakenet",
-      "source": "[`acedward/solana-signet-program`](https://github.com/acedward/solana-signet-program) `00034-trace-fallback` (fork PR #1) — upstream `sig-net/solana-signet-program` at tag `fakenet-v0.23.0` plus two local patches: an `eth_call` replay when the RPC has no `debug_traceTransaction` (demo-grade) and `MIDNIGHT_CALLER_ALLOWLIST`",
+      "source": "[`acedward/solana-signet-program`](https://github.com/acedward/solana-signet-program) `00034-develop-base` — the fork's default branch since fork PR #1 merged on 2026-09-17; its head carries the same tree as the pinned commit — upstream `sig-net/solana-signet-program` at tag `fakenet-v0.23.0` plus two local patches: an `eth_call` replay when the RPC has no `debug_traceTransaction` (demo-grade) and `MIDNIGHT_CALLER_ALLOWLIST`",
       "pin": "{commit:SIGNET_FAKENET_REF@acedward/solana-signet-program}",
       "pinnedIn": "{files:SIGNET_FAKENET_REF}"
     },

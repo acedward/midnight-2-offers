@@ -17,7 +17,7 @@
 #     `AA_ZKIR_SOURCE`, `MINOCRAB_*` and `AA_PRUNE_MANAGER_PROVERS` are removed. The
 #     prover keys this image keeps are now NAMED, in `AA_PROVER_KEYS`.
 #
-# Source: acedward/passport, branch 00034-passport-evm-account-zswap, pinned by full SHA
+# Source: acedward/passport, main (fork PRs #1/#2 merged 2026-09-17), pinned by full SHA
 # as PASSPORT_REF. Everything this image compiles lives under that repo's `contract/`:
 # `contracts/account.compact` (+ `contracts/modules/*`) and `contracts/erc20-vault/`
 # (the witness-free vault fork and the vendored Signet singleton). Fetched from the
