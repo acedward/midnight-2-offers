@@ -138,12 +138,24 @@ services:
       AA_DOMAIN: '${AA_DOMAIN:-demo-infra:aa:v1}'
       AA_MINT_AMOUNT: '${AA_MINT_AMOUNT:-1000000000}'
       # The EIP-155 chain the VAULT is pinned to at `initialise`. 31337 is anvil's, which is
-      # what the `evm` profile runs and what a future `signet` profile would fork.
+      # what the `evm` profile runs. `up.sh --with signet` raises it to 11155111 (Sepolia),
+      # which is the chain that profile's responder signs on.
       AA_EVM_CHAIN_ID: '${AA_EVM_CHAIN_ID:-31337}'
-      # Override the vault's MPC root key with a real one (the `signet` profile's fakenet
-      # responder). Unset means a LOCAL STUB derived from AA_DOMAIN, recorded as such in the
-      # deploy receipt: no MPC runs on this stack, and the vault is initialised so that
-      # accounts can be CONSTRUCTED, not so that funds can cross a bridge.
+      # `1` when the `signet` profile is up. up.sh exports it; it is NOT an overlay of this
+      # service from compose/signet.yml, deliberately — an overlay would make the ORDER of
+      # `-f compose/<name>.yml` arguments load-bearing, and `--with signet --with aa` would
+      # then render differently from `--with aa --with signet` (project 00035, question Q12).
+      #
+      # With it set, aa-deploy GENERATES a per-stack 32-byte MPC root secret into
+      # /aa/out/signet-root.env (mode 600, this volume), initialises the vault against its
+      # public half, records `mpc.provenance: "fakenet"`, and REFUSES the AA_DOMAIN stub —
+      # a stub-keyed vault on a profile that moves real funds would strand every deposit at
+      # an address whose private key is published in deploy-aa.ts's own comments.
+      AA_SIGNET: '${AA_SIGNET:-}'
+      # Override the vault's MPC root key with one the operator holds. Unset AND without
+      # `signet` means a LOCAL STUB derived from AA_DOMAIN, recorded as such in the deploy
+      # receipt: no MPC runs on this stack, and the vault is initialised so that accounts can
+      # be CONSTRUCTED, not so that funds can cross a bridge.
       AA_MPC_ROOT_SECRET: '${AA_MPC_ROOT_SECRET:-}'
     volumes:
       - 'aa-out:/aa/out'

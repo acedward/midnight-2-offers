@@ -30,14 +30,28 @@
 //
 //   * the artifact records `mpc.provenance: "derived-from-AA_DOMAIN"` and verify-aa.sh
 //     prints it, rather than letting a stub look like a key somebody chose;
-//   * `AA_MPC_ROOT_SECRET` overrides it — which is what the `signet` profile does, passing
-//     the fakenet responder's own root secret so the derived deposit addresses are the
-//     ones the responder will actually sweep.
+//   * `AA_MPC_ROOT_SECRET` overrides it — which is what an operator holding a real root
+//     does, so the derived deposit addresses are the ones a responder will actually sweep.
+//
+// THE `signet` PROFILE (project 00035) TURNS THAT ROUND. With `AA_SIGNET=1` this one-shot
+// GENERATES a per-stack 32-byte root secret, writes it to `/aa/out/signet-root.env` (mode
+// 600, on the `aa-out` volume) and initialises the vault against its public half — and it
+// REFUSES the `AA_DOMAIN` stub outright, because a stub-keyed vault on a profile whose whole
+// purpose is to move real funds would strand every deposit at an address whose private key
+// is published in this file's own comments. The responder (compose/signet.yml) reads the same
+// file. Generating it HERE rather than in a separate one-shot is deliberate: this is the
+// EARLIER consumer — it cannot initialise the vault without the public half — and it already
+// owns the volume, so nothing has to order a second service ahead of a service declared in
+// another compose fragment. `./down.sh -v` removes `aa-out`, which rotates the root key with
+// the chain whose vault was initialised against it. Project 00035, question Q12.
 //
 // Env (all with demo defaults):
 //   AA_DOMAIN          the stack label, and the seed of the two derived local keys
 //   AA_MINT_AMOUNT     amount minted per family (default 1_000_000_000)
-//   AA_EVM_CHAIN_ID    the EIP-155 chain the vault is pinned to (default 31337, anvil)
+//   AA_EVM_CHAIN_ID    the EIP-155 chain the vault is pinned to (default 31337, anvil;
+//                      up.sh raises it to 11155111 when the `signet` profile is on)
+//   AA_SIGNET          `1` when the `signet` profile is up: generate/load a per-stack MPC
+//                      root secret, refuse the stub, record mpc.provenance = "fakenet"
 //   AA_MPC_ROOT_SECRET / AA_VAULT_DEPLOYER_SECRET   32-byte hex overrides
 //   MIDNIGHT_WALLET_SEED and the MIDNIGHT_* endpoints — the usual midnight-env set.
 //
@@ -45,8 +59,8 @@
 
 import "./passport-env.ts";
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 
 import { CompiledContract } from "@midnight-ntwrk/compact-js";
 import { deployContract } from "@midnight-ntwrk/midnight-js-contracts";
@@ -117,6 +131,70 @@ const secretFromEnv = (name: string, purpose: string): { bytes: Uint8Array; deri
   return { bytes, derived: false };
 };
 
+// ── the `signet` profile's per-stack MPC root (project 00035) ────────────────
+const WITH_SIGNET = /^(1|true|yes|on)$/i.test(process.env["AA_SIGNET"] ?? "");
+const SIGNET_ROOT_PATH = `${OUT_DIR}/signet-root.env`;
+
+/**
+ * The 32-byte MPC root secret this stack's vault is initialised against, and which the
+ * `signet` responder holds the other use of.
+ *
+ * Order: an explicit `AA_MPC_ROOT_SECRET` wins (an operator who holds a real root), then an
+ * existing `/aa/out/signet-root.env` (a re-run against the same volume must reproduce the
+ * same vault), then a freshly generated one. The generated file is mode 600 and is written
+ * BEFORE the vault is deployed, so a crash between the two leaves a key whose vault does not
+ * exist — recoverable — rather than a vault whose key does not.
+ *
+ * It is never logged, never an argument and never leaves the volume. Only the PUBLIC half
+ * reaches the receipt.
+ */
+const signetRootSecret = (): { bytes: Uint8Array; provenance: string; note: string } => {
+  const fromEnv = process.env["AA_MPC_ROOT_SECRET"];
+  if (fromEnv) {
+    const bytes = hexToBytes(fromEnv);
+    if (bytes.length !== 32) throw new Error("AA_MPC_ROOT_SECRET must be 32 bytes of hex");
+    return {
+      bytes,
+      provenance: "fakenet",
+      note: "supplied by the operator as AA_MPC_ROOT_SECRET and used by the `signet` responder; " +
+        "the stack holds BOTH halves, so this bridge is demo-grade by construction",
+    };
+  }
+  if (existsSync(SIGNET_ROOT_PATH)) {
+    const line = readFileSync(SIGNET_ROOT_PATH, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.startsWith("MPC_ROOT_KEY="));
+    if (!line) throw new Error(`${SIGNET_ROOT_PATH} exists but carries no MPC_ROOT_KEY=`);
+    const bytes = hexToBytes(line.slice("MPC_ROOT_KEY=".length).trim());
+    if (bytes.length !== 32) throw new Error(`${SIGNET_ROOT_PATH}: MPC_ROOT_KEY must be 32 bytes of hex`);
+    return {
+      bytes,
+      provenance: "fakenet",
+      note: `generated for this stack by an earlier aa-deploy and re-read from ${SIGNET_ROOT_PATH}; ` +
+        "the stack holds BOTH halves, so this bridge is demo-grade by construction",
+    };
+  }
+  const bytes = new Uint8Array(randomBytes(32));
+  mkdirSync(OUT_DIR, { recursive: true });
+  writeFileSync(
+    SIGNET_ROOT_PATH,
+    "# The `signet` profile's PER-STACK MPC root PRIVATE key, generated by aa-deploy.\n" +
+      "# It is the other half of the key this stack's bridge vault was initialised against.\n" +
+      "# NEVER copy it anywhere: `./down.sh -v` removes this volume and rotates it with the\n" +
+      "# chain, which is the only lifecycle that keeps a vault and its signer in step.\n" +
+      `MPC_ROOT_KEY=0x${toHex(bytes)}\n`,
+    { mode: 0o600 },
+  );
+  chmodSync(SIGNET_ROOT_PATH, 0o600);
+  return {
+    bytes,
+    provenance: "fakenet",
+    note: `generated for this stack and written to ${SIGNET_ROOT_PATH} (mode 600) for the ` +
+      "`signet` responder; the stack holds BOTH halves, so this bridge is demo-grade by construction",
+  };
+};
+
 const contractRefArg = (address: string): { bytes: Uint8Array } => ({
   bytes: encodeContractAddress(address),
 });
@@ -173,7 +251,17 @@ const singleton = await deployWitnessFree(walletCtx, "SignetSigner", SignetModul
 log(`  singleton ${singleton.address}`);
 
 // ── 2. the vault ─────────────────────────────────────────────────────────────
-const mpcRoot = secretFromEnv("AA_MPC_ROOT_SECRET", "demo-infra:aa:mpc-root");
+// With `signet`, the stub is REFUSED rather than merely recorded: on that profile the vault
+// pins a real EVM chain and a responder signs for it, and a root key whose private half is
+// published in this file's comments would send every deposit to an address anybody can sweep.
+const mpcRoot = WITH_SIGNET
+  ? signetRootSecret()
+  : { ...secretFromEnv("AA_MPC_ROOT_SECRET", "demo-infra:aa:mpc-root"), provenance: "", note: "" };
+if (WITH_SIGNET) {
+  log(`signet profile: per-stack MPC root — ${(mpcRoot as { note: string }).note}`);
+} else if ((mpcRoot as { derived?: boolean }).derived === false) {
+  log("AA_MPC_ROOT_SECRET supplied — the vault is initialised against an operator-held root");
+}
 const deployer = secretFromEnv("AA_VAULT_DEPLOYER_SECRET", "demo-infra:aa:vault-deployer");
 const mpcRootPublic = normaliseSecp256k1PublicKey(
   formatSecp256k1PublicKey(secp256k1PublicKeyOf(mpcRoot.bytes)),
@@ -290,10 +378,24 @@ const artifact = {
   },
   mpc: {
     rootPublicKey: mpcRootPublic,
-    provenance: mpcRoot.derived ? "derived-from-AA_DOMAIN" : "AA_MPC_ROOT_SECRET",
-    note: mpcRoot.derived
-      ? "LOCAL STUB: the private half is sha256('demo-infra:aa:mpc-root:' + AA_DOMAIN) and is therefore public. No MPC runs on this stack unless the `signet` profile is up; the vault is initialised so accounts can be constructed, not so funds can cross a bridge."
-      : "supplied by the operator (the `signet` profile passes the fakenet responder's own root secret)",
+    // The value scripts/verify-signet.sh and the fakenet's own entrypoint gate on. "fakenet"
+    // means a responder holds the other half of this key and the bridge can actually move
+    // funds; "derived-from-AA_DOMAIN" means the opposite, loudly.
+    provenance: WITH_SIGNET
+      ? (mpcRoot as { provenance: string }).provenance
+      : ((mpcRoot as { derived?: boolean }).derived ? "derived-from-AA_DOMAIN" : "AA_MPC_ROOT_SECRET"),
+    note: WITH_SIGNET
+      ? (mpcRoot as { note: string }).note
+      : ((mpcRoot as { derived?: boolean }).derived
+        ? "LOCAL STUB: the private half is sha256('demo-infra:aa:mpc-root:' + AA_DOMAIN) and is therefore public. No MPC runs on this stack unless the `signet` profile is up; the vault is initialised so accounts can be constructed, not so funds can cross a bridge."
+        : "supplied by the operator as AA_MPC_ROOT_SECRET"),
+    // The MPC's own response key for THIS vault, alongside the root. It is already under
+    // `vault.mpcResponseKey`; repeated here because it is an MPC-derived value and
+    // scripts/verify-signet.sh re-derives exactly these two, independently, inside the
+    // responder's image.
+    responseKey: responseKeyHex,
+    // Only meaningful with `signet`: where the other half of the root lives on this stack.
+    ...(WITH_SIGNET ? { secretFile: SIGNET_ROOT_PATH, attestation: "eth_call replay when the RPC has no debug_traceTransaction — demo-grade (00034 Q62)" } : {}),
   },
   testFaucet: {
     address: faucet.address,
