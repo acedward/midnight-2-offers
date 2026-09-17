@@ -535,7 +535,7 @@ RUN set -eux; \
     cd /aa; \
     for f in runner/aa-console.ts runner/aa-e2e.ts runner/deploy-aa.ts runner/aa-console-mint.ts \
              runner/aa-offer.ts runner/aa-bridge.ts runner/aa-bridge-e2e.ts runner/aa-bridge-dryrun.ts \
-             runner/aa-wallet-balance.ts; do \
+             runner/aa-story-e2e.ts runner/aa-wallet-balance.ts; do \
       bun build "./$f" --target=bun --packages=external --outfile=/tmp/resolve-check.js >/dev/null \
         || { echo "FAIL: ${f} imports a name that does not exist (see the error above)" >&2; exit 1; }; \
       echo "resolves: ${f}"; \

@@ -87,6 +87,8 @@ ENV_FILE=.env.test ./up.sh --all      # …for a second stack beside the first
 ./scripts/aa-e2e.sh                   # end-to-end of the EVM-signed AA path
 ./scripts/aa-bridge-dryrun.sh         # one MPC signing request, NOTHING funded and nothing broadcast
 ./scripts/aa-bridge-e2e.sh            # end-to-end of the ERC20 bridge — it SPENDS on the EVM chain
+./scripts/aa-story-e2e.sh             # bridge in → open offer → the FRONTEND's wallet takes it → the
+                                      #   console reconciles → bridge out.  Also SPENDS
 ./scripts/wallet-address.sh <seed>    # one public address form of a seed (the seed is never printed)
 ./down.sh                             # stop, keep the chain (./up.sh resumes)
 ./down.sh -v                          # FULL RESET — wipes every volume, cache included

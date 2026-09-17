@@ -412,6 +412,13 @@
           "assertion": "the headless end-to-end test of the ERC20 bridge",
           "behavioural": true,
           "note": "drives the console's OWN HTTP API for a full bridge round trip on a real EVM chain: register, a refused start against an unfunded deposit address, a deposit into the account, a deposit to a Midnight wallet the console holds no key of, a withdrawal, the caps, and a resume that changes nothing. It SPENDS on the EVM chain, so it is not part of ci-check's default run."
+        },
+        {
+          "step": "optional: scripts/aa-story-e2e.sh",
+          "script": "scripts/aa-story-e2e.sh",
+          "assertion": "the console reconciles the account by itself",
+          "behavioural": true,
+          "note": "the seven-step story: bridge the want token to the OFFER-FILES FRONTEND'S OWN in-page wallet and the give token into the account, publish an OPEN offer whose two legs are bridged colours, let that wallet settle it through the batcher (a taker in another app, holding no key of the account's), and assert the console noticed within 60 s, cleared the live offer, dropped the nullified coin and captured the received one — then spend that coin back out through the bridge, which is what proves its Merkle position was recovered correctly. It SPENDS on the EVM chain, so it is opt-in (ci-check --story-e2e, step 4h)."
         }
       ]
     },

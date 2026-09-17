@@ -782,6 +782,8 @@ tree for the shape of all of this.
 ./up.sh --with aa --with signet --with offerfiles --with frontend   # then http://127.0.0.1:10700 → Bridge
 ./scripts/aa-bridge-dryrun.sh          # one signing request, nothing funded, nothing broadcast
 ./scripts/aa-bridge-e2e.sh --evidence <dir>   # the full round trip; it SPENDS on the EVM chain
+./scripts/aa-story-e2e.sh --evidence <dir>    # …and what the bridge is FOR: an offer in bridged
+                                              #   colours, taken by the frontend's own wallet
 ```
 
 Tokens on the EVM chain become **shielded Midnight coins**, one colour per ERC20 per vault:

@@ -253,6 +253,13 @@ services:
       # (docs/KNOWN-LIMITATIONS.md). up.sh writes the same value into /aa/out/frontend-wallet.json
       # after it funds that wallet, so an operator who sets nothing still gets the button.
       AA_FRONTEND_WALLET_SHIELDED_ADDRESS: '${FRONTEND_WALLET_SHIELDED_ADDRESS:-}'
+      # How often the console asks whether one of ITS OWN offers has been consumed by somebody
+      # else (spec FR-011, the owner's question Q7). An open offer is settled by whoever takes
+      # it — in the offer-files frontend, by the solver, by anyone — and nothing tells the maker,
+      # whose coin store then lists a coin the settlement nullified. SC-005 asks for 60 s; 15 s
+      # leaves room for a block and an index. Set 0 to turn the poller off and rely on the
+      # account view's Refresh button, which runs the same reconcile on demand.
+      AA_OFFER_POLL_MS: '${AA_OFFER_POLL_MS:-15000}'
     ports:
       - '${BIND_ADDR:-127.0.0.1}:${AA_CONSOLE_HOST_PORT:-10700}:8090'
     volumes:

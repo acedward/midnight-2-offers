@@ -22,6 +22,9 @@
 #   4e. spa         the SPA's headless take (through the batcher) and make
 #   4f. aa-e2e      register (deploy an account) -> fund -> offer -> settle -> spend
 #   4g. bridge-e2e  OPT-IN (--bridge-e2e): the ERC20 bridge round trip on a real EVM chain
+#   4h. story-e2e   OPT-IN (--story-e2e): the owner's seven steps — bridge in, publish an
+#                   OPEN offer in bridged colours, let the FRONTEND'S wallet take it, and
+#                   watch the console notice; also on a real EVM chain
 #   5.  down -v     full teardown, then ASSERT that nothing survived
 #
 # Every step's output is also written to .ci-logs/<project>/<step>.log, and the run ends with a
@@ -56,6 +59,7 @@ DO_SPA_ROUNDTRIP=1
 DO_AA_E2E=1
 # The bridge e2e SPENDS on a real EVM chain, so it is opt-in rather than opt-out.
 DO_BRIDGE_E2E=0
+DO_STORY_E2E=0
 KEEP=0
 CI_ENV_FILE=""
 
@@ -81,6 +85,8 @@ Options:
   --no-aa-e2e        skip step 4f (the EVM-signed Passport account path)
   --bridge-e2e       ALSO run step 4g, the ERC20 bridge round trip. It moves real tokens and
                      real gas on the chain SIGNET_EVM_RPC_URL serves, within AA_BRIDGE_CAP_*.
+  --story-e2e        ALSO run step 4h, the seven-step story (bridge in, offer, external take,
+                     reconcile, bridge out). Same posture as 4g: it SPENDS, so it is opt-in.
   --keep             on failure, leave the stack up for inspection (still cleaned on success)
   --env-file <path>  write the generated env file here and keep it (default: a temp file in
                      the repo, removed on exit)
@@ -102,6 +108,7 @@ while [[ $# -gt 0 ]]; do
     --no-spa-roundtrip) DO_SPA_ROUNDTRIP=0; shift ;;
     --no-aa-e2e) DO_AA_E2E=0; shift ;;
     --bridge-e2e) DO_BRIDGE_E2E=1; shift ;;
+    --story-e2e) DO_STORY_E2E=1; shift ;;
     --keep)      KEEP=1; shift ;;
     --env-file)  CI_ENV_FILE="${2:?--env-file needs a path}"; shift 2 ;;
     -h|--help)   usage; exit 0 ;;
@@ -553,6 +560,24 @@ for w in doc.get("wallets", []):
     fi
   else
     skip_step 4g "aa-bridge-e2e.sh" "off by default — it SPENDS on a real EVM chain (--bridge-e2e)"
+  fi
+
+  # ── step 4h: the OWNER'S SEVEN-STEP STORY, opt-in for the same reason ──────
+  #
+  # 4g proves the bridge; this proves what the bridge is FOR. It publishes an open offer whose
+  # two legs are bridged colours, has the offer-files frontend's own in-page wallet settle it
+  # through the batcher — a taker in another app, holding no key of the account's — and then
+  # asserts that the console noticed within 60 s and that the coin it reconciled is REAL, by
+  # spending it back out through the bridge. Spec SC-001/004/005; project 00035 sub-plan C.
+  if (( ! FAILED && DO_STORY_E2E )); then
+    if [[ -z "${SIGNET_EVM_RPC_URL:-}" ]]; then
+      skip_step 4h "aa-story-e2e.sh" "SIGNET_EVM_RPC_URL is not set (the stack has no signet profile)"
+    else
+      step 4h "aa-story-e2e.sh (register -> bridge -> offer -> the frontend wallet takes -> reconcile -> bridge out)" \
+        "$REPO_ROOT/scripts/aa-story-e2e.sh" || true
+    fi
+  else
+    skip_step 4h "aa-story-e2e.sh" "off by default — it SPENDS on a real EVM chain (--story-e2e)"
   fi
 fi
 

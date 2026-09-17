@@ -631,6 +631,7 @@ keeps everything it already wrote.
 ./up.sh --with aa --with signet --with offerfiles --with frontend   # Bridge tab at :10700
 ./scripts/aa-bridge-dryrun.sh                    # 1. does the responder answer AT ALL?  (free)
 ./scripts/aa-bridge-e2e.sh --evidence ./evidence # 2. the full round trip                (SPENDS)
+./scripts/aa-story-e2e.sh  --evidence ./evidence # 3. the seven-step story                (SPENDS)
 ```
 
 **Run the dry run first, every time, on a stack that has never bridged.** It raises ONE signature
@@ -648,7 +649,7 @@ private key. Neither is ever an argument:
 | secret | where it lives | who sees it |
 |---|---|---|
 | `SIGNET_EVM_RPC_URL` | the uncommitted env file | `signet-fakenet` and `aa-console`. Never echoed in `/api/info`, in a bridge record or in a log line |
-| `SEPOLIA_FUNDER_KEY` | `~/.config/aa-00034/sepolia.env`, mode 600 | `scripts/aa-bridge-e2e.sh`, which writes it into a mode-600 file under a private temp directory and mounts that file into the e2e container. **Never `-e KEY=value`**: a `docker compose run` command line is visible in `ps` on a shared machine. Removed on exit, whatever happens |
+| `SEPOLIA_FUNDER_KEY` | `~/.config/aa-00034/sepolia.env`, mode 600 | `scripts/aa-bridge-e2e.sh` and `scripts/aa-story-e2e.sh`, each of which writes it into a mode-600 file under a private temp directory and mounts that file into the e2e container. **Never `-e KEY=value`**: a `docker compose run` command line is visible in `ps` on a shared machine. Removed on exit, whatever happens |
 
 **The console has no key and no field that would take one** (spec FR-015). In the browser flow the
 operator sends the tokens and the gas from their own wallet to the address the Bridge tab shows.
@@ -667,6 +668,51 @@ deposit address (short version: keep the static root, and it needs a tool that i
 **Resuming.** Every request is persisted with its id. `GET /api/bridge/requests` lists them and
 `POST /api/bridge/relay/<requestId>` finishes one — the start is never redone, and pressing it on a
 finished request changes nothing. The Bridge tab's Requests pane has the same button.
+
+## Offers in bridged tokens, and the take you did not make (profile `aa` + `signet` + `offerfiles` + `frontend`)
+
+```bash
+./up.sh --with aa --with signet --with offerfiles --with frontend
+./scripts/aa-story-e2e.sh --evidence ./evidence   # the whole story headlessly; it SPENDS
+```
+
+This is what the bridge is for. An account holding a bridged coin publishes an OPEN swap offer
+whose two legs are bridged colours (Publish Offer on the console's **AA + EVM** tab), the console
+posts it to the offer-files kernel, and **anybody** settles it — in the offer-files SPA at
+`:10600`, by the solver, from another machine. The maker never pays a fee and never submits.
+
+**Amounts on that form are the TOKEN'S OWN UNITS.** `1` against 6-decimal USDC and `10` against
+18-decimal WEENUS; the line under the form shows what each becomes in base units before you sign.
+Every other form in the console still takes base units — the offer form is the one where the
+difference is unusable, because 10 WEENUS is `10000000000000000000`.
+
+**The frontend renders the legs readably because of a registry row, not a patch.** The console
+posts every bridged colour to the kernel's `POST /v1/known-tokens` with the ERC20's symbol and
+decimals, and the SPA reads decimals from that registry (`images/zswap-da/PROVENANCE.md`). That
+registration does not need the `faucet` profile. The kernel has no update route and `name` is
+UNIQUE, so a row that already names a DIFFERENT colour cannot be repaired from the console — it
+logs loudly and carries on, because the registry is display only and nothing about custody
+depends on it.
+
+**Nothing tells a maker that its offer was taken**, and the settlement nullifies a coin the
+console's store still lists — so the account's next call would fail inside proving, minutes later,
+with a message about a merkle path. The console therefore watches: every `AA_OFFER_POLL_MS`
+(15 s) it asks the kernel for the status of each of its live offers and, independently, asks the
+account contract's own action history. A call of `open_swap_shielded_with_evm` on the account IS
+the settlement — and it is the only source of the commitment window, because a taker's
+`transactionHash()` is not a key the indexer accepts. The reconcile then drops the spent coin,
+captures the received one (cross-checked against the inbox entries the offer sealed), records the
+settling transaction and clears the live offer.
+
+| when | what runs |
+|---|---|
+| every 15 s, while the console is up | the poller, per account with a live offer. It skips a pass while a job is proving, because both write the account record |
+| at console start | one pass, so an offer taken while the console was down is picked up on next load |
+| on demand | **Refresh** on the account view, or `POST /api/refresh {accountId}` / `{owner}` — the same reconcile, answering with what changed |
+| after this console's own taker settles | the same routine, with the transaction id it happens to hold as a hint |
+
+It is idempotent: running it twice on a settled offer reports "no live offer" the second time and
+writes the same store.
 
 ## The `shielded-night` profile
 
