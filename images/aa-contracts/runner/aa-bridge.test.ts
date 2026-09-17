@@ -20,6 +20,7 @@ process.env["AA_BRIDGE_CAP_ETH"] = "0.05";
 
 const {
   toRaw, fromRaw, formatEth, capDecimalFor, chargeCap, assertCapHeadroom, loadBridgeStore,
+  assertLegCeiling, LEG_CEILING_RAW,
   GAS_BUDGET_WEI, GAS_FUNDING_WEI, EVM_GAS,
 } = await import("./aa-bridge.ts");
 
@@ -74,6 +75,19 @@ test("caps refuse before anything is spent, and accumulate", () => {
   expect(loadBridgeStore().spent.ethWei).toBe(String(GAS_FUNDING_WEI));
   // 0.05 ETH / 0.002 per leg = 25 legs; the 26th is refused.
   expect(() => assertCapHeadroom("USDC", 0n, 6, GAS_FUNDING_WEI * 25n)).toThrow(/ETH cap exceeded/);
+});
+
+test("one leg cannot carry more than the vault's Uint<64> mint API (question Q17)", () => {
+  // Measured on real Sepolia: 20 WEENUS failed inside the start's proof with the CONTRACT's own
+  // message — `assert(amount <= 18446744073709551615, "Amount exceeds Uint<64> max")` — after the
+  // tokens had already been sent to the deposit address. The client refuses first now.
+  expect(LEG_CEILING_RAW).toBe(18_446_744_073_709_551_615n);
+  expect(() => assertLegCeiling("WEENUS", toRaw("18", 18), 18)).not.toThrow();
+  expect(() => assertLegCeiling("WEENUS", LEG_CEILING_RAW, 18)).not.toThrow();
+  expect(() => assertLegCeiling("WEENUS", LEG_CEILING_RAW + 1n, 18)).toThrow(/more than one bridge leg can carry/);
+  expect(() => assertLegCeiling("WEENUS", toRaw("20", 18), 18)).toThrow(/18.446744073709551615 WEENUS/);
+  // 1 USDC is nowhere near it, and neither is any plausible 6-decimal amount.
+  expect(() => assertLegCeiling("USDC", toRaw("5", 6), 6)).not.toThrow();
 });
 
 beforeAll(() => { /* the store path is set at module load, above */ });

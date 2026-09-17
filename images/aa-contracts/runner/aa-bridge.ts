@@ -450,6 +450,34 @@ export function requireRequest(requestId: string): BridgeRequest {
   return r;
 }
 
+/**
+ * The most ONE deposit or withdrawal can carry: 2^64 − 1 raw units.
+ *
+ * It is the VAULT's own assertion, not a client policy —
+ * `assert(amount <= 18446744073709551615, "Amount exceeds Uint<64> max")` on `startDeposit` and
+ * `startWithdraw`, because `completeDeposit` mints through a `Uint<64>` API. The ledger's coin
+ * value is u128 and 10^19 fits it comfortably; the MINT API is what binds.
+ *
+ * It is checked HERE because the alternative was measured (project 00035 question Q17): a request
+ * for 20 WEENUS (2×10^19) failed inside the start's proof, with the contract's own message, AFTER
+ * the operator had already sent 20 WEENUS and the gas to the deposit address. A ceiling an operator
+ * only meets after spending is not a ceiling, it is a trap.
+ *
+ * For an 18-decimal token this is ~18.45 units, which is a small enough number to reach by accident
+ * — hence the message says the ceiling in the token's own decimals rather than in raw units.
+ */
+export const LEG_CEILING_RAW = 18_446_744_073_709_551_615n;
+
+export function assertLegCeiling(symbol: string, amountRaw: bigint, decimals: number): void {
+  if (amountRaw <= LEG_CEILING_RAW) return;
+  throw new Error(
+    `${fromRaw(amountRaw, decimals)} ${symbol} is more than one bridge leg can carry: the vault mints `
+    + `through a Uint<64> API, so a single deposit or withdrawal tops out at `
+    + `${fromRaw(LEG_CEILING_RAW, decimals)} ${symbol} (2^64-1 raw units). Split it into smaller `
+    + "deposits — they share one deposit address, so only the first needs funding with gas",
+  );
+}
+
 /** Read-only cap check, for a quote and for the prepare step: a refusal must arrive before
  *  the wallet is asked to sign, not after. `chargeCap` applies the same rules and commits. */
 export function assertCapHeadroom(symbol: string, amountRaw: bigint, decimals: number, ethWei: bigint): void {

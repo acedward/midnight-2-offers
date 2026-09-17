@@ -89,6 +89,7 @@ import {
   GAS_FUNDING_WEI,
   MPC_TIMEOUT_MS,
   assertCapHeadroom,
+  assertLegCeiling,
   attestationLabelFor,
   bridgeAvailability,
   bridgeConfigFor,
@@ -1018,6 +1019,7 @@ async function buildAction(body: any): Promise<Prepared> {
         "in-circuit merge and this console keeps one coin per colour: spend, withdraw or offer it first",
       );
     }
+    assertLegCeiling(token.symbol, amountRaw, token.decimals);
     assertCapHeadroom(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
     const cfg = bridgeConfigFor(token.erc20);
     const recipient: BridgeRecipient = { kind: "account", accountId: address };
@@ -1087,6 +1089,7 @@ async function buildAction(body: any): Promise<Prepared> {
     if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) throw new Error("dest must be a 0x…20-byte EVM address");
     // A withdrawal moves tokens OUT of the bridge, so it does not consume the token cap —
     // but its gas does leave the operator's wallet, so the ETH half is checked.
+    assertLegCeiling(token.symbol, amountRaw, token.decimals);
     assertCapHeadroom(token.symbol, 0n, token.decimals, GAS_FUNDING_WEI);
     const cfg = bridgeConfigFor(token.erc20);
     const vaultEvm = vaultEvmAddressFor(cfg);
@@ -2533,7 +2536,10 @@ Bun.serve({
         // amount to send. A quote is an INSTRUCTION to move real money to an address — telling an
         // operator to send tokens that the start will then refuse is the worst possible order to
         // discover a cap in. A zero amount (the page's first render) is not a request to spend.
-        if (amountRaw > 0n) assertCapHeadroom(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
+        if (amountRaw > 0n) {
+          assertLegCeiling(token.symbol, amountRaw, token.decimals);
+          assertCapHeadroom(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
+        }
         const cfg = bridgeConfigFor(token.erc20);
         const vaultEvmAddress = vaultEvmAddressFor(cfg);
         if (direction === "withdraw") {
@@ -2615,6 +2621,7 @@ Bun.serve({
         const token = await resolveToken(String(body.token ?? ""));
         const amountRaw = toRaw(String(body.amount ?? "0"), token.decimals);
         if (amountRaw <= 0n) return bad("amount must be positive");
+        assertLegCeiling(token.symbol, amountRaw, token.decimals);
         assertCapHeadroom(token.symbol, amountRaw, token.decimals, GAS_FUNDING_WEI);
         return json({ jobId: bridgeWalletDepositJob(token, amountRaw, walletRecipientFrom(shielded)).id });
       }
