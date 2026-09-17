@@ -195,10 +195,14 @@
         <div class="wl-balcard">
           <div class="wl-balhead">
             <select id="wl-account" title="your AA accounts"></select>
-            <button id="wl-refresh" class="ghost" title="re-read every value from the ledger">↻ Refresh</button>
+            <button id="wl-refresh" class="ghost" title="re-read every value from the ledger AND reconcile this account&#10;against the chain — the check that notices an offer somebody else took">↻ Refresh</button>
           </div>
           <div id="wl-ballist"></div>
           <div class="wl-nonce">account nonce <span id="wl-nonce">0</span></div>
+          <!-- What the last reconcile found: the poller writes one of these every time it
+               notices an offer of this account consumed by somebody else, and Refresh runs
+               the same thing on demand (spec FR-011, owner's Q7). -->
+          <div id="wl-reconcile" class="note" style="display:none;margin-top:6px"></div>
         </div>
 
         <nav class="wl-ops" id="ops-seg">
@@ -266,14 +270,20 @@
             <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the offer, published to
             the offer-files kernel for a taker (or the solver) to settle. The give leg spends the
             account's <b>shielded</b> balance — fund it on the <b>AA infra</b> tab first.</p>
+            <p class="note">Both amounts are in the <b>token's own units</b>, not base units:
+            <code>1</code> against 6-decimal USDC is 1000000 on chain, and <code>10</code> against
+            18-decimal WEENUS is 10000000000000000000. A bridged colour appears in these lists as soon
+            as the Bridge tab has resolved it, and the kernel's registry is told its symbol and
+            decimals so the offer-files frontend renders the same two numbers you typed.</p>
             <form id="f-swap"><div class="row">
               <div style="display:none"><label>account</label><select id="sw-from" required></select></div>
               <div><label>give token</label><select id="sw-give-token" required></select></div>
-              <div><label>give amount</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
+              <div><label>give amount</label><input id="sw-give" value="1" pattern="[0-9]*[.]?[0-9]+" required></div>
               <div><label>want token</label><select id="sw-want-token" required></select></div>
-              <div><label>want amount</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
+              <div><label>want amount</label><input id="sw-want" value="10" pattern="[0-9]*[.]?[0-9]+" required></div>
               <div><button type="submit" disabled id="op-swap">1 · Build offer</button></div>
             </div></form>
+            <p class="note" id="swap-legs">—</p>
             <div id="swap-built" style="display:none;margin-top:12px">
               <label>built offer (MIP-0005 bech32m) — <span id="swap-built-meta"></span></label>
               <textarea id="swap-blob" readonly rows="5" style="width:100%;background:var(--bg);color:var(--dim);border:1px solid var(--edge);border-radius:6px;font:11px/1.5 var(--mono);padding:8px 10px;resize:vertical"></textarea>

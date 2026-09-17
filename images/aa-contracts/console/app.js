@@ -18,6 +18,30 @@
 const $ = (id) => document.getElementById(id);
 const short = (h) => (h && h.length > 20 ? `${h.slice(0, 10)}…${h.slice(-6)}` : h ?? "—");
 
+// ── amounts (project 00035, spec FR-008) ────────────────────────────────────
+// Every token on this stack has its OWN scale — the six faucet issuers are 8/18/6/6/6/8 and a
+// bridged colour is whatever its ERC20 says (USDC 6, WEENUS 18). A page that prints a base-unit
+// integer beside a symbol prints a number nobody can check: 10 WEENUS is 10000000000000000000,
+// which is also past what a JS Number can hold — hence BigInt and string maths, never `/ 10**d`.
+const fromRaw = (raw, decimals) => {
+  let v;
+  try { v = BigInt(String(raw ?? "0")); } catch { return String(raw ?? "0"); }
+  if (!Number.isInteger(decimals) || decimals < 0) return v.toString();
+  const neg = v < 0n;
+  const digits = (neg ? -v : v).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  const frac = decimals === 0 ? "" : digits.slice(digits.length - decimals).replace(/0+$/, "");
+  return `${neg ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
+};
+/** Decimals for a token NAME, from /api/info's list. Null when the page has no row for it. */
+const decimalsOfName = (name) =>
+  (state.info?.tokens ?? []).find((t) => t.name === name)?.decimals ?? null;
+/** …and for a COLOUR, which is how the kernel's book names a leg. */
+const tokenOfColour = (colour) => {
+  const c = String(colour ?? "").replace(/^0x/, "").toLowerCase();
+  return (state.info?.tokens ?? []).find((t) => String(t.color).toLowerCase() === c) ?? null;
+};
+
 const state = {
   info: null,
   signer: null,      // lowercase 0x address
@@ -136,6 +160,7 @@ async function loadInfo() {
   fillTokens("fs-token", "shielded", nth("shielded", 0));
   fillTokens("sw-give-token", "shielded", nth("shielded", 0));
   fillTokens("sw-want-token", "shielded", nth("shielded", 1));
+  renderSwapLegs();
   const fillAll = (sel, def) => {
     const el = $(sel);
     el.innerHTML = "";
@@ -193,7 +218,7 @@ function renderAccounts() {
     const cells = [
       [short(a.accountId), ""], [short(a.owner) + mark, ""], [a.authNonce ?? a.nonce ?? "—", "num"],
       [a.inboxCount ?? "—", "num"],
-      ...tokenNames.map((tn) => [(a.balances ?? {})[tn] ?? "0", "num"]),
+      ...tokenNames.map((tn) => [(a.balancesDecimal ?? {})[tn] ?? fromRaw((a.balances ?? {})[tn] ?? "0", decimalsOfName(tn)), "num"]),
     ];
     for (const [text, cls] of cells) {
       const td = document.createElement("td");
@@ -254,8 +279,16 @@ async function loadBook() {
   state_el.append(pill);
   const tbody = $("book");
   tbody.innerHTML = "";
+  // A leg is `{amount, token|color}` in base units. Rendered with the colour's own decimals
+  // and symbol when this console knows them (a bridged colour does, as soon as the Bridge tab
+  // has resolved it), and truthfully raw-with-a-short-colour when it does not.
   const leg = (side) => (Array.isArray(side) ? side : side ? [side] : [])
-    .map((l) => `${l.amount ?? l.value ?? "?"} ${short(String(l.color ?? l.colour ?? l.token ?? "?"))}`)
+    .map((l) => {
+      const colour = String(l.color ?? l.colour ?? l.token ?? "?");
+      const raw = String(l.amount ?? l.value ?? "?");
+      const t = tokenOfColour(colour);
+      return t ? `${fromRaw(raw, t.decimals)} ${t.name}` : `${raw} ${short(colour)}`;
+    })
     .join(", ");
   for (const o of offers) {
     const computed = o.computed ?? {};
@@ -524,6 +557,30 @@ $("f-swap").onsubmit = busy(async () => {
     $("swap-built").style.display = "";
   }
 });
+/** What the two typed amounts ARE on chain. The offer's legs are base units and the form's
+ *  are token units; showing both removes the one ambiguity this form has. */
+function renderSwapLegs() {
+  const el = $("swap-legs");
+  if (!el) return;
+  const g = (state.info?.tokens ?? []).find((t) => t.name === $("sw-give-token").value);
+  const w = (state.info?.tokens ?? []).find((t) => t.name === $("sw-want-token").value);
+  const raw = (value, token) => {
+    if (!token) return "?";
+    const m = /^(\d*)(?:\.(\d*))?$/.exec(String(value ?? "").trim());
+    if (!m) return "not a number";
+    const frac = (m[2] ?? "");
+    if (frac.length > token.decimals) return `too many decimals (${token.name} has ${token.decimals})`;
+    return `${(m[1] || "0") + frac.padEnd(token.decimals, "0")} base units`;
+  };
+  el.textContent = `give ${$("sw-give").value} ${g?.name ?? "?"} = ${raw($("sw-give").value, g)}  ·  `
+    + `want ${$("sw-want").value} ${w?.name ?? "?"} = ${raw($("sw-want").value, w)}`;
+}
+for (const id of ["sw-give", "sw-want", "sw-give-token", "sw-want-token"]) {
+  const el = $(id);
+  if (el) el.addEventListener("input", renderSwapLegs);
+  if (el) el.addEventListener("change", renderSwapLegs);
+}
+
 $("op-publish").onclick = busy(async () => {
   $("publish-result").textContent = "publishing…";
   try {
@@ -616,10 +673,18 @@ function renderWallet() {
     chip.className = `chip ${t.family === "shielded" ? "sh" : "ush"}`;
     chip.textContent = t.family;
     const amt = document.createElement("span"); amt.className = "amt";
-    amt.textContent = (acct.balances ?? {})[t.name] ?? "0";
+    // The DECIMAL value is what a reader can check; the base units stay in the tooltip,
+    // because they are what the circuits take and what an error message will quote.
+    const raw = (acct.balances ?? {})[t.name] ?? "0";
+    amt.textContent = (acct.balancesDecimal ?? {})[t.name] ?? fromRaw(raw, t.decimals);
+    amt.title = `${raw} base units (${t.decimals} decimals)`;
     row.append(tok, chip, amt); list.append(row);
   }
   $("wl-nonce").textContent = acct.nonce;
+  // FR-011's "while open": the RELAY's poller is what notices an external take, so the page
+  // only has to show what it found. This runs on the 15 s accounts poll, which is why step 7
+  // of the story needs no click at all.
+  renderReconcile(acct.lastReconcile ?? null);
   renderWithdraw();
   renderTransfer();
   for (const id of ["sw-from"]) {
@@ -671,7 +736,52 @@ async function renderReads() {
   } finally { readsBusy = false; }
 }
 $("wl-account").onchange = () => { renderWallet(); renderReads(); };
-$("wl-refresh").onclick = busy(async () => { await loadAccounts(); await renderReads(); });
+// ⚠ REFRESH IS NOT A RE-READ ANY MORE (spec FR-011, the owner's Q7 addition). It runs the
+// console's reconcile against the chain: if this account's offer was taken by somebody else —
+// in the offer-files frontend, by the solver, by anyone — the settlement nullified a coin this
+// store still lists, and the page would keep showing it until the account's next call failed
+// inside proving. The poller does this every AA_OFFER_POLL_MS anyway; the button is for the
+// operator who has just clicked "take" in another tab and does not want to wait.
+$("wl-refresh").onclick = busy(async () => {
+  const el = $("wl-reconcile");
+  if (el) { el.style.display = ""; el.textContent = "reconciling this account against the chain…"; }
+  try {
+    const r = await api("/api/refresh", state.signer ? { owner: state.signer } : {});
+    renderReconcile((r.reports ?? [])[0] ?? null);
+  } catch (e) {
+    if (el) el.textContent = `reconcile failed: ${e?.message ?? e}`;
+  }
+  await loadAccounts();
+  await renderReads();
+});
+
+/** The reconcile's own words, under the balances. `changes` is the same list the job log and
+ *  the console's stdout carry, so three surfaces never disagree about what happened. */
+function renderReconcile(report) {
+  const el = $("wl-reconcile");
+  if (!el) return;
+  if (!report) { el.style.display = "none"; return; }
+  el.style.display = "";
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.innerHTML = report.settled
+    ? "<b>the offer was taken by somebody else</b> — the account has been reconciled:"
+    : (report.error ? "<b>reconcile failed</b>:" : "reconcile:");
+  el.append(head);
+  const ul = document.createElement("ul");
+  ul.style.cssText = "margin:4px 0 0 16px;padding:0";
+  for (const line of report.changes ?? []) {
+    const li = document.createElement("li"); li.textContent = line; ul.append(li);
+  }
+  if (report.error) { const li = document.createElement("li"); li.textContent = report.error; ul.append(li); }
+  el.append(ul);
+  if (report.settleTx) {
+    const p = document.createElement("div");
+    p.style.marginTop = "4px";
+    p.textContent = `settling transaction ${report.settleTx.txHash} (block ${report.settleTx.blockHeight})`;
+    el.append(p);
+  }
+}
 $("wl-more").onclick = busy(() => prepareSignSubmit({ kind: "register", owner: state.signer }));
 $("act-head").onclick = () => $("activity-aa").classList.toggle("collapsed");
 

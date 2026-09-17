@@ -161,7 +161,7 @@ import {
 import { buildTypedData, computeDigest } from "../passport/src/wallet/eip712.js";
 import { generateEncKeyPair } from "../passport/src/wallet/inbox.js";
 import { depositAsThirdParty, inboxWalkPortable } from "../passport/src/wallet/deposit.js";
-import { candidateIndices } from "../passport/src/wallet/capture.js";
+import { candidateIndices, enumerateContractActions } from "../passport/src/wallet/capture.js";
 import {
   buildOpenSwapTypedData,
   freshWantNonce,
@@ -596,6 +596,17 @@ async function listAccounts(owner?: string) {
       ...((ledgerView as any).unshielded ?? {}),
       ...shielded,
     };
+    // …and the SAME numbers in the tokens' own decimal units (spec FR-008). Base units stay
+    // exactly where they were — they are what the circuits take and what the e2e asserts —
+    // but a page that prints 10000000000000000000 beside "WEENUS" is printing a number no
+    // reader can check. A colour with no token row keeps its raw value and says so.
+    const decimalsOf = (name: string): number | null =>
+      tokens.list.find((x) => x.name === name)?.decimals ?? null;
+    const asDecimal = (src: Record<string, string>): Record<string, string> =>
+      Object.fromEntries(Object.entries(src).map(([name, raw]) => {
+        const d = decimalsOf(name);
+        return [name, d === null ? raw : fromRaw(raw, d)];
+      }));
     out.push({
       accountId: rec.address,
       address: rec.address,
@@ -604,6 +615,9 @@ async function listAccounts(owner?: string) {
       liveOffer: rec.liveOffer ?? null,
       shielded,
       balances,
+      balancesDecimal: asDecimal(balances),
+      shieldedDecimal: asDecimal(shielded),
+      lastReconcile: lastReconcileOf(rec.address),
       nonce: (ledgerView as any).authNonce ?? null,
       ...ledgerView,
     });
@@ -796,7 +810,13 @@ type Prepared = {
     ctx: CallContext;
     useCounter: bigint;
     request?: AuthRequest;
-    offer?: { call: OfferCallArgs; coin: any; giveToken: string; wantToken: string };
+    offer?: {
+      call: OfferCallArgs; coin: any; giveToken: string; wantToken: string;
+      /** "1 USDC" / "10 WEENUS" — the legs in the tokens' own decimal units, worked out once
+       *  at prepare time (where the decimals are in hand) and carried through to the store,
+       *  so a reconcile report and the book row do not have to re-derive them. */
+      giveLabel: string; wantLabel: string;
+    };
     /** Everything the bridge start jobs need that the AuthRequest does not carry. */
     bridge?: {
       token: BridgedToken;
@@ -1157,9 +1177,27 @@ async function buildAction(body: any): Promise<Prepared> {
     if (giveToken.name === wantToken.name) {
       throw new Error("give and want must be different tokens (same-colour legs net out: NOT_A_SWAP)");
     }
-    const giveAmount = amount;
-    const wantAmount = BigInt(body.wantAmount ?? 0);
-    if (giveAmount <= 0n || wantAmount <= 0n) throw new Error("give and want amounts must be positive integers");
+    // ⚠ THE OFFER'S TWO AMOUNTS ARE DECIMAL UNITS OF THEIR OWN TOKEN, not base units
+    // (project 00035, spec FR-008). Every other form on this page still takes base units, and
+    // the difference is not cosmetic here: the story's want leg is 10 WEENUS, which is
+    // 10000000000000000000 base units — a number no operator types correctly, and one that
+    // `Number` cannot even hold. `toRaw` is string→bigint with the token's own decimals, so
+    // "1" against 6-decimal USDC is 1000000 and "10" against 18-decimal WEENUS is 10^19.
+    //
+    // A bare integer is therefore NOT the base-unit value it used to be. That is a deliberate
+    // behaviour change to one route with one caller (the Publish Offer form, which this
+    // project relabels in the same commit); `aa-e2e.ts` builds its offers through the library
+    // and never calls /api/prepare, so it is unaffected.
+    const giveAmount = toRaw(String(body.amount ?? "0"), giveToken.decimals);
+    const wantAmount = toRaw(String(body.wantAmount ?? "0"), wantToken.decimals);
+    if (giveAmount <= 0n || wantAmount <= 0n) {
+      throw new Error(
+        `give and want must both be positive amounts in the token's own units ` +
+        `(${giveToken.name} has ${giveToken.decimals} decimals, ${wantToken.name} has ${wantToken.decimals})`,
+      );
+    }
+    const giveLabel = `${fromRaw(giveAmount, giveToken.decimals)} ${giveToken.name}`;
+    const wantLabel = `${fromRaw(wantAmount, wantToken.decimals)} ${wantToken.name}`;
     // Q7: the MIP-0013 seam consumes ONE device entry per call, so a second offer signed
     // while the first is unsettled makes the first unsettleable — its auth_nonce is stale.
     // The console serialises rather than letting a user strand an offer.
@@ -1180,8 +1218,9 @@ async function buildAction(body: any): Promise<Prepared> {
     }
     if (BigInt(held.value) < giveAmount) {
       throw new Error(
-        `the account's ${giveToken.name} coin is ${held.value} and the give leg is ${giveAmount}. Stateless ` +
-        "custody has no in-circuit merge: one offer spends exactly one coin",
+        `the account's ${giveToken.name} coin is ${fromRaw(held.value, giveToken.decimals)} and the give leg is ` +
+        `${fromRaw(giveAmount, giveToken.decimals)}. Stateless custody has no in-circuit merge: one offer ` +
+        "spends exactly one coin",
       );
     }
     const coin = {
@@ -1208,11 +1247,21 @@ async function buildAction(body: any): Promise<Prepared> {
     return {
       kind, owner, createdAt: Date.now(), typedData, digest: toHex(digest),
       summary: {
-        give: `${giveAmount} ${giveToken.name}`, want: `${wantAmount} ${wantToken.name}`,
+        give: giveLabel, want: wantLabel,
+        giveRaw: String(giveAmount), wantRaw: String(wantAmount),
         giveToken: giveToken.name, wantToken: wantToken.name,
+        giveDecimals: giveToken.decimals, wantDecimals: wantToken.decimals,
+        giveColour: giveToken.color, wantColour: wantToken.color,
         wantNonce: toHex(want.nonce), authNonce: String(ctx.authNonce), useCounter: String(useCounter),
       },
-      exec: { address, ctx, useCounter, offer: { call, coin, giveToken: giveToken.name, wantToken: wantToken.name } },
+      exec: {
+        address, ctx, useCounter,
+        offer: {
+          call, coin,
+          giveToken: giveToken.name, wantToken: wantToken.name,
+          giveLabel, wantLabel,
+        },
+      },
     };
   }
 
@@ -1463,8 +1512,8 @@ function offerJob(prep: Prepared, signatureHex: string): Job {
       ...record,
       liveOffer: {
         offerId: built.sha256,
-        give: `${offerSpec.call.giveAmount} ${offerSpec.giveToken}`,
-        want: `${offerSpec.call.want.value} ${offerSpec.wantToken}`,
+        give: offerSpec.giveLabel,
+        want: offerSpec.wantLabel,
         createdAt: new Date().toISOString(),
         giveColour: toHex(offerSpec.call.giveColor),
         giveAmount: String(offerSpec.call.giveAmount),
@@ -1693,16 +1742,43 @@ function takeJob(offerId: string): Job {
  * account's NEXT call would fail inside proving with a message about a merkle path, minutes
  * later, pointing at nothing. So: drop the spent coin, and capture what came back.
  *
- * `settleTxId` is present when THIS console's taker settled. When the solver did, there is
- * no transaction id here, so the spent coin is still dropped (that part is certain) and the
- * received coins are left for a rescan, which is stated in the log rather than papered over.
+ * ⚠ 00035 PR-C: THE SETTLER IS USUALLY A STRANGER, AND THEN THERE IS NO TRANSACTION ID.
+ * This used to take `settleTxId`, which exists only when THIS console's own taker settled;
+ * for an external taker — the whole point of an open offer, and step 6 of the owner's story —
+ * it was null and the received coins were left "for a rescan" that nothing ever ran. The
+ * routine now finds the settlement ITSELF, from the account contract's own action history,
+ * and a caller that happens to hold a transaction id passes it only as a hint.
+ *
+ * Two independent chain sources, because each answers something the other cannot:
+ *
+ *   the ACTION HISTORY (`enumerateContractActions`) says WHERE the settlement's commitments
+ *     sit in the Zswap tree — `startIndex…endIndex` of the transaction that carried the
+ *     account's `open_swap_shielded_with_evm` call. Nothing else does: the taker's own
+ *     `transactionHash()` is not a key the indexer accepts (measured in aa-e2e.ts), so a
+ *     maker who was not the submitter cannot look the transaction up by id at all.
+ *   the INBOX WALK says WHAT the account received — colour, value and nonce, decrypted from
+ *     the entries the offer sealed to the account's encryption key before it was proved.
+ *     This is the half that survives a console that never saw the offer being built.
+ *
+ * IDEMPOTENT. It keys coins by colour and writes the same store twice for the same
+ * settlement; `liveOffer` is cleared at the end, so a second run finds nothing to do and
+ * says so. That matters because three things call it: the poller, the Refresh button and
+ * this console's own taker.
  */
-async function reconcileSettledOffer(offerId: string, settleTxId: string | null, j?: Job): Promise<void> {
+async function reconcileSettledOffer(
+  offerId: string,
+  settleTxIdHint: string | null,
+  j?: Job,
+  report?: ReconcileReport,
+): Promise<void> {
   const store = readStore();
   const rec = store.accounts.find((a) => a.liveOffer?.offerId === offerId);
   if (!rec?.liveOffer) return;
   const offer = rec.liveOffer;
-  const say = (line: string) => (j ? jlog(j, line) : log(line));
+  const say = (line: string) => {
+    if (j) jlog(j, line); else log(line);
+    report?.changes.push(line);
+  };
 
   const coins = { ...rec.coins };
   const mtCandidates = { ...(rec.mtCandidates ?? {}) };
@@ -1710,29 +1786,74 @@ async function reconcileSettledOffer(offerId: string, settleTxId: string | null,
   delete mtCandidates[offer.giveColour];
   say(`settled: the ${offer.give} coin is nullified — dropped from the store`);
 
-  if (settleTxId) {
-    const { candidates } = await candidateIndices(settleTxId);
-    const list = candidates.map(String);
-    say(`the settlement produced commitments ${list.join(", ")} — the want coin and the change are among them`);
-    coins[offer.wantColour] = {
-      nonceHex: offer.wantNonceHex, colorHex: offer.wantColour,
-      value: offer.wantAmount, mtIndex: list[0]!,
-    };
-    mtCandidates[offer.wantColour] = list;
-    if (offer.changeValue && offer.changeNonceHex) {
-      // The change coin's nonce was PREDICTED before the offer was proved (the circuit's own
-      // `swap_change_nonce` rule over the GIVE coin's nonce) and stored then, because by now
-      // the give coin is gone from the store and the rule's input with it.
-      coins[offer.giveColour] = {
-        nonceHex: offer.changeNonceHex, colorHex: offer.giveColour,
-        value: offer.changeValue, mtIndex: list[0]!,
+  // ── where the settlement's commitments are ────────────────────────────────
+  let list: string[] = [];
+  const settlement = await findSettlement(rec.address).catch((e) => {
+    say(`the account's action history could not be read (${e instanceof Error ? e.message : String(e)})`);
+    return null;
+  });
+  if (settlement && settlement.startIndex != null && settlement.endIndex != null) {
+    for (let i = settlement.startIndex; i < settlement.endIndex; i++) list.push(String(i));
+    say(`the settling transaction is ${settlement.txHash.slice(0, 16)}… `
+      + `(${settlement.entryPoint ?? settlement.kind}, block ${settlement.blockHeight}), carrying `
+      + `commitments ${list.join(", ")}`);
+    if (report) {
+      report.settleTx = {
+        txHash: settlement.txHash,
+        identifiers: settlement.identifiers,
+        blockHeight: settlement.blockHeight,
+        entryPoint: settlement.entryPoint ?? null,
       };
-      mtCandidates[offer.giveColour] = list;
-      say(`the change (${offer.changeValue} of the give colour) is back in the store`);
     }
-  } else {
-    say("the solver settled it, so this console has no transaction id: the received coins need a "
-      + "rescan (the account still owns them, and the inbox entries are on chain)");
+  } else if (settleTxIdHint) {
+    // This console settled it, so it holds an id the indexer does accept.
+    list = (await candidateIndices(settleTxIdHint).catch(() => ({ candidates: [] as bigint[] }))).candidates.map(String);
+    say(`no action window; the settle transaction ${settleTxIdHint.slice(0, 16)}… carried commitments ${list.join(", ")}`);
+    if (report) report.settleTx = { txHash: settleTxIdHint, identifiers: [settleTxIdHint], blockHeight: 0, entryPoint: null };
+  }
+
+  // ── what the account received, read from the chain rather than remembered ──
+  let wantNonce = offer.wantNonceHex;
+  let wantValue = offer.wantAmount;
+  try {
+    const ledgerState = await accountLedger(rec.address);
+    const found = await inboxWalkPortable(ledgerState, hexToBytes(rec.encSecretKey));
+    const hit = found.find((c) => toHex(c.color) === offer.wantColour && String(c.value) === offer.wantAmount);
+    if (hit) {
+      wantNonce = toHex(hit.nonce);
+      wantValue = String(hit.value);
+      say(`the inbox walk finds the want coin on chain: ${offer.want} (entry ${hit.inboxIndex})`);
+      if (report) report.inboxEntries = found.length;
+    } else {
+      say(`the inbox walk does not yet show the want coin (${found.length} readable entries) — `
+        + "using the nonce the offer sealed, which is what the circuit will have minted");
+      if (report) report.inboxEntries = found.length;
+    }
+  } catch (e) {
+    say(`the inbox walk failed (${e instanceof Error ? e.message : String(e)}) — falling back to the sealed nonce`);
+  }
+
+  if (list.length === 0) {
+    say("no commitment window could be found for the settlement: the coin's Merkle position is "
+      + "unknown, so the account's next spend will try its stored candidates. Press Refresh once "
+      + "the settling block has been indexed");
+  }
+  coins[offer.wantColour] = {
+    nonceHex: wantNonce, colorHex: offer.wantColour,
+    value: wantValue, mtIndex: list[0] ?? "0",
+  };
+  if (list.length) mtCandidates[offer.wantColour] = list;
+  say(`the want coin (${offer.want}) is in the store`);
+  if (offer.changeValue && offer.changeNonceHex) {
+    // The change coin's nonce was PREDICTED before the offer was proved (the circuit's own
+    // `swap_change_nonce` rule over the GIVE coin's nonce) and stored then, because by now
+    // the give coin is gone from the store and the rule's input with it.
+    coins[offer.giveColour] = {
+      nonceHex: offer.changeNonceHex, colorHex: offer.giveColour,
+      value: offer.changeValue, mtIndex: list[0] ?? "0",
+    };
+    if (list.length) mtCandidates[offer.giveColour] = list;
+    say(`the change (${offer.changeValue} base units of the give colour) is back in the store`);
   }
   writeRecord({ ...rec, coins, mtCandidates, liveOffer: null });
 }
@@ -1741,6 +1862,186 @@ function clearLiveOffer(offerId: string): void {
   const store = readStore();
   const rec = store.accounts.find((a) => a.liveOffer?.offerId === offerId);
   if (rec) writeRecord({ ...rec, liveOffer: null });
+}
+
+// ── detecting a take this console did not make (spec FR-011, owner's Q7) ─────
+//
+// Step 6 of the story happens somewhere else entirely: the owner's wallet takes the offer in
+// the offer-files frontend, and the settlement is a transaction this process never sees. Two
+// sources say it happened, and the console uses both because they fail differently:
+//
+//   the KERNEL's book — `GET /v1/offers/{id}/status` flips to `consumed`. Cheap, fast, and
+//     the same thing the page's book row shows. It is also the only one that can say
+//     `cancelled` or `expired`.
+//   the ACCOUNT CONTRACT's own action history — a `ContractCall` of the swap circuit on this
+//     account address IS the settlement. It needs no kernel at all, which is what makes the
+//     Refresh button honest on a stack whose offerfiles profile is down, and it is the source
+//     the reconcile needs anyway (the commitment window).
+//
+// The poll interval is `AA_OFFER_POLL_MS` (15 s by default), which puts detection inside the
+// spec's 60 s (SC-005) with room for a block and an index. On start-up every account with a
+// persisted live offer is checked once, which is FR-011's "and on next load".
+
+const OFFER_POLL_MS = Number(process.env["AA_OFFER_POLL_MS"] ?? 15_000);
+
+export type ReconcileReport = {
+  address: string;
+  at: string;
+  trigger: "startup" | "poll" | "refresh" | "take";
+  offerId: string | null;
+  kernelStatus: string | null;
+  settled: boolean;
+  settleTx: { txHash: string; identifiers: string[]; blockHeight: number; entryPoint: string | null } | null;
+  inboxEntries: number | null;
+  /** Human lines — the same ones the job log carries. The Refresh button shows these. */
+  changes: string[];
+  balancesBefore: Record<string, string>;
+  balancesAfter: Record<string, string>;
+  error: string | null;
+};
+
+/** The last report per account, for `/api/accounts` and the page's Refresh result. */
+const reconciles = new Map<string, ReconcileReport>();
+const lastReconcileOf = (address: string): ReconcileReport | null => reconciles.get(address) ?? null;
+
+/** The account's own action history, newest settlement first. A settlement of an OPEN offer
+ *  is a call of the swap circuit ON THIS ACCOUNT — the maker's proven call, merged into and
+ *  submitted by somebody else's transaction. */
+async function findSettlement(address: string) {
+  const actions = await enumerateContractActions(address);
+  const swaps = actions.filter(
+    (a) => a.entryPoint === SWAP_CIRCUIT && a.startIndex != null && a.endIndex != null && a.endIndex > a.startIndex,
+  );
+  return swaps[swaps.length - 1] ?? null;
+}
+
+async function kernelOfferStatus(offerId: string): Promise<{ status: string | null; error: string | null }> {
+  try {
+    const res = await fetch(`${KERNEL_URL}/v1/offers/${offerId}/status`, { signal: AbortSignal.timeout(8000) });
+    if (res.status === 404) return { status: "not_found", error: null };
+    if (!res.ok) return { status: null, error: `kernel answered ${res.status}` };
+    const s: any = await res.json();
+    return { status: String(s.status ?? s.state ?? ""), error: null };
+  } catch (e) {
+    return { status: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Bring one account's coin store back in line with the chain, and say what moved.
+ *
+ * Safe to run at any time and as often as you like: with no live offer it reads and reports;
+ * with a live offer that is still open it reports that; with one that has been consumed it
+ * runs the reconcile above exactly once (the second run finds `liveOffer` already cleared).
+ */
+async function reconcileAccountNow(
+  address: string,
+  trigger: ReconcileReport["trigger"],
+  j?: Job,
+): Promise<ReconcileReport> {
+  const rec = requireRecord(address);
+  const decimalsFor = (colour: string): number | null =>
+    tokens.list.find((t) => t.color === colour)?.decimals ?? null;
+  const snapshot = (r: AccountRecord): Record<string, string> =>
+    Object.fromEntries(Object.entries(r.coins).map(([colour, coin]) => {
+      const t = tokens.list.find((x) => x.color === colour);
+      const d = decimalsFor(colour);
+      return [t?.name ?? `0x${colour.slice(0, 12)}…`, d === null ? coin.value : fromRaw(coin.value, d)];
+    }));
+  const report: ReconcileReport = {
+    address, at: new Date().toISOString(), trigger,
+    offerId: rec.liveOffer?.offerId ?? null,
+    kernelStatus: null, settled: false, settleTx: null, inboxEntries: null,
+    changes: [], balancesBefore: snapshot(rec), balancesAfter: {}, error: null,
+  };
+  const say = (line: string) => {
+    if (j) jlog(j, line); else log(`reconcile ${address.slice(0, 12)}…: ${line}`);
+    report.changes.push(line);
+  };
+  try {
+    if (!rec.liveOffer) {
+      say("no live offer — the coin store is already what this console knows");
+      report.balancesAfter = report.balancesBefore;
+      reconciles.set(address, report);
+      return report;
+    }
+    const offerId = rec.liveOffer.offerId;
+    const { status, error } = await kernelOfferStatus(offerId);
+    report.kernelStatus = status;
+    if (error) say(`the kernel's book could not be read (${error}) — asking the chain instead`);
+
+    // `consumed` is the kernel's word for it. A book that has forgotten the offer, or a
+    // kernel that is down, is not evidence either way — so the chain decides, and it is the
+    // same query the reconcile needs anyway.
+    const settlement = status === "consumed" ? true : await (async () => {
+      const found = await findSettlement(rec.address).catch(() => null);
+      if (found) say(`the kernel says '${status ?? "nothing"}', but the account's own history carries a `
+        + `${SWAP_CIRCUIT} call in block ${found.blockHeight} — the chain wins`);
+      return Boolean(found);
+    })();
+
+    if (!settlement) {
+      say(`offer ${offerId.slice(0, 16)}… is still ${status ?? "open (kernel unreachable)"} — nothing to reconcile`);
+      report.balancesAfter = report.balancesBefore;
+      reconciles.set(address, report);
+      return report;
+    }
+    report.settled = true;
+    say(`offer ${offerId.slice(0, 16)}… has been SETTLED by a taker — reconciling the coin store from chain data`);
+    await reconcileSettledOffer(offerId, null, j, report);
+    report.balancesAfter = snapshot(requireRecord(address));
+  } catch (e) {
+    report.error = e instanceof Error ? e.message : String(e);
+    say(`reconcile failed: ${report.error}`);
+    if (!Object.keys(report.balancesAfter).length) report.balancesAfter = report.balancesBefore;
+  }
+  reconciles.set(address, report);
+  return report;
+}
+
+/**
+ * The background poller. One pass per `AA_OFFER_POLL_MS` over every account this console
+ * holds a live offer for.
+ *
+ * It SKIPS a pass while the job worker is busy. That is not politeness: a reconcile writes
+ * the account record, and so does every job, each from a copy it read when it started — so a
+ * reconcile landing in the middle of a k=18 proving job would be overwritten by that job's
+ * own write minutes later, silently. The next pass is 15 seconds away.
+ */
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+async function offerPollPass(trigger: ReconcileReport["trigger"]): Promise<void> {
+  if (working) return;
+  let accounts: AccountRecord[];
+  try {
+    accounts = readStore().accounts.filter((a) => a.liveOffer);
+  } catch (e) {
+    log(`offer poll: the store could not be read (${e instanceof Error ? e.message : String(e)})`);
+    return;
+  }
+  for (const rec of accounts) {
+    try {
+      const before = reconciles.get(rec.address);
+      const report = await reconcileAccountNow(rec.address, trigger);
+      if (report.settled) {
+        log(`offer poll: account ${rec.address.slice(0, 18)}… reconciled after an external take `
+          + `(${report.settleTx ? `settled by ${report.settleTx.txHash.slice(0, 16)}…` : "settling tx unknown"})`);
+      } else if (!before) {
+        log(`offer poll: watching ${rec.liveOffer!.offerId.slice(0, 16)}… on ${rec.address.slice(0, 18)}…`);
+      }
+    } catch (e) {
+      log(`offer poll: ${rec.address.slice(0, 18)}… failed (${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+}
+
+function startOfferPoll(): void {
+  if (pollTimer || OFFER_POLL_MS <= 0) return;
+  // FR-011's "and on next load": whatever happened while this console was down is picked up
+  // once, before the interval's first tick.
+  void offerPollPass("startup");
+  pollTimer = setInterval(() => void offerPollPass("poll"), OFFER_POLL_MS);
+  log(`watching this console's live offers for an external take every ${OFFER_POLL_MS / 1000}s `
+    + "(AA_OFFER_POLL_MS); the account view's Refresh runs the same reconcile on demand");
 }
 
 // ── the ERC20 bridge (project 00035 PR-B) ────────────────────────────────────
@@ -2709,6 +3010,27 @@ Bun.serve({
         if (!/^[0-9a-f]{64}$/i.test(offerId)) return bad("offerId must be 64 hex chars");
         return json({ jobId: takeJob(offerId).id });
       }
+      if (path === "/api/refresh" && req.method === "POST") {
+        // The owner's Q7 addition: the same reconcile the poller runs, on demand, with the
+        // report as the ANSWER rather than a log line. Synchronous because it only reads the
+        // indexer and the kernel — no proving, no wallet, so it does not go through the job
+        // queue and cannot be stuck behind a k=18 proof.
+        const body = await req.json().catch(() => ({}));
+        const address = String((body as any).accountId ?? (body as any).address ?? "");
+        const owner = String((body as any).owner ?? "").replace(/^0x/, "").toLowerCase();
+        let targets: string[];
+        if (address) {
+          targets = [address];
+        } else if (owner) {
+          targets = findByOwner(readStore(), owner).map((a) => a.address);
+          if (!targets.length) return bad(`this console has no account for owner 0x${owner}`);
+        } else {
+          return bad("pass accountId (one account) or owner (all of that signer's accounts)");
+        }
+        const reports: ReconcileReport[] = [];
+        for (const t of targets) reports.push(await reconcileAccountNow(t, "refresh"));
+        return json({ reconciled: reports.length, reports });
+      }
       if (path === "/api/offer/forget" && req.method === "POST") {
         // Q7's escape hatch: an offer nobody took blocks the account's next one, and the
         // maker's device entry is NOT consumed until a taker submits — so forgetting it
@@ -2900,3 +3222,9 @@ void (async () => {
 
 await checkWallet("relay");
 await checkWallet("taker");
+
+// Step 7 of the owner's story happens without anybody pressing anything: the offer is taken
+// in another app, by another wallet, and this console notices. Started last, so the first
+// pass runs against a token list and a bridge registry that have already had a chance to
+// resolve (the reports name amounts in the tokens' own units).
+startOfferPoll();
