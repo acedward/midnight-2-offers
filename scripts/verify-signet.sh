@@ -87,6 +87,18 @@ summary="$(docker exec -i "$cid" node -e '
   const { formatSecp256k1PublicKey, normaliseSecp256k1PublicKey, secp256k1PublicKeyOf } =
     require("/app/node_modules/@sig-net/midnight/dist/ecdsa-attestation.js");
 
+  // The responder process own environment, read by name. NUL-separated; only the two names
+  // asked for are ever returned, and nothing else in the block is read into a variable.
+  const pid1Env = (name) => {
+    try {
+      const raw = fs.readFileSync("/proc/1/environ", "utf8");
+      for (const kv of raw.split("\0")) {
+        if (kv.startsWith(name + "=")) return kv.slice(name.length + 1);
+      }
+    } catch { /* not Linux, or no /proc: fall through to the configured environment */ }
+    return process.env[name] ?? "";
+  };
+
   const receipt = JSON.parse(fs.readFileSync("/aa/out/aa-contracts.json", "utf8"));
   const rootLine = fs.readFileSync("/aa/out/signet-root.env", "utf8")
     .split("\n").map((l) => l.trim()).find((l) => l.startsWith("MPC_ROOT_KEY="));
@@ -117,8 +129,14 @@ summary="$(docker exec -i "$cid" node -e '
     derivedVaultEvm: deriveEvmAddress(pub, vault, vaultPathHex).toLowerCase(),
     receiptResponseKey: String(receipt.vault?.mpcResponseKey ?? "").toLowerCase(),
     derivedResponseKey: formatSecp256k1PublicKey(deriveMidnightResponseKey(pub, vault)).toLowerCase(),
-    allowlist: (process.env.MIDNIGHT_CALLER_ALLOWLIST ?? ""),
-    watching: (process.env.MIDNIGHT_SIGNET_CONTRACT_ADDRESS ?? ""),
+    // NOT process.env: `docker exec` starts a new process whose environment is the CONFIGURED
+    // one (what compose passes), and these two are deliberately not in compose — the entrypoint
+    // derives them from the receipt and exports them into the responder itself. So they are read
+    // from PID 1, which is the responder, and is the only place that says what it is ACTUALLY
+    // using. Exactly two variables are lifted out; MPC_ROOT_KEY and EVM_RPC_URL live in the same
+    // block and are never touched.
+    allowlist: pid1Env("MIDNIGHT_CALLER_ALLOWLIST"),
+    watching: pid1Env("MIDNIGHT_SIGNET_CONTRACT_ADDRESS"),
   };
   for (const [k, v] of Object.entries(out)) console.log(`${k}=${v}`);
 
