@@ -3,6 +3,7 @@
 # aa-bridge-e2e.sh — the headless end-to-end test of the ERC20 bridge (spec FR-016, SC-006).
 #
 #   ./scripts/aa-bridge-e2e.sh [--evidence <dir>]
+#   ./scripts/aa-bridge-e2e.sh --to-wallet mn_shield-addr_undeployed1… --token WEENUS --amount 20
 #
 #   register an account → be REFUSED for an unfunded deposit address → bridge an ERC20 into
 #   the account → bridge another to a Midnight wallet nobody here holds a key of → withdraw
@@ -39,11 +40,22 @@ load_env
 
 EVIDENCE_DIR=""
 MODE="${AA_BRIDGE_E2E_MODE:-sepolia}"
+ONLY="${AA_BRIDGE_E2E_ONLY:-}"
+RECIPIENT_ADDRESS="${AA_BRIDGE_E2E_RECIPIENT_ADDRESS:-}"
+TOKEN_B_OVERRIDE=""
+AMOUNT_B_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --evidence) EVIDENCE_DIR="${2:?--evidence needs a directory}"; shift 2 ;;
     --anvil) MODE="anvil"; shift ;;
     --sepolia) MODE="sepolia"; shift ;;
+    # The demo's step 3: ONLY the wallet-recipient deposit, to an address given rather than
+    # generated. Same code path as the full run's step 4 — the demo is not a second
+    # implementation — and the "can they see it" half is proved from that wallet's own side
+    # with ./scripts/wallet-balance.sh, which is the only party that can answer it.
+    --to-wallet) ONLY="wallet"; RECIPIENT_ADDRESS="${2:?--to-wallet needs a mn_shield-addr… address}"; shift 2 ;;
+    --token) TOKEN_B_OVERRIDE="${2:?--token needs a symbol or an ERC20 address}"; shift 2 ;;
+    --amount) AMOUNT_B_OVERRIDE="${2:?--amount needs a decimal amount}"; shift 2 ;;
     -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) err "unknown argument: $1"; exit 2 ;;
   esac
@@ -97,9 +109,12 @@ dc run --rm --no-deps \
   -e "AA_BRIDGE_E2E_MODE=${MODE}" \
   -e "AA_BRIDGE_E2E_URL=${AA_BRIDGE_E2E_URL:-http://aa-console:8090}" \
   -e "AA_BRIDGE_E2E_TOKEN_A=${AA_BRIDGE_E2E_TOKEN_A:-USDC}" \
-  -e "AA_BRIDGE_E2E_TOKEN_B=${AA_BRIDGE_E2E_TOKEN_B:-WEENUS}" \
+  -e "AA_BRIDGE_E2E_TOKEN_B=${TOKEN_B_OVERRIDE:-${AA_BRIDGE_E2E_TOKEN_B:-WEENUS}}" \
+  -e "AA_BRIDGE_E2E_ONLY=${ONLY}" \
+  -e "AA_BRIDGE_E2E_OUT=/aa/out/aa-bridge-e2e${ONLY:+-$ONLY}.json" \
+  -e "AA_BRIDGE_E2E_RECIPIENT_ADDRESS=${RECIPIENT_ADDRESS}" \
   -e "AA_BRIDGE_E2E_AMOUNT_A=${AA_BRIDGE_E2E_AMOUNT_A:-0.5}" \
-  -e "AA_BRIDGE_E2E_AMOUNT_B=${AA_BRIDGE_E2E_AMOUNT_B:-10}" \
+  -e "AA_BRIDGE_E2E_AMOUNT_B=${AMOUNT_B_OVERRIDE:-${AA_BRIDGE_E2E_AMOUNT_B:-10}}" \
   -e "AA_BRIDGE_E2E_WITHDRAW=${AA_BRIDGE_E2E_WITHDRAW:-0.2}" \
   -e "AA_BRIDGE_E2E_OWNER_KEY=${AA_BRIDGE_E2E_OWNER_KEY:-}" \
   --entrypoint sh aa-deploy -c '. /run/aa-bridge-e2e.env && exec bun /aa/runner/aa-bridge-e2e.ts'
@@ -108,10 +123,10 @@ set -e
 
 if [[ -n "$EVIDENCE_DIR" ]]; then
   mkdir -p "$EVIDENCE_DIR"
-  if docker exec "$CID" cat /aa/out/aa-bridge-e2e.json > "$EVIDENCE_DIR/aa-bridge-e2e.json" 2>/dev/null; then
-    ok "report copied to ${EVIDENCE_DIR}/aa-bridge-e2e.json"
+  if docker exec "$CID" cat /aa/out/aa-bridge-e2e.json > "$EVIDENCE_DIR/aa-bridge-e2e${ONLY:+-$ONLY}.json" 2>/dev/null; then
+    ok "report copied to ${EVIDENCE_DIR}/aa-bridge-e2e${ONLY:+-$ONLY}.json"
   else
-    warn "no /aa/out/aa-bridge-e2e.json to copy (the run may have failed before writing it)"
+    warn "no /aa/out/aa-bridge-e2e${ONLY:+-$ONLY}.json to copy (the run may have failed before writing it)"
   fi
 fi
 

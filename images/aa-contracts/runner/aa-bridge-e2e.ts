@@ -74,6 +74,21 @@ const OWNER_KEY = (process.env["AA_BRIDGE_E2E_OWNER_KEY"] ?? `0x${"b21d6e".padSt
 /** The recipient of the WALLET-path deposit: a Midnight wallet generated per run, whose seed
  *  the console never learns. */
 const RECIPIENT_SEED = process.env["AA_BRIDGE_E2E_RECIPIENT_SEED"] ?? toHex(crypto.getRandomValues(new Uint8Array(32)));
+/**
+ * `wallet` runs ONLY the wallet-recipient deposit, to an address given rather than generated.
+ *
+ * That is the demo's step 3 — "bridge WEENUS to the owner's own Midnight wallet" — and it is the
+ * same code path as the full run's step 4, which is the point: the demo is not a second
+ * implementation. The recipient's SEED is unknown in this mode (it is the owner's), so the
+ * "and they can see it" half is proved separately, by `./scripts/wallet-balance.sh` run against
+ * that wallet — the only party that can answer it is one holding its keys.
+ */
+const ONLY = process.env["AA_BRIDGE_E2E_ONLY"] ?? "";
+const RECIPIENT_ADDRESS = process.env["AA_BRIDGE_E2E_RECIPIENT_ADDRESS"] ?? "";
+if (ONLY && ONLY !== "wallet") fail(`AA_BRIDGE_E2E_ONLY must be empty or 'wallet', got '${ONLY}'`);
+if (ONLY === "wallet" && !RECIPIENT_ADDRESS.startsWith("mn_shield-addr")) {
+  fail("AA_BRIDGE_E2E_ONLY=wallet needs AA_BRIDGE_E2E_RECIPIENT_ADDRESS (a mn_shield-addr… address)");
+}
 
 const TOKEN_A = process.env["AA_BRIDGE_E2E_TOKEN_A"] ?? "USDC";     // → the account
 const TOKEN_B = process.env["AA_BRIDGE_E2E_TOKEN_B"] ?? "WEENUS";   // → a Midnight wallet
@@ -233,20 +248,28 @@ steps["0-info"] = {
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. register a throwaway account
 // ═══════════════════════════════════════════════════════════════════════════
-log("");
-log(`── 1. register an account for ${OWNER} (two transactions, k=18 proving) ──`);
-const reg = await signedAction({ kind: "register" }, "register");
-const accountId: string = reg.job.data?.address ?? reg.job.txId;
-if (!/^[0-9a-f]{64}$/i.test(String(accountId))) fail(`register finished without an account address`);
-log(`account ${accountId}`);
-steps["1-register"] = { owner: OWNER, accountId, seconds: Math.round((Date.now() - t0) / 1000) };
+let accountId = "";
+if (ONLY !== "wallet") {
+  log("");
+  log(`── 1. register an account for ${OWNER} (two transactions, k=18 proving) ──`);
+  const reg = await signedAction({ kind: "register" }, "register");
+  accountId = reg.job.data?.address ?? reg.job.txId;
+  if (!/^[0-9a-f]{64}$/i.test(String(accountId))) fail(`register finished without an account address`);
+  log(`account ${accountId}`);
+  steps["1-register"] = { owner: OWNER, accountId, seconds: Math.round((Date.now() - t0) / 1000) };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. the guard: an empty deposit address is refused BEFORE anything is spent
 // ═══════════════════════════════════════════════════════════════════════════
+let quoteA0: any = null;
+let recA: any = null;
+let fundA: any = null;
+let vaultEvm: string = tokenList.vaultEvmAddress;
+if (ONLY !== "wallet") {
 log("");
 log("── 2. guard: start a deposit before funding the address (FR-004) ──");
-const quoteA0 = await api("/api/bridge/quote", {
+quoteA0 = await api("/api/bridge/quote", {
   direction: "deposit", token: A.erc20, amount: AMOUNT_A, recipient: { account: accountId },
 });
 if (quoteA0.ready) fail("the quote says READY for an address nothing has funded");
@@ -267,17 +290,16 @@ steps["2-guard"] = {
 log("");
 log(`── 3. deposit ${AMOUNT_A} ${A.symbol} into the account ──`);
 log(`  deposit address ${quoteA0.depositAddress} (required ETH ${quoteA0.requiredEth})`);
-const fundA = await fundAddress(
+fundA = await fundAddress(
   quoteA0.depositAddress, A.erc20, A.symbol, A.decimals, amountA, BigInt(quoteA0.requiredEthWei));
 const quoteA1 = await api("/api/bridge/quote", {
   direction: "deposit", token: A.erc20, amount: AMOUNT_A, recipient: { account: accountId },
 });
 if (!quoteA1.ready) fail(`the address is funded and the quote still says not ready: ${JSON.stringify(quoteA1.shortfall)}`);
-const vaultEvm: string = tokenList.vaultEvmAddress;
 const vaultABefore = await balanceOf(A.erc20, vaultEvm);
 const depA = await signedAction(
   { kind: "bridge-deposit-start", accountId, token: A.erc20, amount: AMOUNT_A }, "deposit-to-account");
-const recA = (depA.job.data as any)?.request;
+recA = (depA.job.data as any)?.request;
 if (!recA) fail("the deposit job carries no bridge request record");
 if (recA.state !== "completed") fail(`the deposit ended in state '${recA.state}': ${recA.error ?? "(no error)"}`);
 if (!recA.evmTxHash) fail("the deposit completed without an EVM transaction hash");
@@ -317,16 +339,20 @@ steps["3-deposit-account"] = {
   vaultEvmDelta: String(vaultAAfter - vaultABefore),
   depositAddressAfter: String(depAAfter),
 };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. deposit B to a MIDNIGHT WALLET the console holds no key of
 // ═══════════════════════════════════════════════════════════════════════════
 log("");
 log(`── 4. deposit ${AMOUNT_B} ${B.symbol} to a fresh Midnight wallet ──`);
-const recipientCtx: any = await createWallet(RECIPIENT_SEED);
-let recipientAddress = "";
-let recipientKeys: { coinPublicKey: string; encryptionPublicKey: string };
-try {
+// In `wallet` mode the address is GIVEN (it is the owner's wallet, whose seed nobody here
+// has); otherwise it is a wallet generated for this run, so the run can prove the recipient
+// sees the coin by syncing it.
+let recipientAddress = RECIPIENT_ADDRESS;
+let recipientKeys: { coinPublicKey: string; encryptionPublicKey: string } = { coinPublicKey: "", encryptionPublicKey: "" };
+const recipientCtx: any = ONLY === "wallet" ? null : await createWallet(RECIPIENT_SEED);
+if (recipientCtx) try {
   const st: any = await Rx.firstValueFrom((recipientCtx.wallet as any).state());
   recipientKeys = {
     coinPublicKey: String(st.shielded.coinPublicKey.toHexString()).replace(/^0x/, "").toLowerCase(),
@@ -343,7 +369,7 @@ log(`recipient ${recipientAddress.slice(0, 34)}… (its seed is generated per ru
 const quoteB = await api("/api/bridge/quote", {
   direction: "deposit", token: B.erc20, amount: AMOUNT_B, recipient: { shieldedAddress: recipientAddress },
 });
-if (quoteB.depositAddress === quoteA0.depositAddress) {
+if (quoteA0 && quoteB.depositAddress === quoteA0.depositAddress) {
   fail("the wallet recipient derived the SAME deposit address as the account — the recipient is not in the path");
 }
 log(`  deposit address ${quoteB.depositAddress}`);
@@ -363,9 +389,11 @@ if (vaultBAfter - vaultBBefore !== amountB) {
   fail(`the vault's EVM account moved by ${vaultBAfter - vaultBBefore} of ${B.symbol}, expected ${amountB}`);
 }
 
-// THE assertion of this path: the recipient, syncing on its own, sees the coin.
-log("syncing the recipient wallet from its own seed (the console never had its keys)…");
-const seen = await (async () => {
+// THE assertion of this path: the recipient, syncing on its own, sees the coin. Skipped only
+// in `wallet` mode, where the recipient is the OWNER's wallet and nothing here holds its seed —
+// `./scripts/wallet-balance.sh` answers it from that wallet's side instead.
+const seen = ONLY === "wallet" ? amountB : await (async () => {
+  log("syncing the recipient wallet from its own seed (the console never had its keys)…");
   const ctx: any = await createWallet(RECIPIENT_SEED);
   try {
     const deadline = Date.now() + Number(process.env["AA_BRIDGE_E2E_SYNC_MS"] ?? 420_000);
@@ -386,13 +414,16 @@ const seen = await (async () => {
     await (ctx.wallet as any).stop?.().catch(() => {});
   }
 })();
-if (seen !== amountB) {
+if (ONLY !== "wallet" && seen !== amountB) {
   fail(`the recipient wallet sees ${seen} of the bridged ${B.symbol} colour, expected ${amountB}. `
     + "A coin that lands without the recipient's encryption key mapped into the settle is invisible to them "
     + "(00034 question Q42) — that is the failure this check exists for");
 }
-log(`deposit B OK — EVM ${recB.evmTxHash} status 1; the recipient wallet sees `
-  + `${fromRaw(seen, B.decimals)} ${B.symbol} by syncing from its own seed`);
+log(ONLY === "wallet"
+  ? `deposit B OK — EVM ${recB.evmTxHash} status 1; ${fromRaw(amountB, B.decimals)} ${B.symbol} minted to `
+    + `${recipientAddress.slice(0, 34)}…. Prove the other half from that wallet: ./scripts/wallet-balance.sh`
+  : `deposit B OK — EVM ${recB.evmTxHash} status 1; the recipient wallet sees `
+    + `${fromRaw(seen, B.decimals)} ${B.symbol} by syncing from its own seed`);
 steps["4-deposit-wallet"] = {
   recipientShieldedAddress: recipientAddress,
   recipientCoinPublicKey: recipientKeys!.coinPublicKey,
@@ -401,13 +432,17 @@ steps["4-deposit-wallet"] = {
   evmTxHash: recB.evmTxHash, evmStatus: recB.evmStatus, evmBlock: recB.evmBlock,
   attested: recB.attestedKind, attestationLabel: recB.attestationLabel,
   amount: AMOUNT_B, amountRaw: String(amountB), colour: B.colour,
-  recipientSeesRaw: String(seen), recipientSees: fromRaw(seen, B.decimals),
+  ...(ONLY === "wallet"
+    ? { recipientSeenBy: "not checked here — the recipient's seed is the owner's; use ./scripts/wallet-balance.sh" }
+    : { recipientSeesRaw: String(seen), recipientSees: fromRaw(seen, B.decimals) }),
   vaultEvmDelta: String(vaultBAfter - vaultBBefore),
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 5. withdraw part of the account's bridged coin back to the funder
 // ═══════════════════════════════════════════════════════════════════════════
+let recW: any = null;
+if (ONLY !== "wallet") {
 log("");
 log(`── 5. withdraw ${AMOUNT_WITHDRAW} ${A.symbol} back to ${funder.address} ──`);
 const quoteW0 = await api("/api/bridge/quote", { direction: "withdraw", token: A.erc20, amount: AMOUNT_WITHDRAW });
@@ -419,7 +454,7 @@ const vaultWBefore = await balanceOf(A.erc20, vaultEvm);
 const wd = await signedAction(
   { kind: "bridge-withdraw-start", accountId, token: A.erc20, amount: AMOUNT_WITHDRAW, dest: funder.address },
   "withdraw");
-const recW = (wd.job.data as any)?.request;
+recW = (wd.job.data as any)?.request;
 if (!recW || recW.state !== "completed") fail(`the withdrawal ended in state '${recW?.state}': ${recW?.error}`);
 const receiptW = await provider.getTransactionReceipt(recW.evmTxHash);
 if (!receiptW || receiptW.status !== 1) fail(`the withdrawal's ERC20 transfer did not succeed (${recW.evmTxHash})`);
@@ -479,6 +514,7 @@ steps["6-guards"] = {
   cap, overCapRequested: overCap, refusedAtQuote: capMsg, refusedAtStart: capStartMsg,
   resumeOnCompleted: { requestId: recA.requestId, unchangedSettleTxId: resumed?.settleTxId },
 };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // the report
@@ -493,6 +529,7 @@ provider.destroy();
 const report = {
   kind: "aa-bridge-e2e",
   mode: MODE,
+  only: ONLY || "full",
   chainId: String(network.chainId),
   startedAt: new Date(t0).toISOString(),
   finishedAt: new Date().toISOString(),
@@ -514,6 +551,10 @@ mkdirSync(OUT.slice(0, OUT.lastIndexOf("/")), { recursive: true });
 writeFileSync(OUT, `${JSON.stringify(report, null, 2)}\n`);
 log("");
 log(`report → ${OUT}`);
-log(`PASS — deposit to an account, deposit to a wallet, a withdrawal, the guards and the caps, `
-  + `in ${report.tookSeconds}s on chain ${report.chainId}`);
-log(`${TAG} RESULT account=${accountId} depositA=${recA.evmTxHash} depositB=${recB.evmTxHash} withdraw=${recW.evmTxHash}`);
+log(ONLY === "wallet"
+  ? `PASS — one deposit to a Midnight wallet, in ${report.tookSeconds}s on chain ${report.chainId}`
+  : `PASS — deposit to an account, deposit to a wallet, a withdrawal, the guards and the caps, `
+    + `in ${report.tookSeconds}s on chain ${report.chainId}`);
+log(ONLY === "wallet"
+  ? `${TAG} RESULT walletDeposit=${recB.evmTxHash} recipient=${recipientAddress}`
+  : `${TAG} RESULT account=${accountId} depositA=${recA.evmTxHash} depositB=${recB.evmTxHash} withdraw=${recW?.evmTxHash}`);

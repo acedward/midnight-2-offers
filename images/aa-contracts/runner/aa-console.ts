@@ -876,7 +876,15 @@ async function buildAction(body: any): Promise<Prepared> {
 
   const { ctx, useCounter } = prep;
   const salt = ctx.evmDomainSalt!;
-  const amount = body.amount === undefined ? 0n : BigInt(body.amount);
+  // ⚠ LAZY ON PURPOSE. This line runs for EVERY kind, before the branch that uses it — and the
+  // two bridge kinds carry a DECIMAL amount in the token's own units ("0.5", "10"), which they
+  // convert with that token's decimals. `BigInt("0.5")` throws a SyntaxError, so an eager parse
+  // here would refuse every bridge deposit before its branch was ever reached, with a message
+  // about BigInt. A non-integer therefore yields 0n and the integer kinds say "amount must be a
+  // positive integer", which is the message they already say for 0.
+  const amount = typeof body.amount === "number" && Number.isInteger(body.amount)
+    ? BigInt(body.amount)
+    : (/^\d+$/.test(String(body.amount ?? "")) ? BigInt(String(body.amount)) : 0n);
 
   const finish = (request: AuthRequest, summary: Record<string, unknown>): Prepared => {
     const challenge = evmChallengeFor(ctx, hexToBytes(owner), request);
