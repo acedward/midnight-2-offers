@@ -65,7 +65,9 @@ Open the console at **http://127.0.0.1:10700** when it is up.
 ./up.sh --with aa --with offerfiles   # pick profiles: aa · evm · faucet · offerfiles · frontend · shielded-night · signet · solver · poster · prices
 ./up.sh --with offerfiles --with prices  # live CoinGecko prices — needs COINGECKO_API_KEY in .env
 ./up.sh --with shielded-night         # NIGHT ⇄ sNight on :10900 — needs nothing but core
-./up.sh --with aa --with signet       # a REAL bridge MPC on Sepolia — needs SIGNET_EVM_RPC_URL in .env
+./up.sh --with aa --with signet       # a REAL bridge MPC on Sepolia + the console's Bridge tab
+                                      #   (needs SIGNET_EVM_RPC_URL in .env; it also builds the image
+                                      #    with the bridge prover keys, AA_WITH_BRIDGE=1, ~1.2 GB more)
 ./up.sh --with faucet                 # six local test tokens + their mint site on :10950 — core only
 ./up.sh --converge --with aa          # EXACTLY core + the named profiles; stops the rest
 ./up.sh --build | --pull              # rebuild local images / pull upstream ones first
@@ -83,6 +85,9 @@ ENV_FILE=.env.test ./up.sh --all      # …for a second stack beside the first
 ./verify.sh --prices                  # …and REQUIRE the price feed (a cycle landed, rows are live)
 ./scripts/fund-wallet.sh --all-demo   # fund the demo-* wallets (10M NIGHT + DUST each)
 ./scripts/aa-e2e.sh                   # end-to-end of the EVM-signed AA path
+./scripts/aa-bridge-dryrun.sh         # one MPC signing request, NOTHING funded and nothing broadcast
+./scripts/aa-bridge-e2e.sh            # end-to-end of the ERC20 bridge — it SPENDS on the EVM chain
+./scripts/wallet-address.sh <seed>    # one public address form of a seed (the seed is never printed)
 ./down.sh                             # stop, keep the chain (./up.sh resumes)
 ./down.sh -v                          # FULL RESET — wipes every volume, cache included
 ./scripts/ci-check.sh                 # one command: free ports → up --all → fund → verify → down -v
@@ -202,7 +207,7 @@ you use with `docker compose … logs <service>`. Ports are the `.env.example` d
 | [`poster`](compose/poster.yml) — **needs `faucet` too** | `poster-fund` · `offer-poster` | health `http://127.0.0.1:10803/health` |
 | [`prices`](compose/prices.yml) — opt-in, needs `COINGECKO_API_KEY` | `price-feed` | no port; writes `asset_prices`, read back via kernel `/v1/prices` |
 | [`aa`](compose/aa.yml) | `aa-proof-server` · `aa-deploy` · `aa-console` | **AA console `http://127.0.0.1:10700`** · experimental proof server internal only |
-| [`signet`](compose/signet.yml) — **needs `aa` too**, and `SIGNET_EVM_RPC_URL` | `signet-fakenet` | no host port — the bridge's MPC responder, signing on a real EVM chain (11155111 by default). Its helper API `signet-fakenet:3040` is internal only |
+| [`signet`](compose/signet.yml) — **needs `aa` too**, and `SIGNET_EVM_RPC_URL` | `signet-fakenet` | no host port — the bridge's MPC responder, signing on a real EVM chain (11155111 by default). Its helper API `signet-fakenet:3040` is internal only. It also turns the console's **Bridge** tab on: `up.sh` exports `AA_WITH_BRIDGE=1`, so the aa image keeps the bridge prover keys |
 | [`evm`](compose/evm.yml) | `evm-migrate` · `evm-rpc` · `wallet-monitor` | eth JSON-RPC `http://127.0.0.1:8545` (chainId 2400) · WS `ws://127.0.0.1:10021` |
 | [`frontend`](compose/frontend.yml) | `frontend` | zswap-da SPA `http://127.0.0.1:10600` |
 | [`shielded-night`](compose/shielded-night.yml) | `shielded-night-fund` · `shielded-night-deploy` · `shielded-night` · `shielded-night-register` · `shielded-night-verify` | sNight dApp `http://127.0.0.1:10900` |

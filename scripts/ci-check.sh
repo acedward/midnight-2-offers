@@ -21,6 +21,7 @@
 #   4d. one-shots   every one-shot's OUTPUT assertion, from config/e2e-coverage.json
 #   4e. spa         the SPA's headless take (through the batcher) and make
 #   4f. aa-e2e      register (deploy an account) -> fund -> offer -> settle -> spend
+#   4g. bridge-e2e  OPT-IN (--bridge-e2e): the ERC20 bridge round trip on a real EVM chain
 #   5.  down -v     full teardown, then ASSERT that nothing survived
 #
 # Every step's output is also written to .ci-logs/<project>/<step>.log, and the run ends with a
@@ -53,6 +54,8 @@ DO_AA_MINT=1
 DO_FAUCET_MINT=1
 DO_SPA_ROUNDTRIP=1
 DO_AA_E2E=1
+# The bridge e2e SPENDS on a real EVM chain, so it is opt-in rather than opt-out.
+DO_BRIDGE_E2E=0
 KEEP=0
 CI_ENV_FILE=""
 
@@ -76,6 +79,8 @@ Options:
   --no-faucet-mint   skip the real faucet mint (verify.sh --faucet-mint)
   --no-spa-roundtrip skip step 4e (the SPA's headless take + make)
   --no-aa-e2e        skip step 4f (the EVM-signed Passport account path)
+  --bridge-e2e       ALSO run step 4g, the ERC20 bridge round trip. It moves real tokens and
+                     real gas on the chain SIGNET_EVM_RPC_URL serves, within AA_BRIDGE_CAP_*.
   --keep             on failure, leave the stack up for inspection (still cleaned on success)
   --env-file <path>  write the generated env file here and keep it (default: a temp file in
                      the repo, removed on exit)
@@ -96,6 +101,7 @@ while [[ $# -gt 0 ]]; do
     --no-faucet-mint) DO_FAUCET_MINT=0; shift ;;
     --no-spa-roundtrip) DO_SPA_ROUNDTRIP=0; shift ;;
     --no-aa-e2e) DO_AA_E2E=0; shift ;;
+    --bridge-e2e) DO_BRIDGE_E2E=1; shift ;;
     --keep)      KEEP=1; shift ;;
     --env-file)  CI_ENV_FILE="${2:?--env-file needs a path}"; shift 2 ;;
     -h|--help)   usage; exit 0 ;;
@@ -529,6 +535,24 @@ for w in doc.get("wallets", []):
     skip_step 4f "aa-e2e.sh" "--no-aa-e2e"
   elif [[ "$PROFILE_MODE" != "all" ]]; then
     skip_step 4f "aa-e2e.sh" "needs the aa profile (--all)"
+  fi
+
+  # ── step 4g: the ERC20 BRIDGE, opt-in because it SPENDS ───────────────────
+  #
+  # OFF unless `--bridge-e2e` is passed AND the stack has the `signet` profile with a real EVM
+  # endpoint. That is deliberate and it is not timidity: this step moves real tokens and real
+  # gas on a public chain, and a gate that spends money by default is a gate somebody runs by
+  # accident. The caps (AA_BRIDGE_CAP_*) bound the damage either way, and the run asserts that
+  # they do.
+  if (( ! FAILED && DO_BRIDGE_E2E )); then
+    if [[ -z "${SIGNET_EVM_RPC_URL:-}" ]]; then
+      skip_step 4g "aa-bridge-e2e.sh" "SIGNET_EVM_RPC_URL is not set (the stack has no signet profile)"
+    else
+      step 4g "aa-bridge-e2e.sh (deposit to an account, deposit to a wallet, withdraw, caps)" \
+        "$REPO_ROOT/scripts/aa-bridge-e2e.sh" || true
+    fi
+  else
+    skip_step 4g "aa-bridge-e2e.sh" "off by default — it SPENDS on a real EVM chain (--bridge-e2e)"
   fi
 fi
 

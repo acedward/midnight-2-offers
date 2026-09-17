@@ -625,6 +625,49 @@ something needs.
 immediately at start, which is what `up.sh` waits for. A `429` stops a cycle where it stands and
 keeps everything it already wrote.
 
+## Running the ERC20 bridge (profile `aa` + `signet`)
+
+```bash
+./up.sh --with aa --with signet --with offerfiles --with frontend   # Bridge tab at :10700
+./scripts/aa-bridge-dryrun.sh                    # 1. does the responder answer AT ALL?  (free)
+./scripts/aa-bridge-e2e.sh --evidence ./evidence # 2. the full round trip                (SPENDS)
+```
+
+**Run the dry run first, every time, on a stack that has never bridged.** It raises ONE signature
+request for a random throwaway recipient and waits for the MPC's signature. Nothing is funded and
+nothing is broadcast, so it costs a Midnight transaction's DUST and no gas at all — and it answers
+the one question that otherwise fails minutes into a run that has already put real tokens at a
+deposit address: *can the responder prove its own `respond` against the proof server it was given?*
+(project 00035 question Q11). Its report is `/aa/out/aa-bridge-dryrun.json`.
+
+**The two operator secrets.** The bridge needs the same `SIGNET_EVM_RPC_URL` the responder uses —
+`compose/aa.yml` feeds it to the console as `AA_BRIDGE_EVM_RPC_URL`, so the console's balance reads
+and the MPC's broadcasts can never be pointed at different chains — and, for the e2e ONLY, a funder
+private key. Neither is ever an argument:
+
+| secret | where it lives | who sees it |
+|---|---|---|
+| `SIGNET_EVM_RPC_URL` | the uncommitted env file | `signet-fakenet` and `aa-console`. Never echoed in `/api/info`, in a bridge record or in a log line |
+| `SEPOLIA_FUNDER_KEY` | `~/.config/aa-00034/sepolia.env`, mode 600 | `scripts/aa-bridge-e2e.sh`, which writes it into a mode-600 file under a private temp directory and mounts that file into the e2e container. **Never `-e KEY=value`**: a `docker compose run` command line is visible in `ps` on a shared machine. Removed on exit, whatever happens |
+
+**The console has no key and no field that would take one** (spec FR-015). In the browser flow the
+operator sends the tokens and the gas from their own wallet to the address the Bridge tab shows.
+
+**Caps.** `AA_BRIDGE_CAP_USDC` (5), `AA_BRIDGE_CAP_WEENUS` (50), `AA_BRIDGE_CAP_ETH` (0.05), in
+DECIMAL units, summed over the console store's lifetime — which is the `aa-out` volume's lifetime,
+so `./down.sh -v` resets them along with the chain. A token with no cap is REFUSED; set
+`AA_BRIDGE_CAP_<SYMBOL>` or a non-zero `AA_BRIDGE_CAP_DEFAULT` to bridge anything else.
+
+**One rule that will bite an operator who does not know it.** Every deposit address is derived from
+the vault's CONTRACT address, so `./down.sh -v` invalidates all of them. Fund, start, relay and
+complete inside ONE session; stop and restart with `./down.sh` **without** `-v`. See
+[KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) for what to do about funds left at a wiped chain's
+deposit address (short version: keep the static root, and it needs a tool that is not in this repo).
+
+**Resuming.** Every request is persisted with its id. `GET /api/bridge/requests` lists them and
+`POST /api/bridge/relay/<requestId>` finishes one — the start is never redone, and pressing it on a
+finished request changes nothing. The Bridge tab's Requests pane has the same button.
+
 ## The `shielded-night` profile
 
 ```bash

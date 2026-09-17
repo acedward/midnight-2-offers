@@ -363,13 +363,36 @@ artefact this profile produces:
    the two agree, which is the only shape this bridge uses. With a traced endpoint the same image
    takes the upstream path unchanged and this caveat disappears.
 
-### There is still no bridge tab in the console
+### Every deposit address dies with `./down.sh -v`, and funds left at one need a manual tool
 
-`signet` makes the *stack* able to bridge; it adds no UI. The console has no Bridge tab yet and no
-bridge relay jobs, so moving funds across today means driving the fork's client by hand. That is
-the next change rather than a permanent gap: the verifier keys are deployed, the vault is
-initialised for the right chain and against a key a responder actually holds, so accounts
-registered today keep working when the tab lands.
+A deposit address is `deriveDepositEvmAddress(MPC root, **vault contract address**, depositPath(recipient))`.
+A wiped chain deploys a NEW vault, so every address this stack has ever shown changes — a static
+`AA_MPC_ROOT_SECRET` fixes the root and fixes nothing else (project 00035 question Q13). The
+practical rules, which `up.sh`'s summary and the Bridge tab's quote both state:
+
+- fund a deposit address, start, relay and complete **within one stack session**;
+- use `./down.sh` **without** `-v` to stop and restart a stack whose deposit addresses matter;
+- `-v` is for a deliberate fresh start, after which the addresses are new.
+
+**If tokens are left at a deposit address of a wiped chain**, they are not lost and they are not
+reachable from this stack either: sweeping them needs the (static) MPC root secret and the OLD
+vault's contract address, driven through a manual tool that re-derives the address and asks the MPC
+to sign a transfer for it. That tool is **out of scope here** — there is no such command in this
+repository. Keep the root secret if this matters to you, and prefer not to get into the situation:
+the console never invites funding before the stack can start the deposit, and the quote warns.
+
+### The Bridge tab is a console feature, and the console is still the custodian
+
+The tab (project 00035) does not change the trust model: the browser signs EIP-712 and holds no
+Midnight key, and the console holds the account's coin store and viewing key exactly as before.
+Two things are worth stating about the WALLET-recipient path, which is new:
+
+- the console never receives that wallet's keys — the shielded address carries the two PUBLIC keys
+  the mint needs, and the recipient discovers the coin by syncing;
+- it is the console's relay wallet that pays for the two transactions, so a stranger cannot start
+  a wallet deposit through your console without your console's DUST. Nothing about the FUNDS is at
+  the console's discretion: the deposit address is derived from the recipient, so anything sent
+  there can only ever be minted to that recipient.
 
 ### The frontend wallet's seed is visible to anyone who can load the page
 

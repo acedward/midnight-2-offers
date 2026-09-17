@@ -769,10 +769,97 @@ tree for the shape of all of this.
   responder will never sweep;
 - the responder's allow-list is exactly this stack's vault, and it watches exactly this stack's
   singleton;
-- **zero** signature requests have been served — nothing on this profile raises one, so a
-  `respond` in the log means it answered a caller it should not have;
+- **no FOREIGN request was served.** This used to be "zero requests, ever", which was right while
+  nothing on the stack could raise one; the Bridge tab can (project 00035), so what must stay zero
+  is a request from a caller that is not this stack's vault. The script reports which case it is in
+  and counts the requests the allow-list ignored;
 - a read-only `eth_chainId` on the operator's endpoint equals the chain the vault is pinned to. A
   mismatch is how funds get stranded at a correctly derived address on the wrong chain.
+
+## The Bridge tab — ERC20s in and out of an account or a wallet (profile `aa` + `signet`)
+
+```bash
+./up.sh --with aa --with signet --with offerfiles --with frontend   # then http://127.0.0.1:10700 → Bridge
+./scripts/aa-bridge-dryrun.sh          # one signing request, nothing funded, nothing broadcast
+./scripts/aa-bridge-e2e.sh --evidence <dir>   # the full round trip; it SPENDS on the EVM chain
+```
+
+Tokens on the EVM chain become **shielded Midnight coins**, one colour per ERC20 per vault:
+`tokenType(vaultTokenDomainSeparator(erc20), vault)`, with the ERC20's own raw units as the coin
+value and the ERC20's own decimals everywhere it is shown. 1 USDC is `1000000`; **10 WEENUS is
+`10000000000000000000`**, which is past `Number.MAX_SAFE_INTEGER` — every amount in the console is
+a bigint or a decimal string, and `images/aa-contracts/runner/aa-bridge.test.ts` is a BUILD gate
+for exactly that.
+
+### A round trip is three acts, and the middle one is not on Midnight
+
+Nothing on Midnight can wait for an Ethereum transaction inside one proof, so it cannot be one
+click and it is not presented as one:
+
+| act | deposit | withdraw |
+|---|---|---|
+| **start** (one Midnight transaction) | `bridge_deposit_start_with_evm` on the account, or the vault's `startDeposit` at root | `bridge_withdraw_start_with_evm`: the account sends the coin, the vault claims it |
+| **relay** (off chain) | the MPC signs `transfer(vault, amount)` from the recipient's derived deposit address; the console broadcasts it; the MPC attests | the MPC signs `transfer(dest, amount)` from the **vault's own** EVM account; same loop |
+| **settle** (one Midnight transaction) | `bridge_deposit_complete` — the vault mints, the account (or the wallet) receives, the inbox entry is sealed in the same transaction | `bridge_withdraw_complete`, or `bridge_withdraw_refund` when the transaction never executed — the ATTESTATION picks the branch, not the caller |
+
+The middle act is a resumable job: `POST /api/bridge/relay/<requestId>` (and its alias
+`/api/bridge/settle/<requestId>`) finishes a request the operator started hours ago, and pressing
+it on a finished one changes nothing. Every request is persisted in `/aa/out/aa-bridge.json` on the
+`aa-out` volume, with its Sepolia hash, block, status and attestation kind.
+
+### Two recipients, two addresses, two protocols
+
+| recipient | who authorises | where the coin lands | what the console holds |
+|---|---|---|---|
+| **your account** — `right(contract address)` | the browser, EIP-712 over the account's `evm` arm | the account's custody, with its inbox entry | the account's coin store and viewing key, as it already did |
+| **a Midnight shielded address** — `left(coin public key)` | nobody: the vault's `startDeposit`/`completeDeposit` are permissionless and the console's relay wallet pays | that wallet, which sees it by syncing | **nothing of that wallet's** |
+
+Each (vault, recipient) pair has its own Ethereum address, derived from the vault's own exported
+`depositPath` circuit: tokens sent there can only ever be minted to that recipient, whoever submits
+the calls. The wallet path needs the recipient's **encryption** public key mapped into the settle
+transaction (`additionalCoinEncPublicKeyMappings`, 00034 question Q42) — the shielded address
+carries it, and without it the coin lands and its owner cannot see it. That is why a bare coin
+public key is refused as a deposit recipient, and why the e2e's decisive assertion is a wallet
+syncing from its own seed and finding the coin.
+
+⚠ **Every deposit address dies with `./down.sh -v`** (project 00035 question Q13). It is derived
+from the vault's CONTRACT address, and a wiped chain deploys a new vault — so fund, start, relay
+and complete within ONE stack session, and use `./down.sh` **without** `-v` to keep them across a
+restart. The quote says so, and `up.sh`'s summary repeats it.
+
+### Caps, guards and the one thing the console will never accept
+
+- **Caps** (spec FR-017, the owner's decision): `AA_BRIDGE_CAP_USDC=5`, `AA_BRIDGE_CAP_WEENUS=50`,
+  `AA_BRIDGE_CAP_ETH=0.05`, in DECIMAL units, summed over the console store's lifetime. A token with
+  no cap is **refused**, not allowed: an unknown ERC20 bridged without a ceiling is how a demo stack
+  spends somebody's real funds. Checked at the quote, checked again at the start, charged once.
+- **The FR-004 guard**: a start is refused, before any Midnight transaction, unless the deposit
+  address holds the tokens **and** the gas — naming the exact shortfall. A start against an empty
+  address burns DUST and a device entry for a request whose Ethereum leg can only return false.
+- **No private key, anywhere** (FR-015). The console is given a read-only RPC URL so it can quote
+  balances; it has no key of any kind and no field that would take one. The operator funds deposit
+  addresses from their own wallet, and `scripts/aa-bridge-e2e.sh` reads the funder key from the
+  operator's own file and hands it to a SEPARATE container through a mode-600 mount — never on a
+  command line, because this is a shared machine.
+
+### The bridged colours are a second token source
+
+`/api/info.tokens` now carries `source: "faucet" | "bridged"`. Bridged colours are appended after
+the faucet ones (so the page's positional defaults are unchanged), they have no issuer, and every
+mint path refuses them by name: they are minted by the vault against tokens that arrived on the
+EVM chain, and no faucet can create one. The console also registers each of them in the kernel's
+name registry (`POST /v1/known-tokens`, idempotent) so the offer-files frontend renders an offer in
+them as "1 USDC" and "10 WEENUS" (spec FR-009). The kernel has no update route, so a name already
+taken by another colour is reported loudly and left alone.
+
+### `AA_WITH_BRIDGE`, and why `--with signet` turns it on
+
+The bridge's VERIFIER keys are on every account either way (5 × ~2 KB in the wave-2 maintenance
+update). `AA_WITH_BRIDGE` decides whether the IMAGE keeps the five bridge circuits' and the vault's
+flow circuits' PROVER keys — about 1.2 GB — and without them `bridge_deposit_start_with_evm` cannot
+be proved, so the tab can only say "unavailable". `up.sh --with signet` therefore exports
+`AA_WITH_BRIDGE=1`; the compose default stays `0`, so `--with aa` alone is the image it always was,
+and the FIRST `--with signet` build after a bridge-less one rebuilds the image's last stages.
 
 ## umbra-evm — read-only Ethereum JSON-RPC (profile `evm`)
 
