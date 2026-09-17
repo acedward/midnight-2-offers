@@ -157,8 +157,15 @@ run_scan() {
 case "$MODE" in
   tree)
     log "secret hygiene: the tracked tree"
+    # THIS FILE IS EXCLUDED FROM ITS OWN SCAN, for the same reason
+    # scripts/verify-pin-defaults.sh excludes itself: the --self-test fixtures below are
+    # deliberately secret-SHAPED — a fake Alchemy URL, a fake root key — and would otherwise
+    # report the checker as the leak. They are literals in a test harness that nothing reads but
+    # this script, and every one of them is a value that exists nowhere else. It is not
+    # self-blindness: no image, container or service is built from this file.
     if ! git -C "$REPO_ROOT" ls-files -z \
         | xargs -0 grep -InE '(0x)?[0-9a-f]{64}|alch_|alchemy\.com|infura\.io|quiknode|drpc\.org|ankr\.com|MNEMONIC' 2>/dev/null \
+        | grep -v '^scripts/check-no-secrets\.sh:' \
         | run_scan "tracked files"; then
       FAILURES=$(( FAILURES + 1 ))
     fi
