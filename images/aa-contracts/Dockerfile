@@ -1,150 +1,143 @@
-# aa-contracts — deploy the AA Manager + test Minter on the demo chain at bring-up,
-# and mint a token (profile `aa`, one-shot service `aa-deploy`).
+# aa-contracts — deploy the PASSPORT account stack's shared pieces at bring-up
+# (profile `aa`, one-shot service `aa-deploy`), and serve the AA console.
 #
-# Source: acedward/AA-midnight-evm-experiment-v3 — contracts/manager.compact (the
-# account-abstraction custody contract, since 41de69d a PRESET plus nine modules
-# under contracts/modules/) and contracts/test-support/minter.compact
-# (per-deployment-tag token source). Fetched from the remote like the other images,
-# so `git clone <this repo> && ./up.sh --with aa` works with nothing else checked out.
+# ⚠ BREAKING vs every image before it. This used to build acedward/AA-midnight-evm-
+# experiment-v3: ONE shared "Manager" contract holding every user's balances behind a
+# single `execute` gateway, plus a test Minter, plus a MinoCrab-ported `execute` ZKIR.
+# All three are gone. The stack now runs on the Midnight PASSPORT account model:
 #
-# TOOLCHAIN FIDELITY — ONE compactc, ONE compact-runtime, and issues/00011 is
-# CLOSED. The compactc pin is READ FROM THE PINNED KERNEL TREE
-# (`infra/compact-version.txt` — 0.34.0 at this KERNEL_REF), because one compactc
-# and one compact-runtime compile BOTH contract sets in this image. Until the
-# kernel moved (PR #67, this re-pin) the two sets disagreed: the AA repo was a
-# 0.34.0 / runtime 0.19.0 build (AA PR #11) while the kernel line still declared
-# 0.33.0-rc.2 / 0.18.0-rc.1, and this image papered over it by compiling the AA
-# contracts with the kernel's older compactc — legitimate only because the ZKIR
-# came out byte-identical (measured 2026-09-04, all nine circuits, e.g.
-# execute.zkir 1ec9f501…). That was a coincidence to be verified per release,
-# not a property. Both halves are now 0.34.0 by construction, and the guard in
-# stage 2 no longer tolerates a version whose emitted `--runtime-version`
-# disagrees with what the runner installs. `--build-arg COMPACT_VERSION=<x>`
-# still overrides for a deliberate experiment.
+#   * ONE CONTRACT PER USER. `register` DEPLOYS an account contract whose initial device
+#     is the connected Ethereum wallet; the account id IS the contract address (Q40).
+#     There is no registry to enumerate and no pre-registration id to sign over.
+#   * ONE SHARED VAULT, deployed once by `aa-deploy`. The account's constructor seals a
+#     reference to it (`sealed ledger vault`), so an account cannot be built without a
+#     vault address, and the compiler embeds a fingerprint of the vault's verifier keys —
+#     a redeployed vault orphans every account compiled against the old one (spec FR-022).
+#   * NO MINOCRAB. The port produced the Manager's `execute`; there is no `execute` here.
+#     `AA_ZKIR_SOURCE`, `MINOCRAB_*` and `AA_PRUNE_MANAGER_PROVERS` are removed. The
+#     prover keys this image keeps are now NAMED, in `AA_PROVER_KEYS`.
 #
-# It compiles with `--feature-zkir-v3`, and that flag is load-bearing: the Manager
-# is keccak/EIP-712-heavy and its compactc artifact is a v3-lane one. v3 zkir emits
-# verifier-key[v7], which the PLAIN proof-server 9.0.0-rc.5 cannot prove calls
-# against — which is why compose/aa.yml ships its own INTERNAL experimental
-# 9.0.0-rc.5 proof server (AA_PROOF_IMAGE, digest-pinned) instead of repointing
-# the whole stack's proving at one variant. The two builds are different
-# programs, not two tags on one image.
+# Source: acedward/passport, branch 00034-passport-evm-account-zswap, pinned by full SHA
+# as PASSPORT_REF. Everything this image compiles lives under that repo's `contract/`:
+# `contracts/account.compact` (+ `contracts/modules/*`) and `contracts/erc20-vault/`
+# (the witness-free vault fork and the vendored Signet singleton). Fetched from the
+# remote like the other images, so `git clone <this repo> && ./up.sh --with aa` works
+# with nothing else checked out.
 #
-# THE MANAGER'S `execute` COMES FROM THE MinoCrab PORT BY DEFAULT.
-# acedward/AA-midnight-evm-experiment-minocrab is a Rust transcription of the same
-# contract into MinoCrab, an UNAUDITED third-party alternative compiler for
-# Midnight. Its `execute` lands at k = 18 / 211,047 rows where compactc lands at
-# k = 19 / 382,780: half the proving key (544 MiB vs 1.14 GB) and roughly half the
-# proving time, at an unchanged statement, proof size and public-input count.
-# Equivalence is TESTED, NOT PROVEN (59 differential tests, 26 scenarios, 5,128
-# tamper probes, 0 acceptance disagreements) — DEV CHAINS ONLY. See
-# docs/KNOWN-LIMITATIONS.md.
+# TOOLCHAIN FIDELITY — ONE compactc, ONE compact-runtime, and issues/00011 stays CLOSED.
+# The compactc pin is still READ FROM THE PINNED KERNEL TREE (`infra/compact-version.txt`
+# — 0.34.0 at this KERNEL_REF) and verified against that tree's
+# `infra/compact-checksums.sha256`, because ONE compactc compiles the account, the vault,
+# the Signet singleton AND has to agree with the mint-test-tokens artifacts this image
+# copies. The Passport fork targets compactc 0.34.0 / language 0.26.0 / compact-runtime
+# 0.19.0 (its `contract/package.json`), which is the same lane, so the existing guard —
+# compactc's emitted `--runtime-version` must equal what the runner installs and what the
+# copied artifacts' own receipt records — is unchanged and now covers three repositories.
+# `--build-arg COMPACT_VERSION=<x>` still overrides for a deliberate experiment.
 #
-# The artifacts are NOT built here and NOT copied from a handoff folder: they are
-# the port's own PUBLISHED RELEASE ASSETS, downloaded and identified by SHA-256
-# (config/artifact-decisions.json rule: an exact published binary is taken by hash,
-# never recompiled). The chain of trust is one 3 KB file — `SHA256SUMS`, whose own
-# SHA-256 is pinned here as MINOCRAB_SUMS_SHA256 — which covers `manifest.json`,
-# which in turn states the release tag, the port commit, the MinoCrab rev, the
-# contract pin, the compactc/zkir-v3 hashes, the SRS per k and every circuit's
-# k/rows/sizes/hashes. The build asserts all three identities and fails closed.
+# It compiles with `--feature-zkir-v3`, and that flag is still load-bearing: the `evm`
+# arm is keccak/EIP-712/ECDSA-heavy (k=18 for every gated circuit) and a v3 zkir emits
+# verifier-key[v7], which the PLAIN proof-server cannot prove calls against. compose/aa.yml
+# therefore still ships its own INTERNAL experimental proof server, and the wallet's own
+# standard-lane pieces still go to the core plain one.
 #
-# KEYS. `AA_PRUNE_MANAGER_PROVERS=1` (default) keeps the Manager's `.prover` files
-# out of the image: bring-up DEPLOYS the Manager but never CALLS it, and a deploy
-# needs only the verifier keys. The AA console and the E2E DO call `execute` and
-# prove it locally (runner/aa-console.ts builds the provider with
-# `withCompiledFileAssets`, so the proving key is read out of THIS image and sent
-# to aa-proof-server — the proof server holds no circuit keys of its own), so both
-# build with `AA_PRUNE_MANAGER_PROVERS=0`. The MinoCrab fetch below follows that
-# same switch: the 544 MiB `execute.prover` is downloaded only when it will be
-# used, and a default `aa-deploy` build takes ~180 KB of MinoCrab artifacts.
-# Because the compactc artifact for a swapped circuit is deleted in stage 2 rather
-# than shadowed in a later layer, the console image gets SMALLER, not larger.
+# THE CALL TREE IS COMPILED IN ONE ORDER, AND IT IS NOT A PREFERENCE. The compiler resolves
+# a declared contract type to <compact-path>/<TypeName> and embeds a fingerprint of that
+# callee's verifier key, so: SignetSigner, then Erc20Vault (which calls it), then account
+# (which calls the vault). The artefact DIRECTORY NAME IS THE DECLARED TYPE NAME, and every
+# bundle in one tree must sit side by side under one artefact root, because a caller's
+# generated JavaScript imports its callee by relative path.
 
-ARG AA_REPO=https://github.com/acedward/AA-midnight-evm-experiment-v3.git
-ARG AA_REF=41de69ded41ff933fe0db8697b264dc46fc6e0cb
-# THE KERNEL IS STILL CLONED, AND NOW FOR EXACTLY ONE REASON: it is where this
-# repository keeps the compactc pin and the SHA-256 of every release asset
-# (`infra/compact-version.txt` = 0.34.0, `infra/compact-checksums.sha256`). The
-# offer-files CONTRACT that used to be fetched with them is gone (kernel PRs
-# #69/#70) and so is the kernel image's own compactc stage — those two files are
-# orphaned upstream, but they are still the single place this repo's contract
-# builds read a compiler pin from, and reading them beats restating a version and
-# two hashes here. `/aa/.kernel-commit` remains the label
-# `scripts/verify-source-pins.sh` asserts.
+# ── pins ─────────────────────────────────────────────────────────────────────
+# The Passport fork. A full 40-hex commit, never a branch: the account's verifier keys
+# are what a deployed account is, so "the tip of a branch" is not an identity.
+ARG PASSPORT_REPO=https://github.com/acedward/passport.git
+ARG PASSPORT_REF=ee1ffedab40f1abe8f3041a9423ae24e89b90bc2
+
+# The kernel tree, for the compactc pin and its checksums ONLY (as before). The kernel
+# image itself is built elsewhere; nothing of it runs here.
 ARG KERNEL_REPO=https://github.com/effectstream/zswap-offerfiles-kernel.git
 ARG KERNEL_REF=5d794f9a27f6d65529bf176650405f740531d430
-# ── the local test-token issuers (NEW: the console's mint path) ──────────────
-# The AA console used to mint its wBTC/wETH/wUSD through the offer-files
-# contract's permissionless dev circuits. That contract no longer exists, so the
-# console now mints through the SAME six issuers the `faucet` profile deploys —
-# `effectstream/mint-test-tokens` `contracts/v2/{shielded,unshielded}-token.compact`.
-#
-# THEIR ARTIFACTS ARE COPIED, NEVER RECOMPILED. `contracts/v2/managed/` is
-# COMMITTED upstream (compactc 0.34.0 / language 0.26.0 / runtime 0.19.0), and the
-# deploy runner's own provenance gate requires the artifact bytes to equal the
-# committed ones — the verifier keys registered on chain are those bytes. A
-# recompile here, even with the identical compiler, would be a different set of
-# files to verify against and is exactly what upstream tells integrators not to
-# do. So this image ships the committed artifacts, and the console proves against
-# them on the PLAIN proof server (they are zkir-v2 / [v6], like the offer-files
-# artifact they replace).
+
+# The local test-token issuers. Their COMMITTED managed artifacts are copied in; the
+# console mints the demo colours by calling them. Same pin as compose/faucet.yml.
 ARG MINT_TEST_TOKENS_REPO=https://github.com/effectstream/mint-test-tokens.git
 ARG MINT_TEST_TOKENS_REF=a51cf3ad46520d1ded938fb86db8b7b99373ce56
-# EMPTY ON PURPOSE — see the TOOLCHAIN FIDELITY note above.
+
+# Override the compactc version for a deliberate experiment; empty = the kernel's pin.
 ARG COMPACT_VERSION=
 
-# ── the MinoCrab release pins ────────────────────────────────────────────────
-# THREE DIFFERENT KINDS OF THING, deliberately separate:
-#   MINOCRAB_RELEASE      a LOCATOR (a tag is mutable and is not an identity)
-#   MINOCRAB_REF          the port commit the assets were built from, for the
-#                         image label verify-source-pins.sh asserts
-#   MINOCRAB_SUMS_SHA256  the IDENTITY: the SHA-256 of the release's SHA256SUMS,
-#                         which is the only file in the release not covered by
-#                         the release itself. Everything else is covered by it.
-ARG MINOCRAB_REPO=https://github.com/acedward/AA-midnight-evm-experiment-minocrab
-ARG MINOCRAB_RELEASE=v0.2.0
-ARG MINOCRAB_REF=7cdfa5b0c994a70502ab2b564b509c8abe2f7efb
-ARG MINOCRAB_SUMS_SHA256=4a8c0183cd887e3ca2d3446f196fab1102540e09d6e0e8ae9c1859532d8dd7ac
-# Override the download base entirely (a mirror, a cache). Empty means
-# "${MINOCRAB_REPO}/releases/download/${MINOCRAB_RELEASE}". Switching between the
-# release and any other transport is THIS ONE build arg — the verification does
-# not change with it.
-ARG MINOCRAB_FETCH_BASE=
-# minocrab (default): the port supplies `execute` only — the one circuit with
-#                     end-to-end proving evidence, and the only one where k moves.
-# minocrab-all      : the port supplies all nine provable circuits.
-# compactc          : opt out; the stock compactc artifact end to end.
-ARG AA_ZKIR_SOURCE=minocrab
-# 1 (default): prune the Manager's .prover files — deploys need only verifier keys.
-# 0: keep them — required by anything that CALLS execute (the console service and
-# scripts/aa-e2e.sh's :e2e tag both build with 0).
-ARG AA_PRUNE_MANAGER_PROVERS=1
+# @sig-net/midnight — the Signet protocol's Compact module. The ONLY thing the compile
+# needs from it is two SOURCE files (`src/Signet.compact`, `src/circuits.compact`), so the
+# tarball is fetched by URL and verified by SHA-256: no npm, no registry resolution and no
+# lockfile in a stage whose job is to compile. The VERSION is a locator; SIGNET_PKG_SHA256
+# is the identity, exactly as MINOCRAB_SUMS_SHA256 was for the port it replaces.
+ARG SIGNET_PKG_VERSION=0.22.0-rc.1
+ARG SIGNET_PKG_SHA256=0e7414d52b225e31def3d776cae376ff1e6c2bf7b592f02dc422b5bb6fb6fd71
 
-# ── stage 1: fetch the AA sources ────────────────────────────────────────────
+# WHICH PROVER KEYS SURVIVE THE BUILD. A k=18 `evm` circuit's prover key is 570 MB and the
+# account has eleven of them, so shipping all 33 circuits' keys would be a 7.6 GB image for
+# no purpose: a prover key is needed only to PROVE that circuit in this process. Deploying
+# needs none (a deploy inserts verifier keys), and a maintenance update needs none.
+#
+# The default is exactly the set the console proves, and nothing else:
+#   activate_initial_device_with_evm       register, step 2
+#   deposit_shielded / deposit_unshielded  funding (permissionless, any wallet)
+#   withdraw_shielded_with_evm             withdraw to a wallet
+#   withdraw_unshielded_with_evm           withdraw unshielded
+#   withdraw_shielded_to_contract_with_evm the DIRECT account -> account transfer the client
+#                                          exposes. The console's Send uses the one-hop instead
+#                                          (Q53), so this is the one key kept for a circuit the
+#                                          console does not itself prove — it is deployed in
+#                                          wave 1 either way, and the key is 570 MB
+#   append_inbox_with_evm                  the change entry after a spend
+#   open_swap_shielded_with_evm            the offer (Q35: the console carries it)
+#   initialise                             the VAULT's one-shot, proved by aa-deploy
+#   mint_shielded / mint_unshielded        the fork's TEST FAUCET, which replaces AA-v3's
+#                                          test Minter as the source of the e2e's colours
+# `AA_WITH_BRIDGE=1` adds the five bridge circuits and the vault's flow circuits.
+# EMPTY means "the default list", which lives in the prune step below rather than here so
+# that compose can pass `${AA_PROVER_KEYS:-}` without silently pruning everything.
+ARG AA_PROVER_KEYS=
+ARG AA_WITH_BRIDGE=0
+
+# ── stage 1: the sources ─────────────────────────────────────────────────────
 FROM debian:stable-slim AS source
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-ARG AA_REPO
-ARG AA_REF
+ARG PASSPORT_REPO
+ARG PASSPORT_REF
 ARG KERNEL_REPO
 ARG KERNEL_REF
 ARG MINT_TEST_TOKENS_REPO
 ARG MINT_TEST_TOKENS_REF
 
+# The Passport fork. A shallow fetch of ONE commit; the identity is asserted, not assumed
+# (the same 40-hex rule images/mint-test-tokens enforces — a live branch is not a pin).
 WORKDIR /src
-RUN git init -q . \
- && git remote add origin "$AA_REPO" \
- && git fetch -q --depth 1 origin "$AA_REF" \
- && git checkout -q FETCH_HEAD \
- && git rev-parse HEAD > /aa-commit \
- && rm -rf .git
+RUN set -eux; \
+    case "$PASSPORT_REF" in \
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;; \
+      *) echo "PASSPORT_REF must be a full 40-hex commit, got '$PASSPORT_REF'" >&2; exit 1 ;; \
+    esac; \
+    git init -q .; \
+    git remote add origin "$PASSPORT_REPO"; \
+    git fetch -q --depth 1 origin "$PASSPORT_REF"; \
+    git checkout -q FETCH_HEAD; \
+    git rev-parse HEAD > /passport-commit; \
+    test "$(cat /passport-commit)" = "$PASSPORT_REF"; \
+    test -s contract/contracts/account.compact; \
+    test -s contract/contracts/erc20-vault/src/erc20-vault.compact; \
+    test -s contract/src/index.ts; \
+    # The fork's own property check, run HERE so a vault that regrew a witness never
+    # reaches a build: a callee with a witness cannot be called at all (PR-F, FR-016).
+    test "$(grep -c '^witness' contract/contracts/erc20-vault/src/erc20-vault.compact)" = "0"; \
+    rm -rf .git
 
-# The kernel tree, for the compactc pin and its checksums ONLY (see the ARG note
-# above). Nothing is compiled from it any more.
+# The kernel tree — the compactc version and checksum manifest, nothing else.
 WORKDIR /kernel-src
 RUN git init -q . \
  && git remote add origin "$KERNEL_REPO" \
@@ -153,10 +146,7 @@ RUN git init -q . \
  && git rev-parse HEAD > /kernel-commit \
  && rm -rf .git
 
-# The local test-token issuers. Only the two committed artifact trees and the
-# manifest that pins their runtime are kept; the frontend, the metadata and the
-# v1 protocol tree are not needed here and are dropped in the same layer so they
-# never reach an image.
+# mint-test-tokens: the COMMITTED managed artifacts of the two issuers, copied verbatim.
 WORKDIR /mtt-src
 RUN set -eux; \
     git init -q .; \
@@ -164,8 +154,6 @@ RUN set -eux; \
     git fetch -q --depth 1 origin "$MINT_TEST_TOKENS_REF"; \
     git checkout -q FETCH_HEAD; \
     git rev-parse HEAD > /mint-test-tokens-commit; \
-    # A live branch is not an identity: refuse anything but a full 40-hex commit,
-    # the same rule images/mint-test-tokens enforces.
     case "$MINT_TEST_TOKENS_REF" in \
       [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;; \
       *) echo "MINT_TEST_TOKENS_REF must be a full 40-hex commit, got '$MINT_TEST_TOKENS_REF'" >&2; exit 1 ;; \
@@ -175,40 +163,29 @@ RUN set -eux; \
     cp -a contracts/v2/managed/shielded/.   /mtt/shielded/; \
     cp -a contracts/v2/managed/unshielded/. /mtt/unshielded/; \
     cp contracts/v2/package.json /mtt/contracts-v2-package.json; \
-    # The generated module the console imports, and the compiler receipt the
-    # runtime assertion below reads. Absent means the upstream layout moved.
     test -s /mtt/shielded/contract/index.js; \
     test -s /mtt/unshielded/contract/index.js; \
     test -s /mtt/shielded/compiler/contract-info.json; \
     rm -rf /mtt-src/.git
 
-# ── stage 2: compile + keygen with the pinned compactc ───────────────────────
+# ── stage 2: compactc, and the whole call tree compiled in one layer ─────────
 FROM debian:stable-slim AS compact
 
 ARG COMPACT_VERSION
 ARG TARGETARCH
+ARG SIGNET_PKG_VERSION
+ARG SIGNET_PKG_SHA256
+ARG AA_PROVER_KEYS
+ARG AA_WITH_BRIDGE
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates unzip bash \
  && rm -rf /var/lib/apt/lists/*
 
-# The compactc pin and its SHA-256 travel with the pinned kernel source; the
-# RUNTIME the generated modules will demand travels with mint-test-tokens, whose
-# committed artifacts this image ships — see the ARG note. The OTHER half of the
-# same invariant (the runner's INSTALLED compact-runtime) is checked in stage 3,
-# where `bun install` has actually resolved it; doing it here would mean copying
-# runner/package.json into this stage and making every runner dependency edit
-# invalidate ~20 minutes of keygen.
-COPY --from=source /kernel-src/infra/compact-version.txt    /opt/compact-version.txt
+COPY --from=source /kernel-src/infra/compact-version.txt     /opt/compact-version.txt
 COPY --from=source /kernel-src/infra/compact-checksums.sha256 /opt/compact-checksums.sha256
-# THE RUNTIME EXPECTATION MOVED REPOS. It used to come from the kernel's
-# `contract-offer-files/package.json`, which is deleted at this KERNEL_REF along
-# with the contract. It now comes from mint-test-tokens' `contracts/v2` manifest —
-# which is the right source anyway: that is the package whose COMMITTED generated
-# modules this image ships and the console imports, so its
-# `@midnight-ntwrk/compact-runtime` is the version `checkRuntimeVersion()` will
-# demand at import time.
 COPY --from=source /mtt/contracts-v2-package.json /opt/contract-package.json
+COPY --from=source /src/contract/package.json     /opt/passport-package.json
 
 RUN set -eux; \
     COMPACT_VERSION="${COMPACT_VERSION:-$(tr -d ' \t\n\r' < /opt/compact-version.txt)}"; \
@@ -235,173 +212,138 @@ RUN set -eux; \
     want_runtime="$(sed -n 's/.*"@midnight-ntwrk\/compact-runtime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /opt/contract-package.json | head -n 1)"; \
     test -n "$want_runtime" || { echo "mint-test-tokens contracts/v2 declares no @midnight-ntwrk/compact-runtime" >&2; exit 1; }; \
     test "$got_runtime" = "$want_runtime" || { echo "FAIL: compactc ${COMPACT_VERSION} emits code for compact-runtime ${got_runtime}, but mint-test-tokens contracts/v2 depends on ${want_runtime}" >&2; exit 1; }; \
+    # THE THIRD REPOSITORY. The Passport fork declares its own compact-runtime; a fork that
+    # moved to another compiler line must fail HERE, naming the repository that moved,
+    # rather than as a contract that refuses to load the first time the console touches it.
+    passport_runtime="$(sed -n 's/.*"@midnight-ntwrk\/compact-runtime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /opt/passport-package.json | head -n 1)"; \
+    test -n "$passport_runtime" || { echo "the Passport fork declares no @midnight-ntwrk/compact-runtime" >&2; exit 1; }; \
+    test "$got_runtime" = "$passport_runtime" || { echo "FAIL: compactc ${COMPACT_VERSION} emits code for compact-runtime ${got_runtime}, but the Passport fork at PASSPORT_REF depends on ${passport_runtime}" >&2; exit 1; }; \
     echo "compactc ${COMPACT_VERSION} / language $(/opt/compactc/compactc --language-version) / runtime ${got_runtime}"; \
     printf '%s\n' "${COMPACT_VERSION}" > /opt/compactc-version; \
     printf '%s\n' "${got_runtime}"     > /opt/compact-runtime-version
 
-COPY --from=source /src/contracts /contracts
-# The issuers' COMMITTED artifacts, in the layout deployMidnightContract expects
-# (<contract-name>/src/managed/). Nothing compiles them; see the ARG note.
+# The Signet Compact module, by SHA-256. `npm` never runs in this stage.
+RUN set -eux; \
+    url="https://registry.npmjs.org/@sig-net/midnight/-/midnight-${SIGNET_PKG_VERSION}.tgz"; \
+    curl --proto '=https' --tlsv1.2 -fLsS -o /tmp/signet.tgz "$url"; \
+    printf '%s  %s\n' "${SIGNET_PKG_SHA256}" /tmp/signet.tgz | sha256sum -c -; \
+    mkdir -p /work/node_modules/@sig-net/midnight; \
+    tar -xzf /tmp/signet.tgz -C /work/node_modules/@sig-net/midnight --strip-components=1; \
+    rm /tmp/signet.tgz; \
+    test -s /work/node_modules/@sig-net/midnight/src/Signet.compact; \
+    printf '%s\n' "${SIGNET_PKG_VERSION}" > /opt/signet-pkg-version; \
+    printf '%s\n' "${SIGNET_PKG_SHA256}"  > /opt/signet-pkg-sha256
+
+COPY --from=source /src/contract/contracts /work/contracts
+
+# One layer: compile the whole tree, then PRUNE inside the same layer. Pruning in a later
+# layer would leave 7.6 GB of deleted prover keys in the image's history — the reason the
+# AA-v3 image deleted its own keys in the layer that made them.
+WORKDIR /work
+RUN set -eux; \
+    export HOME=/tmp XDG_CACHE_HOME=/tmp/zk-cache; \
+    CC=/opt/compactc/compactc; \
+    V=/work/contracts/erc20-vault; \
+    echo "── 1/4 SignetSigner (the singleton, from the fork's VENDORED source) ──"; \
+    # NOT from @sig-net/midnight-contract: every published version of that package ships
+    # generated TypeScript pinned to compact-runtime 0.18.0-rc.1 and cannot be loaded on
+    # 0.19.0 (project 00034 Q20/Q25). The rebuild's verifier keys are byte-identical, which
+    # is what keeps a contract compiled here callable against an already-deployed singleton.
+    "$CC" --feature-zkir-v3 --compact-path /work/node_modules \
+      "$V/src/vendor/signet-contract.compact" "$V/managed/SignetSigner"; \
+    echo "── 2/4 the Signet module's own circuits (--skip-zk: TypeScript only) ──"; \
+    "$CC" --skip-zk --feature-zkir-v3 --compact-path /work/node_modules \
+      /work/node_modules/@sig-net/midnight/src/circuits.compact "$V/managed/SignetCircuits"; \
+    echo "── 3/4 Erc20Vault (calls the singleton) ──"; \
+    "$CC" --feature-zkir-v3 --compact-path "/work/node_modules:$V/managed" \
+      "$V/src/erc20-vault.compact" "$V/managed/Erc20Vault"; \
+    # The callee bundles must sit beside the account's, because a caller's generated
+    # JavaScript imports its callee by RELATIVE path (../../Erc20Vault/contract/index.js).
+    # This is the fork's scripts/link-callees.sh, and its shape is not a style choice:
+    #
+    #   A DIRECTORY OF LINKS, NOT A LINKED DIRECTORY. `nodeZkConfigRegistry` — the provider
+    #   that lets a caller's prover reach its CALLEE's keys — walks this root with
+    #   `readdir({withFileTypes: true})` and keeps only entries whose `isDirectory()` is
+    #   true. A symlink's Dirent answers `isSymbolicLink()`, so a bundle linked as ONE
+    #   directory is invisible to it: the compile succeeds, the deploy succeeds, and the
+    #   first cross-contract call fails with `ZKArtifactNotFoundError: No ZK artifact
+    #   bundle matches the deployed verifier key`, which reads like a stale build and is
+    #   not one. Measured by PR-G on its G4 stack, 2026-09-16. The bundle check one level
+    #   down uses `fs.stat`, which DOES follow symlinks, so a real directory whose children
+    #   are links is seen.
+    #
+    # Links rather than copies keeps ONE build of the vault in this image — the account is
+    # compiled against the very bytes the deploy fingerprints (spec FR-022) — and does not
+    # duplicate the proving keys.
+    # RELATIVE targets, because this tree is COPYed into the runtime image at another
+    # path: an absolute /work/... link would dangle the moment it left this stage.
+    for name in Erc20Vault SignetSigner; do \
+      mkdir -p "/work/contracts/managed/$name"; \
+      for child in "$V/managed/$name"/*; do \
+        ln -s "../../erc20-vault/managed/$name/$(basename "$child")" \
+              "/work/contracts/managed/$name/$(basename "$child")"; \
+      done; \
+    done; \
+    echo "── 4/5 account (calls the vault) ──"; \
+    "$CC" --feature-zkir-v3 --compact-path "/work/node_modules:/work/contracts/managed" \
+      /work/contracts/account.compact /work/contracts/managed/account; \
+    echo "── 5/5 the fork's TEST FAUCET ──"; \
+    # It replaces AA-v3's `contracts/test-support/minter.compact`, and it comes from the
+    # SAME repository and the SAME compiler as the account — which the Minter never did.
+    # Shielded tokens on a fresh localnet can only originate from a contract mint, so
+    # aa-deploy mints the two demo colours here and `aa-e2e.sh` keeps needing no faucet
+    # profile, no registry and no local issuer, exactly as it needed none before.
+    "$CC" --feature-zkir-v3 --compact-path /work/node_modules \
+      /work/contracts/faucet.compact /work/contracts/managed/faucet; \
+    du -sh "$V/managed" /work/contracts/managed/account /work/contracts/managed/faucet
+
+# The prune. A separate RUN because it reads AA_PROVER_KEYS/AA_WITH_BRIDGE, and a rebuild
+# with a different key set must not recompile 33 circuits.
+#
+# MEASURED on this tree (2026-09-16): the account's compiled bundle is 7.2 GB with every
+# prover key and 2.9 GB with the default set; the vault's is 717 MB before and 114 MB after;
+# the faucet's 54 MB. The manifest each bundle carries still describes the deleted keys at
+# this point — the re-stamp that fixes that runs in the final stage, where bun is.
+ARG AA_PROVER_KEYS
+ARG AA_WITH_BRIDGE
+RUN set -eux; \
+    DEFAULT_KEYS="activate_initial_device_with_evm deposit_shielded deposit_unshielded \
+withdraw_shielded_with_evm withdraw_unshielded_with_evm withdraw_shielded_to_contract_with_evm \
+append_inbox_with_evm open_swap_shielded_with_evm initialise \
+mint_shielded mint_unshielded mint_unshielded_to_contract"; \
+    keep="${AA_PROVER_KEYS:-$DEFAULT_KEYS}"; \
+    if [ "${AA_WITH_BRIDGE:-0}" = "1" ]; then \
+      keep="$keep bridge_deposit_start_with_evm bridge_deposit_complete bridge_withdraw_start_with_evm bridge_withdraw_complete bridge_withdraw_refund"; \
+      keep="$keep startDeposit completeDeposit abandonDeposit startWithdraw completeWithdraw refundWithdraw signBidirectional"; \
+    fi; \
+    printf '%s\n' "$keep" > /opt/aa-prover-keys; \
+    printf '%s\n' "${AA_WITH_BRIDGE:-0}" > /opt/aa-with-bridge; \
+    total_before=0; kept=0; dropped=0; \
+    for bundle in /work/contracts/managed/account \
+                  /work/contracts/managed/faucet \
+                  /work/contracts/erc20-vault/managed/Erc20Vault \
+                  /work/contracts/erc20-vault/managed/SignetSigner; do \
+      [ -d "$bundle/keys" ] || continue; \
+      for f in "$bundle"/keys/*.prover; do \
+        [ -e "$f" ] || continue; \
+        name="$(basename "$f" .prover)"; \
+        total_before=$(( total_before + 1 )); \
+        case " $keep " in \
+          *" $name "*) kept=$(( kept + 1 )); continue ;; \
+        esac; \
+        rm -f "$f"; dropped=$(( dropped + 1 )); \
+      done; \
+    done; \
+    echo "prover keys: ${kept} kept, ${dropped} pruned (of ${total_before})"; \
+    du -sh /work/contracts/managed/account /work/contracts/erc20-vault/managed
+
 COPY --from=source /mtt/shielded   /aa/contract-mtt-shielded/src/managed
 COPY --from=source /mtt/unshielded /aa/contract-mtt-unshielded/src/managed
 
-# Keys need the universal SRS from srs.midnight.network (a build-time network
-# fetch, like the git clone). Layout matches what deployMidnightContract expects:
-# <contract-name>/src/managed/.
-#
-# THE SWAPPED CIRCUITS' COMPACTC ARTIFACTS ARE DELETED HERE, not shadowed later.
-# A later layer that writes over a file does not remove the earlier copy from the
-# image, so overlaying the 544 MiB MinoCrab prover key on top of the 1.14 GB
-# compactc one would make the image carry BOTH. Deleting in the layer that
-# created them is what makes the MinoCrab default a size WIN. Flipping
-# AA_ZKIR_SOURCE therefore invalidates this stage and recompiles — which is
-# honest: the artifact tree really is different.
-ARG AA_PRUNE_MANAGER_PROVERS
-ARG AA_ZKIR_SOURCE
-RUN set -eux; \
-    case "${AA_ZKIR_SOURCE:-minocrab}" in \
-      minocrab|minocrab-all|compactc) : ;; \
-      *) echo "AA_ZKIR_SOURCE must be one of minocrab | minocrab-all | compactc, got '${AA_ZKIR_SOURCE}'" >&2; exit 1 ;; \
-    esac; \
-    export HOME=/tmp XDG_CACHE_HOME=/tmp/zk-cache; \
-    mkdir -p /aa/contract-manager/src /aa/contract-minter/src; \
-    /opt/compactc/compactc --feature-zkir-v3 /contracts/manager.compact /aa/contract-manager/src/managed/; \
-    /opt/compactc/compactc --feature-zkir-v3 /contracts/test-support/minter.compact /aa/contract-minter/src/managed/; \
-    M=/aa/contract-manager/src/managed; \
-    case "${AA_ZKIR_SOURCE:-minocrab}" in \
-      minocrab)     swapped="execute" ;; \
-      minocrab-all) swapped="accountRecord depositShielded depositUnshielded execute isRegistered poolHasColour poolValue shieldedAccountBalance unshieldedAccountBalance" ;; \
-      compactc)     swapped="" ;; \
-    esac; \
-    for c in $swapped; do \
-      rm -f "$M/zkir/$c.zkir" "$M/zkir/$c.bzkir" "$M/keys/$c.prover" "$M/keys/$c.verifier"; \
-      echo "compactc artifact for '$c' removed — the MinoCrab release supplies it"; \
-    done; \
-    if [ "${AA_PRUNE_MANAGER_PROVERS:-1}" = "1" ]; then \
-      find "$M/keys" -name '*.prover' -print -delete; \
-    fi; \
-    ls "$M/keys" /aa/contract-minter/src/managed/keys
-
-# ── stage 2b: the MinoCrab release assets ────────────────────────────────────
-# Downloads exactly the files this build will use and proves what they are,
-# BEFORE anything is staged. Three assertions, all fail-closed:
-#
-#   1. sha256(SHA256SUMS) == MINOCRAB_SUMS_SHA256  — the pin in this repository
-#   2. sha256sum -c --ignore-missing SHA256SUMS    — every file taken, and the
-#      count of verified files must equal the count requested (so a file that
-#      SHA256SUMS does not list cannot slip through unchecked)
-#   3. manifest.json's `tag`, `gitCommit` and `contractPin.commit` equal
-#      MINOCRAB_RELEASE, MINOCRAB_REF and AA_REF — i.e. these keys are for the
-#      contract this image is about to compile, not for some other commit
-#
-# TRANSPORT. The `minocrab` named build context is copied in first: if it holds a
-# SHA256SUMS the files come from there, otherwise they are downloaded from the
-# release. Both paths run all three assertions, so the local path is a transport
-# convenience and not a trust decision — which is what makes it usable while the
-# release tag is unpublished (see minocrab-local/README.md). Set MINOCRAB_LOCAL_DIR
-# (compose) or --build-context minocrab=<dir> to use it.
-FROM debian:stable-slim AS minocrab-release
-
-ARG AA_REF
-ARG AA_ZKIR_SOURCE
-ARG AA_PRUNE_MANAGER_PROVERS
-ARG MINOCRAB_REPO
-ARG MINOCRAB_RELEASE
-ARG MINOCRAB_REF
-ARG MINOCRAB_SUMS_SHA256
-ARG MINOCRAB_FETCH_BASE
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
-
-# The local fetch context — `minocrab-local/` (a README and nothing else) unless
-# MINOCRAB_LOCAL_DIR points somewhere with the assets in it.
-COPY --from=minocrab / /local/
-
-RUN set -eux; \
-    mkdir -p /delta/managed/keys /delta/managed/zkir /delta/meta /fetch; \
-    printf '%s\n' "${AA_ZKIR_SOURCE:-minocrab}" > /delta/meta/.aa-zkir-source; \
-    if [ "${AA_ZKIR_SOURCE:-minocrab}" = "compactc" ]; then \
-      echo "AA_ZKIR_SOURCE=compactc — the MinoCrab release is not consulted"; \
-      rm -rf /local /fetch; \
-      exit 0; \
-    fi; \
-    case "${AA_ZKIR_SOURCE}" in \
-      minocrab)     circuits="execute" ;; \
-      minocrab-all) circuits="accountRecord depositShielded depositUnshielded execute isRegistered poolHasColour poolValue shieldedAccountBalance unshieldedAccountBalance" ;; \
-      *) echo "AA_ZKIR_SOURCE must be one of minocrab | minocrab-all | compactc, got '${AA_ZKIR_SOURCE}'" >&2; exit 1 ;; \
-    esac; \
-    kinds="zkir bzkir verifier"; \
-    if [ "${AA_PRUNE_MANAGER_PROVERS:-1}" = "0" ]; then kinds="$kinds prover"; fi; \
-    files="SHA256SUMS manifest.json"; \
-    for c in $circuits; do for k in $kinds; do files="$files $c.$k"; done; done; \
-    if [ -f /local/SHA256SUMS ]; then \
-      mode="local-context"; \
-      echo "MinoCrab assets: LOCAL CONTEXT (the same three assertions still run)"; \
-      for f in $files; do cp "/local/$f" "/fetch/$f"; done; \
-    else \
-      mode="release"; \
-      base="${MINOCRAB_FETCH_BASE:-${MINOCRAB_REPO}/releases/download/${MINOCRAB_RELEASE}}"; \
-      echo "MinoCrab assets: $base"; \
-      for f in $files; do \
-        curl --proto '=https' --tlsv1.2 -fLsS --retry 3 --retry-connrefused -o "/fetch/$f" "$base/$f"; \
-      done; \
-    fi; \
-    cd /fetch; \
-    got="$(sha256sum SHA256SUMS | cut -d ' ' -f 1)"; \
-    if [ "$got" != "$MINOCRAB_SUMS_SHA256" ]; then \
-      echo "FAIL: SHA256SUMS hashes $got, this repository pins $MINOCRAB_SUMS_SHA256." >&2; \
-      echo "  The identity of a release is that hash, never the tag. Do not 'fix' the pin to" >&2; \
-      echo "  make a build pass: find out which release you actually fetched first." >&2; \
-      exit 1; \
-    fi; \
-    echo "SHA256SUMS identity OK: $got"; \
-    want="$(( $(printf '%s\n' $files | wc -l) - 1 ))"; \
-    ok="$(sha256sum -c --ignore-missing SHA256SUMS | grep -c ': OK$')"; \
-    if [ "$ok" -ne "$want" ]; then \
-      echo "FAIL: SHA256SUMS verified $ok file(s), $want were requested — a requested file is not covered by SHA256SUMS." >&2; \
-      exit 1; \
-    fi; \
-    echo "content OK: $ok/$want file(s) verified against SHA256SUMS"; \
-    grep -q "\"tag\": \"${MINOCRAB_RELEASE}\"" manifest.json \
-      || { echo "FAIL: manifest.json does not record tag ${MINOCRAB_RELEASE}" >&2; exit 1; }; \
-    grep -q "\"gitCommit\": \"${MINOCRAB_REF}\"" manifest.json \
-      || { echo "FAIL: manifest.json does not record gitCommit ${MINOCRAB_REF}" >&2; exit 1; }; \
-    grep -q "\"commit\": \"${AA_REF}\"" manifest.json \
-      || { echo "FAIL: manifest.json's contract pin is not AA_REF ${AA_REF} — these keys are for a different contract" >&2; exit 1; }; \
-    echo "manifest identities OK: tag=${MINOCRAB_RELEASE} port=${MINOCRAB_REF} contract=${AA_REF}"; \
-    for c in $circuits; do \
-      cp "$c.zkir" "$c.bzkir" /delta/managed/zkir/; \
-      cp "$c.verifier" /delta/managed/keys/; \
-      if [ "${AA_PRUNE_MANAGER_PROVERS:-1}" = "0" ]; then cp "$c.prover" /delta/managed/keys/; fi; \
-    done; \
-    cp manifest.json /delta/meta/.minocrab-manifest.json; \
-    printf '%s\n' "$MINOCRAB_REF"          > /delta/meta/.minocrab-commit; \
-    printf '%s\n' "$MINOCRAB_SUMS_SHA256"  > /delta/meta/.minocrab-sums-sha256; \
-    printf '%s\n' "$MINOCRAB_RELEASE"      > /delta/meta/.minocrab-release; \
-    printf '%s\n' "$circuits"              > /delta/meta/.minocrab-circuits; \
-    printf '%s\n' "$mode"                  > /delta/meta/.minocrab-fetch-mode; \
-    chmod -R u+rw,a+r /delta; \
-    du -sh /delta/managed; \
-    rm -rf /local /fetch
-
-# The console's token set is now the LOCAL FAUCET's six (twBTC/twETH/twUSDC/
-# twUSDM shielded, utwUSDC/utwBTC unshielded), and it mints them by calling the
-# same issuer contracts the `faucet` profile deployed. Their managed contracts +
-# [v6] keys were COPIED into stage 2 from the pinned mint-test-tokens tree — the
-# committed artifacts, byte for byte, because those are the bytes whose verifier
-# keys are registered on chain — and they prove on the PLAIN proof server, exactly
-# as the offer-files artifact they replace did. The AA Manager and Minter still
-# prove on the experimental server (zkir-v3 / [v7]); `join()` picks per contract.
-
-# ── stage 3: the deploy+mint runner ──────────────────────────────────────────
+# ── stage 3: the runner ──────────────────────────────────────────────────────
 # Same bun pin as the kernel image, same reason (1.3.14 breaks on graphql-17 ESM).
-# Inherit the Compact stage rather than COPYing its key tree into a second
-# filesystem snapshot. Generated artifacts remain at /aa; Bun's pinned binary is
-# glibc-only and runs on this Debian base. Keeping compactc (~64 MB) in the dev
-# image is the small price for eliminating a duplicate key snapshot during clean
-# builds on small/shared Docker hosts.
+# Inheriting the compact stage rather than COPYing its key tree keeps ONE filesystem
+# snapshot of ~3 GB of proving keys; compactc (~64 MB) riding along is the small price.
 FROM oven/bun:1.3.11 AS bun-runtime
 FROM compact
 
@@ -409,40 +351,205 @@ COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
 
 WORKDIR /aa
-COPY --from=source /aa-commit /aa/.aa-commit
-COPY --from=source /kernel-commit /aa/.kernel-commit
+COPY --from=source /passport-commit         /aa/.passport-commit
+COPY --from=source /kernel-commit           /aa/.kernel-commit
 COPY --from=source /mint-test-tokens-commit /aa/.mint-test-tokens-commit
-# The AA repo's OWN test library — EIP-712 codec, MetaMask V4 signing, execute
-# payload builders. Imported verbatim by the E2E so the digest scheme is never
-# reimplemented (golden vectors and frozen hashes included).
-COPY --from=source /src/tests/lib /aa/aalib/
+
+# The Passport fork's own client library and contract sources, laid out exactly as the
+# fork lays them out — `src/wallet/contract.ts` imports
+# `../../contracts/managed/account/contract/index.js`, a path relative to the source tree,
+# so `src/` and `contracts/` must stay siblings. Bun runs the TypeScript directly and
+# resolves the fork's ESM `./x.js` specifiers to `./x.ts`, so nothing is transpiled here.
+COPY --from=source /src/contract/src     /aa/passport/src
+COPY --from=source /src/contract/docs    /aa/passport/docs
+COPY --from=source /src/contract/package.json /aa/passport/package.json
+COPY --from=compact /work/contracts      /aa/passport/contracts
+# ── the artefact bookkeeping, done BEFORE the runner is copied ───────────────
+# Order matters for the build cache and for nothing else: these three steps read only the
+# COMPILED artefacts, so putting them ahead of `COPY runner/` means editing a TypeScript file
+# no longer re-measures 47 circuits. (It did, and it cost three and a half minutes a time.)
+
+# ── the manifest re-stamp the prune made necessary ──────────────────────────
+# `NodeZkConfigProvider` runs verify:"require" against `compiler/contract-manifest.json`, so
+# a manifest that still describes a `.prover` the prune deleted fails at the first call with
+# an ENOENT that reads like a broken build. Every pruned entry is REMOVED rather than left
+# describing bytes that are not there. It runs HERE rather than in the compact stage because
+# bun is the JSON tool this image has — the first version used jq and got it wrong in a way
+# worth recording: inside `contains(…)` the input is the ARGUMENT, so `.key` indexed a
+# string and jq exited 5 ("Cannot index string with string \"key\"").
+RUN bun -e ' \
+  const { readdirSync, existsSync } = await import("node:fs"); \
+  const root = "/aa/passport/contracts"; \
+  const bundles = [ \
+    `${root}/managed/account`, `${root}/managed/faucet`, \
+    `${root}/erc20-vault/managed/Erc20Vault`, `${root}/erc20-vault/managed/SignetSigner`, \
+  ]; \
+  for (const dir of bundles) { \
+    const path = `${dir}/compiler/contract-manifest.json`; \
+    if (!existsSync(path)) continue; \
+    const m = await Bun.file(path).json(); \
+    const present = new Set(readdirSync(`${dir}/keys`)); \
+    let dropped = 0; \
+    for (const name of Object.keys(m.keys ?? {})) { \
+      if (name === "type" || present.has(name)) continue; \
+      delete m.keys[name]; dropped += 1; \
+    } \
+    await Bun.write(path, JSON.stringify(m, null, 2) + "\n"); \
+    console.log(`re-stamped ${dir.split("/").pop()}: ${dropped} pruned key(s) removed from the manifest`); \
+  }'
+
+# The artefact fingerprints every account deploy receipt has to quote (spec FR-022): the
+# SHA-256 of each compiled bundle's verifier keys and generated module, computed from the
+# bytes in THIS image. `verify-aa.sh` compares the live deploy's receipt against them, so
+# a rebuilt vault under a still-running stack is a verification failure, not a mystery.
+RUN bun -e ' \
+  const { createHash } = await import("node:crypto"); \
+  const { readdirSync, readFileSync, existsSync, writeFileSync } = await import("node:fs"); \
+  const root = "/aa/passport/contracts"; \
+  const bundles = { \
+    account: `${root}/managed/account`, \
+    faucet: `${root}/managed/faucet`, \
+    Erc20Vault: `${root}/erc20-vault/managed/Erc20Vault`, \
+    SignetSigner: `${root}/erc20-vault/managed/SignetSigner`, \
+  }; \
+  const out = {}; \
+  for (const [name, dir] of Object.entries(bundles)) { \
+    if (!existsSync(dir)) continue; \
+    const h = createHash("sha256"); \
+    const verifiers = readdirSync(`${dir}/keys`).filter((f) => f.endsWith(".verifier")).sort(); \
+    for (const f of verifiers) { h.update(f); h.update(readFileSync(`${dir}/keys/${f}`)); } \
+    const mod = readFileSync(`${dir}/contract/index.js`); \
+    out[name] = { \
+      fingerprint: h.digest("hex"), \
+      verifierKeys: verifiers.length, \
+      moduleSha256: createHash("sha256").update(mod).digest("hex"), \
+      provers: readdirSync(`${dir}/keys`).filter((f) => f.endsWith(".prover")).sort(), \
+    }; \
+  } \
+  writeFileSync("/aa/.artefact-fingerprints.json", JSON.stringify(out, null, 2) + "\n"); \
+  for (const [n, v] of Object.entries(out)) console.log(`${n} fingerprint ${v.fingerprint} (${v.verifierKeys} verifier keys, ${v.provers.length} prover keys kept)`);'
+
+# ── k per proof-bearing circuit, measured with the compiler's OWN zkir ───────
+# `k` is the log2 of a circuit's constraint domain and decides the proving-key size: a
+# circuit that crosses a power of two doubles its key, and at k=20 a key passes 2 GiB and
+# Node's readFile refuses it outright. Spec User Story 4 asks for it to be RECORDED, and the
+# only honest place to measure it is here, in the image, with the same pinned `zkir-v3` that
+# produced these artefacts — measuring one compiler's output with another compiler's zkir is
+# meaningless. `mock-compile` generates no key and touches nothing: each `.zkir` is copied to
+# a scratch directory first.
+#
+# It runs after the compile and BEFORE the runner is copied, so neither a re-measure nor a
+# TypeScript edit invalidates the other.
+RUN set -eux; \
+    out=/aa/.circuit-k.json; \
+    tmp=$(mktemp -d); \
+    printf '{\n  "measuredBy": "zkir-v3 mock-compile",\n  "compiler": "%s",\n  "bundles": {' \
+      "$(cat /opt/compactc-version)" > "$out"; \
+    first_bundle=1; \
+    for bundle in /aa/passport/contracts/managed/account \
+                  /aa/passport/contracts/managed/faucet \
+                  /aa/passport/contracts/erc20-vault/managed/Erc20Vault \
+                  /aa/passport/contracts/erc20-vault/managed/SignetSigner; do \
+      [ -d "$bundle/zkir" ] || continue; \
+      name=$(basename "$bundle"); \
+      [ "$first_bundle" = "1" ] || printf ',' >> "$out"; first_bundle=0; \
+      printf '\n    "%s": {' "$name" >> "$out"; \
+      first=1; \
+      for f in "$bundle"/zkir/*.zkir; do \
+        [ -e "$f" ] || continue; \
+        c=$(basename "$f" .zkir); \
+        cp "$f" "$tmp/"; \
+        m=$(cd "$tmp" && /opt/compactc/zkir-v3 mock-compile "$c.zkir" 2>&1 | grep -oE '\(k=[0-9]+, rows=[0-9]+\)' | head -1); \
+        k=$(printf '%s' "$m" | sed -E 's/.*k=([0-9]+).*/\1/'); \
+        rows=$(printf '%s' "$m" | sed -E 's/.*rows=([0-9]+).*/\1/'); \
+        prover=0; [ -f "$bundle/keys/$c.prover" ] && prover=$(stat -c %s "$bundle/keys/$c.prover"); \
+        verifier=0; [ -f "$bundle/keys/$c.verifier" ] && verifier=$(stat -c %s "$bundle/keys/$c.verifier"); \
+        [ "$first" = "1" ] || printf ',' >> "$out"; first=0; \
+        printf '\n      "%s": { "k": %s, "rows": %s, "proverBytes": %s, "verifierBytes": %s }' \
+          "$c" "${k:-0}" "${rows:-0}" "$prover" "$verifier" >> "$out"; \
+        rm -f "$tmp/$c.zkir"; \
+      done; \
+      printf '\n    }' >> "$out"; \
+    done; \
+    printf '\n  }\n}\n' >> "$out"; \
+    rm -rf "$tmp"; \
+    # ONE flat view for consumers that do not care which bundle a circuit came from.
+    bun -e 'const j = await Bun.file("/aa/.circuit-k.json").json(); \
+      const flat = {}; for (const b of Object.values(j.bundles)) Object.assign(flat, b); \
+      j.circuits = flat; await Bun.write("/aa/.circuit-k.json", JSON.stringify(j, null, 2) + "\n"); \
+      const rows = Object.entries(flat).sort((a, b) => b[1].k - a[1].k); \
+      console.log(`${rows.length} proof-bearing circuits; heaviest ${rows[0][0]} k=${rows[0][1].k} rows=${rows[0][1].rows}`); \
+      console.log(`prover keys kept: ${rows.filter((r) => r[1].proverBytes > 0).length}, ` + \
+        `${(rows.reduce((a, r) => a + r[1].proverBytes, 0) / 1e9).toFixed(2)} GB`);'
+
+# ONE node_modules, at /aa, for the runner AND the fork's client AND the generated
+# contract modules: module resolution walks UP from the importing file, so a single
+# hoisted tree is what makes the compactc-generated code at
+# /aa/passport/contracts/managed/*/contract/index.js see @midnight-ntwrk/compact-runtime.
+#
+# The MANIFEST alone comes first, and `COPY runner/` follows the install. This is ordinary
+# layer hygiene with a sharp edge behind it: with `COPY runner/` first, editing any one
+# TypeScript file invalidated the install layer, so every code change needed the npm
+# registry to be reachable FROM A CONTAINER. On 2026-09-16 it was not — the host resolved
+# and fetched registry.npmjs.org while containers could not open the connection at all —
+# and a one-line console fix turned into `error: rxjs@7.8.2 failed to resolve` and nine
+# more, 0.2 s into a build that has nothing to do with dependencies. Keyed on the manifest,
+# the install layer survives every source edit.
+COPY runner/package.json /aa/package.json
+RUN cd /aa && bun install
+
 COPY runner/ /aa/runner/
-# The AA web console's static page (service `aa-console` serves it; see
-# runner/aa-console.ts — the relay that lets a browser EVM wallet drive the AA path).
 COPY console/ /aa/console/
 
-# Install at /aa, not /aa/runner: the compactc-generated contract modules live at
-# /aa/contract-*/src/managed/contract/ and import @midnight-ntwrk/compact-runtime —
-# module resolution walks UP from the importing file, so the dependency tree must
-# sit at /aa/node_modules to be visible to generated code and runner alike.
-RUN cp /aa/runner/package.json /aa/package.json && cd /aa && bun install
+# Q47, closed for this consumer. The vault package's `src/signet-sdk.ts` re-exports the
+# SDK's plain-TypeScript modules by RELATIVE FILE PATH
+# (`../node_modules/@sig-net/midnight/dist/abi-serde.js`), which resolves only when the
+# vault package has a node_modules of its own. This image hoists everything to /aa, so the
+# path is made true with a link rather than by patching somebody else's file.
+RUN ln -s /aa/node_modules /aa/passport/contracts/erc20-vault/node_modules
 
-# The console's recipient parser must accept a full Midnight shielded address
-# (135 chars); the SDK's own MidnightBech32m.parse() stops at bech32's 90. The
-# test carries the exact address that failed (infra issue 00023).
-RUN cd /aa && bun test runner/midnight-bech32m.test.ts
+# The console's recipient parser must accept a full Midnight shielded address (135 chars);
+# the SDK's own MidnightBech32m.parse() stops at bech32's 90 (infra issue 00023).
+#
+# aa-bridge.test.ts is the second gate and it is here for one reason: a bridged WEENUS
+# amount is 10^19, past Number.MAX_SAFE_INTEGER, and every token this stack had before was
+# 6 or 8 decimals. A `Number` that slipped into an amount path would have surfaced on real
+# Sepolia after the tokens had moved. It runs offline — no chain, no RPC, no artifact.
+RUN cd /aa && bun test runner/midnight-bech32m.test.ts runner/aa-bridge.test.ts
 
-# ── ONE compactc, ONE compact-runtime (issues/00011) ─────────────────────────
-# This process imports generated contract modules from TWO different repositories
-# — the AA Manager/Minter it compiled here, and mint-test-tokens' two issuers it
-# copied — and every one of them opens with
-# `checkRuntimeVersion("<the runtime its compiler emitted code for>")`. The compact
-# stage already proved this image's compactc agrees with mint-test-tokens'
-# manifest; the three assertions below prove the same number against what
-# `bun install` actually RESOLVED here, that exactly one copy is installed, and
-# that the COPIED artifacts' own compiler receipt agrees too. A mismatch used to
-# surface as a contract that refuses to load the first time the console touched
-# it — now it is a build failure naming the repository that moved.
+# Every runner entrypoint must RESOLVE: each name it imports from the fork, from the
+# generated contract modules and from its own files has to exist. Sub-second, and it closes
+# the hole that shipped on 2026-09-16: `const { parseSignature } = await import(
+# "../passport/src/wallet/signer.js")` names a module that EXISTS but does not export that
+# function, so the destructure quietly yields `undefined` and the failure surfaces only when
+# that line runs — in this case in front of a user, halfway through registering an account,
+# on the one path `aa-e2e.sh` cannot reach (the e2e holds a private key, so it never has to
+# RECOVER a public point from a signature; `verify.sh --aa-mint` is what caught it).
+#
+# `--packages=external` keeps node_modules out of the bundle and still checks every relative
+# import, which is what the fork's client and our own modules are. NOTE THE LIMIT: a dynamic
+# `await import()` is a runtime import, and no bundler checks the names destructured from it.
+# That is precisely why imports from the fork belong at the top of the file, statically —
+# where a wrong name stops the container from starting instead of waiting for a job.
+RUN set -eux; \
+    cd /aa; \
+    for f in runner/aa-console.ts runner/aa-e2e.ts runner/deploy-aa.ts runner/aa-console-mint.ts \
+             runner/aa-offer.ts runner/aa-bridge.ts runner/aa-bridge-e2e.ts runner/aa-bridge-dryrun.ts \
+             runner/aa-story-e2e.ts runner/aa-wallet-balance.ts; do \
+      bun build "./$f" --target=bun --packages=external --outfile=/tmp/resolve-check.js >/dev/null \
+        || { echo "FAIL: ${f} imports a name that does not exist (see the error above)" >&2; exit 1; }; \
+      echo "resolves: ${f}"; \
+    done; \
+    rm -f /tmp/resolve-check.js
+
+# ── ONE compactc, ONE compact-runtime (issues/00011), now across THREE repositories ──
+# This process imports generated contract modules from the Passport fork (account, vault,
+# singleton — compiled here) and from mint-test-tokens (two issuers — copied), and every
+# one of them opens with `checkRuntimeVersion("<what its compiler emitted>")`. The compact
+# stage already proved this image's compactc agrees with BOTH package manifests; the three
+# assertions below prove the same number against what `bun install` actually RESOLVED,
+# that exactly one copy is installed, and that the COPIED artifacts' own compiler receipt
+# agrees too.
 RUN set -eux; \
     want="$(cat /opt/compact-runtime-version)"; \
     copies="$(find /aa/node_modules -path '*/@midnight-ntwrk/compact-runtime/package.json' | wc -l | tr -d ' ')"; \
@@ -450,26 +557,27 @@ RUN set -eux; \
     got="$(bun -e 'const p = (await import("/aa/node_modules/@midnight-ntwrk/compact-runtime/package.json", { with: { type: "json" } })).default; console.log(p.version)')"; \
     test "$got" = "$want" || { echo "FAIL: compactc $(cat /opt/compactc-version) emits code for compact-runtime ${want}, but the runner installed ${got}" >&2; exit 1; }; \
     echo "runner compact-runtime ${got} == compactc $(cat /opt/compactc-version) runtime target"; \
-    # AND THE THIRD PARTY IN THE ROOM: the issuers' artifacts were compiled
-    # elsewhere, at another commit, in another repository — this image only
-    # COPIED them. `compiler/contract-info.json` is compactc's own receipt for
-    # those bytes, so comparing it here is what proves the generated module the
-    # console is about to import will not throw `checkRuntimeVersion()` the first
-    # time somebody presses a faucet button. It is the cross-repo half of
-    # issues/00011, and it is the only assertion that could catch a
-    # MINT_TEST_TOKENS_REF bump onto a different compiler line.
+    acct="$(bun -e 'const i = (await import("/aa/passport/contracts/managed/account/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["runtime-version"]);')"; \
+    test "$acct" = "$want" || { echo "FAIL: the account artifact was built for compact-runtime ${acct}, this image installs ${want}" >&2; exit 1; }; \
     mtt="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["runtime-version"]);')"; \
     test "$mtt" = "$want" || { echo "FAIL: the mint-test-tokens artifacts at $(cat /aa/.mint-test-tokens-commit) were built for compact-runtime ${mtt}, but this image installs ${want}" >&2; exit 1; }; \
     mttc="$(bun -e 'const i = (await import("/aa/contract-mtt-shielded/src/managed/compiler/contract-info.json", { with: { type: "json" } })).default; console.log(i["compiler-version"]);')"; \
     echo "mint-test-tokens artifacts: compiler ${mttc} / runtime ${mtt} (copied, never recompiled)"; \
-    cp /opt/compactc-version         /aa/.compactc-version; \
-    cp /opt/compact-runtime-version  /aa/.compact-runtime-version
+    cp /opt/compactc-version        /aa/.compactc-version; \
+    cp /opt/compact-runtime-version /aa/.compact-runtime-version; \
+    cp /opt/signet-pkg-version      /aa/.signet-pkg-version; \
+    cp /opt/signet-pkg-sha256       /aa/.signet-pkg-sha256; \
+    cp /opt/aa-prover-keys          /aa/.aa-prover-keys; \
+    cp /opt/aa-with-bridge          /aa/.aa-with-bridge
 
 RUN printf '%s\n' \
       '#!/bin/bash' \
       'set -euo pipefail' \
       '# Idempotent: compose re-runs completed one-shots on EVERY `up` (measured,' \
-      '# T4.7 finding) — a second run must not deploy duplicate contracts.' \
+      '# T4.7 finding) — a second run must not deploy a second vault. A second vault' \
+      '# would be WORSE than a duplicate contract here: every account is compiled' \
+      '# against one exact vault build and records its address, so two vaults on one' \
+      '# chain is two incompatible populations of accounts.' \
       'if [ -f /aa/out/aa-contracts.json ]; then' \
       '  echo "[aa-deploy] already deployed — /aa/out/aa-contracts.json:"' \
       '  cat /aa/out/aa-contracts.json' \
@@ -478,52 +586,5 @@ RUN printf '%s\n' \
       'exec bun run /aa/runner/deploy-aa.ts' \
       > /usr/local/bin/aa-entrypoint \
  && chmod +x /usr/local/bin/aa-entrypoint
-
-# ── the MinoCrab artifacts land LAST ─────────────────────────────────────────
-# After `bun install`, so flipping AA_ZKIR_SOURCE cannot force a registry fetch.
-# `/delta/managed` is empty and `/delta/meta` holds only `.aa-zkir-source` when
-# the source is `compactc`, which makes both COPYs no-ops on the opt-out path.
-COPY --from=minocrab-release /delta/managed/ /aa/contract-manager/src/managed/
-COPY --from=minocrab-release /delta/meta/ /aa/
-# Re-stamp the compiler's manifest from the ACTUAL files: NodeZkConfigProvider
-# runs verify:"require", and compactc wrote sizes and hashes for the artifacts
-# stage 2 deleted. Anything the MinoCrab release did not supply (a pruned
-# `.prover`) has its stale entry REMOVED rather than left describing bytes that
-# are neither present nor the ones this image would fetch. The manifest's own
-# identity assertions run here too, against a real JSON parse rather than the
-# grep the fetch stage could afford.
-RUN bun -e 'const M = "/aa/contract-manager/src/managed"; \
-  const src = (await Bun.file("/aa/.aa-zkir-source").text()).trim(); \
-  if (src === "compactc") { console.log("zkir source: compactc — nothing to re-stamp"); process.exit(0); } \
-  const man = await Bun.file("/aa/.minocrab-manifest.json").json(); \
-  const tag = (await Bun.file("/aa/.minocrab-release").text()).trim(); \
-  const ref = (await Bun.file("/aa/.minocrab-commit").text()).trim(); \
-  const aaRef = (await Bun.file("/aa/.aa-commit").text()).trim(); \
-  const eq = (what, got, want) => { if (got !== want) { console.error(`FAIL: manifest ${what} is ${got}, expected ${want}`); process.exit(1); } }; \
-  eq("tag", man.tag, tag); \
-  eq("gitCommit", man.gitCommit, ref); \
-  eq("contractPin.commit", man.contractPin?.commit, aaRef); \
-  const circuits = (await Bun.file("/aa/.minocrab-circuits").text()).trim().split(/\s+/); \
-  const path = `${M}/compiler/contract-manifest.json`; \
-  const m = await Bun.file(path).json(); \
-  for (const c of circuits) { \
-    for (const [section, name] of [["keys", `${c}.prover`], ["keys", `${c}.verifier`], ["zkir", `${c}.zkir`], ["zkir", `${c}.bzkir`]]) { \
-      const f = Bun.file(`${M}/${section}/${name}`); \
-      if (!m[section]) m[section] = { type: "directory" }; \
-      if (!(await f.exists())) { delete m[section][name]; continue; } \
-      const hasher = new Bun.CryptoHasher("sha256"); \
-      hasher.update(await f.arrayBuffer()); \
-      const want = man.circuits?.[c]?.[name.split(".").pop()]; \
-      const hash = hasher.digest("hex"); \
-      if (want && (want.bytes !== f.size || want.sha256 !== hash)) { \
-        console.error(`FAIL: ${name} is ${f.size} B/${hash}, the release manifest says ${want.bytes} B/${want.sha256}`); \
-        process.exit(1); \
-      } \
-      m[section][name] = { type: "file", size: f.size, hash }; \
-    } \
-    console.log(`re-stamped ${c} from the MinoCrab release (k=${man.circuits?.[c]?.k}, rows=${man.circuits?.[c]?.rows})`); \
-  } \
-  await Bun.write(path, JSON.stringify(m, null, 2)); \
-  console.log(`zkir source: ${src} @ ${tag} (${ref.slice(0, 12)}…), ${circuits.length} circuit(s) swapped`);'
 
 ENTRYPOINT ["/usr/local/bin/aa-entrypoint"]

@@ -75,7 +75,13 @@ COMBOS=(
   # would fail right here — which is exactly what it would do inside `./down.sh` for
   # every operator who has no key, since down.sh passes every fragment (00010 Q23).
   "core offerfiles prices"
-  "core offerfiles aa evm faucet frontend poster prices shielded-night solver"
+  # `signet` is rendered WITH `aa`, and that pairing is the assertion — the fragment overlays
+  # nothing, but everything it reads (the vault, the singleton, the MPC root secret) comes from
+  # aa-deploy and from the `aa-out` volume aa.yml declares, so `core signet` alone CANNOT render
+  # and is deliberately not listed. up.sh refuses the combination by name before compose is ever
+  # invoked; this is the same claim made where a fragment edit would break it.
+  "core aa signet"
+  "core offerfiles aa signet evm faucet frontend poster prices shielded-night solver"
 )
 
 FAILURES=0

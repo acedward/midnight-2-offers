@@ -1,45 +1,44 @@
 #!/usr/bin/env bash
 #
-# aa-e2e.sh — end-to-end test of the EVM-signed AA path:
+# aa-e2e.sh — end-to-end test of the EVM-signed PASSPORT ACCOUNT path:
 #
-#   EVM wallet (MetaMask V4 signer) → relay → Manager.execute → Midnight
-#   register two EVM accounts · mint · deposit · internal transfer · ledger asserts
+#   an Ethereum key → register (DEPLOY an account contract) → fund → offer
+#                   → a taker with no maker key settles → the account spends what it got
 #
 #   ./scripts/aa-e2e.sh
 #
-# Needs the stack up WITH the aa profile (./up.sh --with aa) — the test runs
-# against the contracts aa-deploy already put on this chain.
+# Needs the stack up WITH the aa profile (./up.sh --with aa) — the run uses the vault and
+# the test faucet `aa-deploy` already put on this chain.
 #
-# ── WHY THE CONTRACT REMOVAL DID NOT TOUCH THIS TEST ────────────────────────
-# Kernel PRs #69/#70 deleted the offer-files contract, and with it the mint path
-# the AA CONSOLE used: its faucet buttons now call the local mint-test-tokens
-# issuers instead (see images/aa-contracts/runner/aa-console.ts).
+# ── ⚠ WHAT CHANGED IN PROJECT 00034 ─────────────────────────────────────────
+# This used to be: register ×2 → mint → deposit → INTERNAL TRANSFER → withdraw, four proofs
+# of the AA-v3 Manager's one `execute` gateway. Two of those steps have no counterpart any
+# more. There is no shared Manager to register INTO — `register` deploys a contract of the
+# user's own (Q40) — and there are no internal transfers, because both accounts used to be
+# rows in one contract's balance map and are now separate contracts (Q41). What replaced
+# them is the thing this stack exists for: an OFFER that a stranger settles, and a spend of
+# what came back.
 #
-# This driver never used that path. It mints through the AA repo's OWN
-# test-support Minter (`contract-minter`, deployed by aa-deploy and recorded in
-# /aa/out/aa-contracts.json as `mints.unshielded.color`), because what it is
-# testing is the EVM-signed `execute` path through the Manager — deposit,
-# internal transfer, withdraw — and that path takes a colour as 32 opaque bytes.
-# Where the colour came from is not part of the claim. So it needs no faucet
-# profile, no registry and no local issuer, and its amounts are raw base units
-# of a token whose decimals nothing here reads. Deliberately left unchanged.
+# ── AND WHAT IT NO LONGER BUILDS ────────────────────────────────────────────
+# It used to build a `:e2e` image variant on first run, because calling `execute` proved it
+# locally and the normal image pruned that key. The prover keys an image keeps are NAMED now
+# (`AA_PROVER_KEYS`), and the named set is exactly what the deploy, the console and this
+# driver prove — so there is ONE aa-contracts image and nothing to rebuild here.
 #
-# Builds the :e2e image variant on first run (AA_PRUNE_MANAGER_PROVERS=0): calling
-# `execute` proves it in this process, so the prover key the normal image prunes must
-# be present. With the MinoCrab default that key is 544 MiB (k=18); with
-# AA_ZKIR_SOURCE=compactc it is 1.14 GB (k=19). Expect the first build to take a few
-# minutes; after that it is cached.
+# ── THE TOKENS COME FROM THE FORK'S OWN TEST FAUCET ─────────────────────────
+# `aa-deploy` deploys `contracts/faucet.compact` from the Passport fork and records the two
+# shielded colours it can mint (`shielded-a`, `shielded-b`) plus one unshielded. The offer
+# needs TWO distinct colours — same-colour legs net out and the kernel refuses the offer as
+# NOT_A_SWAP — and taking them from the fork's own faucet is what keeps this driver
+# independent of the `faucet` profile, its registry and its six issuers, exactly as the
+# retired AA-v3 Minter's TOKA colours did.
 #
-# THE TIMING COMPARISON (SC-002). The report at /aa/out/aa-e2e.json records the
-# zkir-source receipt and the wall time of every `execute` proof, so:
-#
-#   ./scripts/aa-e2e.sh                                  # the MinoCrab default
-#   AA_ZKIR_SOURCE=compactc ./scripts/aa-e2e.sh          # the opt-out, same host
-#
-# produce two directly comparable `executeSeconds` blocks. NOTE that the second one
-# rebuilds the Manager artifact and therefore needs a REDEPLOY to be meaningful for
-# anything but timing: a contract deployed with one verifier key cannot be called
-# with proofs made for another (`./down.sh -v` and bring the stack up again).
+# ── THE SETTLEMENT ──────────────────────────────────────────────────────────
+# If the offerfiles kernel is reachable the offer is PUBLISHED and the driver waits for the
+# solver to settle it (that is the `--all` path, and the one the demo is about). If nothing
+# takes it within AA_E2E_SOLVER_WAIT seconds, or the kernel is not up at all, the driver's
+# own taker wallet settles it — the same act by a different party, and what makes
+# `./up.sh --with aa` alone a complete test. The report records which happened.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,9 +46,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO_ROOT/scripts/lib/common.sh"
 load_env
 
-E2E_IMAGE="${AA_E2E_IMAGE:-midnight-2-offers/aa-contracts:e2e}"
-# --env-file only when the file exists — compose hard-fails on a missing file,
-# and the clean-clone path legitimately has none (defaults cover every value).
+# --env-file only when the file exists — compose hard-fails on a missing file, and the
+# clean-clone path legitimately has none (defaults cover every value).
 COMPOSE=(docker compose)
 [[ -f "${ENV_FILE:-}" ]] && COMPOSE+=(--env-file "$ENV_FILE")
 COMPOSE+=(-f "$REPO_ROOT/compose/core.yml" -f "$REPO_ROOT/compose/aa.yml")
@@ -60,22 +58,21 @@ if ! "${COMPOSE[@]}" run --rm --no-deps --entrypoint test aa-deploy -f /aa/out/a
   exit 2
 fi
 
-log "building the :e2e image variant (manager prover keys kept)…"
-"${COMPOSE[@]}" build --build-arg AA_PRUNE_MANAGER_PROVERS=0 aa-deploy
-docker tag "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" "$E2E_IMAGE"
-# Restore the pruned default image so later `up` invocations do not carry the keys.
-"${COMPOSE[@]}" build aa-deploy
-
-# A SHIELDED-FREE relay wallet (see aa-e2e.ts header): fresh dev seed, faucet-
-# funded with unshielded NIGHT + DUST only. Idempotent — re-funding just tops up.
+# A SHIELDED-FREE fee-paying wallet (see aa-e2e.ts's header): fresh dev seed, faucet-funded
+# with unshielded NIGHT + DUST only. Idempotent — re-funding just tops up.
 E2E_SEED="${AA_E2E_SEED:-e2ee2e0000000000000000000000000000000000000000000000000000e2ee2e}"
-log "funding the e2e relay wallet (unshielded NIGHT + DUST, no shielded)…"
+log "funding the e2e wallet (unshielded NIGHT + DUST, no shielded)…"
 "$REPO_ROOT/scripts/fund-wallet.sh" "$E2E_SEED"
 
-log "running the E2E (register ×2 → mint → deposit → transfer → withdraw; four execute proofs — the runner names the artifact and its k, and times each one)…"
-# All five steps are DEFAULT, fatal asserts since the upstream fixes landed
-# (AA PR #9: transfer pool underflow; AA PR #10: withdraw 214). The old
-# AA_E2E_PROBE_DEBITS gate is gone with the probes it gated.
-AA_IMAGE="$E2E_IMAGE" "${COMPOSE[@]}" run --rm \
+# The TAKER settles the offer, so it needs DUST of its own. It funds the WANT leg from a
+# coin the driver mints to it through the test faucet, not from this funding run.
+TAKER_SEED="${AA_TAKER_SEED:-7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e7a4e}"
+log "funding the taker wallet (it submits the settlement and pays its DUST)…"
+"$REPO_ROOT/scripts/fund-wallet.sh" "$TAKER_SEED"
+
+log "running the E2E (register → fund → offer → settle → spend; the offer circuit is k=18, expect minutes)…"
+"${COMPOSE[@]}" run --rm \
   -e AA_E2E_SEED="$E2E_SEED" \
+  -e AA_TAKER_SEED="$TAKER_SEED" \
+  -e AA_E2E_SOLVER_WAIT="${AA_E2E_SOLVER_WAIT:-120}" \
   --entrypoint bun aa-deploy /aa/runner/aa-e2e.ts

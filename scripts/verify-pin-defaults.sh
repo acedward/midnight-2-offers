@@ -42,8 +42,8 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 # owns those — a commit and an image digest are different kinds of identity and
 # are deliberately not mixed here.
 #
-# Three SHAPES, because the AA image's MinoCrab pins are three different kinds of
-# thing and pretending they are all commits is how a check stops checking:
+# Three SHAPES, because the aa image's pins are three different kinds of thing and
+# pretending they are all commits is how a check stops checking:
 #
 #   COMMIT_PINS  a 40-hex git commit
 #
@@ -53,19 +53,27 @@ source "$REPO_ROOT/scripts/lib/common.sh"
 # artifacts against. The image fetches all three in one shallow fetch and asserts the tree's own
 # `frontend/client-artifacts.json` still names the two — but only THIS script proves the
 # repository states each of them once.
-#   HASH_PINS    a 64-hex SHA-256 — MINOCRAB_SUMS_SHA256 is the IDENTITY of the
-#                port's release (the hash of its SHA256SUMS), not a commit
-#   TAG_PINS     a release tag, which is only a LOCATOR. It still has to be
-#                single-valued: two files naming different tags would download
-#                two different releases and verify neither.
-COMMIT_PINS=(KERNEL_REF SOLVER_REF FRONTEND_REF AA_REF UMBRA_REF SHIELDED_NIGHT_REF MINOCRAB_REF
-             MINT_TEST_TOKENS_REF MINT_TEST_TOKENS_CLIENT_V1_REV MINT_TEST_TOKENS_CLIENT_V2_REV)
-HASH_PINS=(MINOCRAB_SUMS_SHA256)
-TAG_PINS=(MINOCRAB_RELEASE)
+#   HASH_PINS    a 64-hex SHA-256. SIGNET_PKG_SHA256 is the IDENTITY of the
+#                @sig-net/midnight npm tarball the aa image compiles against — the image
+#                fetches it by URL and verifies this hash, so the version below is only a
+#                locator. (It replaced MINOCRAB_SUMS_SHA256, the identity of the retired
+#                MinoCrab release, in project 00034.)
+#   VERSION_PINS a package version, which is only a LOCATOR. It still has to be
+#                single-valued: two files naming different versions would download two
+#                different tarballs and verify neither. (It replaced TAG_PINS, whose only
+#                member was MINOCRAB_RELEASE — and an EMPTY array here would not be a
+#                harmless tidy-up: `"${ARR[@]}"` on an empty array is an unbound-variable
+#                error under `set -u` on the bash 3.2 macOS ships.)
+COMMIT_PINS=(KERNEL_REF SOLVER_REF FRONTEND_REF PASSPORT_REF UMBRA_REF SHIELDED_NIGHT_REF
+             MINT_TEST_TOKENS_REF MINT_TEST_TOKENS_CLIENT_V1_REV MINT_TEST_TOKENS_CLIENT_V2_REV
+             SIGNET_FAKENET_REF)
+HASH_PINS=(SIGNET_PKG_SHA256)
+VERSION_PINS=(SIGNET_PKG_VERSION)
 
 COMMIT_RE='[0-9a-fA-F]{40}'
 HASH_RE='[0-9a-fA-F]{64}'
-TAG_RE='v[0-9]+\.[0-9]+\.[0-9]+'
+# semver with an optional pre-release: 0.22.0-rc.1 is a real pin in this repository.
+VERSION_RE='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?'
 
 # shape_of <NAME> -> the regex this pin's value must match. A `case` rather than a
 # loop-and-`&&`: this runs inside $( ) under `set -e`, where a loop body whose last
@@ -73,11 +81,11 @@ TAG_RE='v[0-9]+\.[0-9]+\.[0-9]+'
 # would silently match nothing and report every pin as undeclared.
 shape_of() {
   case " ${HASH_PINS[*]} " in *" $1 "*) printf '%s' "$HASH_RE"; return ;; esac
-  case " ${TAG_PINS[*]} "  in *" $1 "*) printf '%s' "$TAG_RE";  return ;; esac
+  case " ${VERSION_PINS[*]} " in *" $1 "*) printf '%s' "$VERSION_RE"; return ;; esac
   printf '%s' "$COMMIT_RE"
 }
 
-PIN_NAMES=("${COMMIT_PINS[@]}" "${HASH_PINS[@]}" "${TAG_PINS[@]}")
+PIN_NAMES=("${COMMIT_PINS[@]}" "${HASH_PINS[@]}" "${VERSION_PINS[@]}")
 
 # Where a default may live. Kept explicit rather than "the whole repo": prose in
 # README/docs legitimately names a SHA in the past tense, and a historical note
@@ -148,9 +156,9 @@ check_tree() { # <root> — 0 when every pin is single-valued and well-formed
       continue
     fi
     # Upper-case hex is the same commit to git but a different string to every
-    # `[[ "$a" == "$b" ]]` in this repo, so it is a failure, not a nit. Tags are
+    # `[[ "$a" == "$b" ]]` in this repo, so it is a failure, not a nit. Versions are
     # not hex and are exempt.
-    if [[ "$re" != "$TAG_RE" ]] && printf '%s\n' "$rows" | cut -f1 | grep -qE '[A-F]'; then
+    if [[ "$re" != "$VERSION_RE" ]] && printf '%s\n' "$rows" | cut -f1 | grep -qE '[A-F]'; then
       err "${name}: at least one default is upper-case hex; identities are compared as strings here"
       failures=$(( failures + 1 ))
       continue
@@ -191,17 +199,17 @@ self_test() {
   fi
   ok "a single-file edit is caught"
 
-  # The MinoCrab release identity is a 64-hex SHA-256, not a commit — a shape the
+  # The npm tarball's identity is a 64-hex SHA-256, not a commit — a shape the
   # original checker could not even see. Splitting it must fail just as loudly, or
-  # the image would take bytes from one release while the repository documents
-  # another.
-  log "self-test 3/3: splitting the 64-hex MINOCRAB_SUMS_SHA256 must FAIL"
+  # the image would compile against bytes from one release while the repository
+  # documents another.
+  log "self-test 3/3: splitting the 64-hex SIGNET_PKG_SHA256 must FAIL"
   ( cd "$tmp" && rm -rf tree && mkdir -p tree )
   ( cd "$REPO_ROOT" && tar --exclude=.git -cf - . ) | ( cd "$tmp/tree" && tar -xf - )
   victim="$tmp/tree/compose/aa.yml"
-  perl -0pi -e 's/\$\{MINOCRAB_SUMS_SHA256:-[0-9a-f]{64}\}/\$\{MINOCRAB_SUMS_SHA256:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\}/' "$victim"
+  perl -0pi -e 's/\$\{SIGNET_PKG_SHA256:-[0-9a-f]{64}\}/\$\{SIGNET_PKG_SHA256:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\}/' "$victim"
   if check_tree "$tmp/tree" >/dev/null 2>&1; then
-    err "self-test: a deliberately split MINOCRAB_SUMS_SHA256 still PASSED — the hash-shaped pin is not checked"
+    err "self-test: a deliberately split SIGNET_PKG_SHA256 still PASSED — the hash-shaped pin is not checked"
     return 1
   fi
   ok "a split 64-hex release identity is caught"

@@ -178,116 +178,146 @@ upstream's random wallet. See [WALLETS](WALLETS.md) for why it needs no NIGHT.
 Cold builds need GitHub and npm network access. The fetched upstream licenses are preserved in the
 runtime image.
 
-**The `aa` profile deploys the AA contracts and mints a token.** `--with aa` deploys
-[`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3)'s
-Manager (the account-abstraction custody contract) and test Minter on the demo chain at
-bring-up, then proves two mint calls (one shielded colour, one unshielded) and writes the
-receipt — addresses, colours, tx ids — to the `aa-out` volume as `aa-contracts.json`
-(`./scripts/verify-aa.sh` reads it back; `verify.sh` gains an `aa` section). Two design
-points worth knowing: the contracts are compiled with `--feature-zkir-v3` (the Manager is
-keccak/EIP-712-heavy), so the profile runs its **own internal experimental proof server**
-(`AA_PROOF_IMAGE`) next to the plain core one rather than repointing the whole stack's
-proving at one variant; and the Manager's 1.1 GB `execute.prover` key is deliberately
-NOT in the image — deploying needs only verifier keys, and bring-up never calls `execute`.
-The one-shot is idempotent across `up` runs and its state dies with `down.sh -v`.
+**The `aa` profile deploys the SHARED Passport pieces and mints a token.** `--with aa`
+deploys, at bring-up, the three things that must exist before any account can:
+
+* the **Signet singleton** (Sig Network's protocol contract, from the source the fork
+  vendors — the published `@sig-net/midnight-contract` package cannot be loaded on
+  compact-runtime 0.19.0, and the rebuild's verifier keys are byte-identical);
+* the **ERC20 bridge vault**, deployed *and* `initialise`d. This is not optional: an
+  account's constructor **seals a reference to the vault**, so no account can be
+  constructed before the vault exists, and the compiler embeds a fingerprint of the
+  vault's verifier keys into every account compiled against it;
+* the fork's **test faucet**, plus one shielded and one unshielded mint — shielded tokens
+  on a fresh localnet can only originate from a contract mint, and `aa-e2e.sh` needs
+  colours without depending on the `faucet` profile.
+
+The receipt — addresses, the initialise tx, the vault's derived EVM account, every
+compiled bundle's **artefact fingerprint**, the account plan, the colours and the mint tx
+ids — goes to the `aa-out` volume as `aa-contracts.json` (`./scripts/verify-aa.sh` reads it
+back; `verify.sh` gains an `aa` section). The one-shot is idempotent across `up` runs, and
+here that is a safety property rather than a nicety: a SECOND vault on one chain would be
+two mutually incompatible populations of accounts. Its state dies with `down.sh -v`.
+
+Everything is compiled with `--feature-zkir-v3`, so the profile runs its **own internal
+experimental proof server** (`AA_PROOF_IMAGE`) next to the plain core one rather than
+repointing the whole stack's proving at one variant.
+
+⚠ **This replaced the AA-v3 Manager.** Until project 00034 the profile deployed ONE shared
+"Manager" contract holding every user's balances behind a single `execute` gateway, plus a
+test Minter, with `execute`'s ZK artifacts taken from a MinoCrab port. All three are gone.
+An account is now **one contract per user**, the console's `register` deploys it, and
+`AA_ZKIR_SOURCE`, every `MINOCRAB_*` knob and `AA_OFFER_ALLOW_FALLIBLE` are removed. A chain
+that ran the old profile cannot run this one: `./down.sh -v` and bring it up again.
 
 **The `aa` profile also serves the AA web console** at `http://127.0.0.1:10700`
 (`AA_CONSOLE_HOST_PORT`): its face is the **Midnight-EVM [AA] Wallet**, where **any injected
-browser EVM wallet** (MetaMask, Rabby, …) drives the AA path — on connect the Manager's
-read/pure surface executes for the address (no registration needed), then register, balances,
-and token-first Withdraw / Transfer / Publish Offer. The
-browser holds no Midnight wallet and no prover: it signs `eth_signTypedData_v4` requests that
-the console's relay builds with the AA repo's own EIP-712 codec, and the relay recovers the
-signer's secp256k1 point from the signature (the `pk` argument `execute` needs — no EVM wallet
-exposes it), proves `execute` through the profile's internal proof server (~1 min on the default
-MinoCrab k=18 artifact, ~2 min on compactc's k=19; the page shows the live job log, and the log
-line names which artifact it is proving — read off the image, not off a build flag) and submits,
-paying fees from its own relay wallet
-(`aa-console` in `wallets/wallets.json`, funded automatically by `up.sh` — unshielded NIGHT +
-DUST only, deliberately shielded-free). The console's image variant keeps the Manager's
-`execute.prover`, which the deploy image prunes (`midnight-2-offers/aa-contracts:console`) —
-544 MiB on the default, 1.14 GB with `AA_ZKIR_SOURCE=compactc`. It is kept because the RELAY
-proves, not the proof server: the key is read out of the image by the zk-config provider and
-uploaded per call.
-`AA_CONSOLE_DEV_SIGNER=1` enables a built-in test signer for wallet-less CI runs; leave it off
-otherwise. The one-time withdraw limitation is GONE: the node's `Custom error: 214` (a
-recipient-encoding defect in the Manager) was fixed upstream in
-[AA PR #10](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/10) — pin `AA_REF`
-at or past its merge (this stack pins `41de69de…`, well past it; key-breaking, so redeploy the
-contracts) and withdraw lands
-like every other operation. Unshielded withdraws (selector 3) go to a 32-byte user address only (`recipientKind 0`);
-the contract refuses contract-recipient payout shapes by design. Shielded withdraws
-(selector 2) go to **any pasted `mn_shield-addr…`** — the address decodes to the recipient's
-coin public key (which rides the signed action) and encryption public key (which feeds the
-build-time coin-encryption mapping); the stack's own wallets remain selectable shortcuts.
-The AA-infra tab's **Send to an address** is the relay-side sibling: it mints a demo token and
-wallet-transfers it to any pasted `mn_addr…`/`mn_shield-addr…`, no signature involved.
+browser EVM wallet** (MetaMask, Rabby, …) drives the path. The browser holds no Midnight
+wallet and no prover. Four things a reader should know about what it now signs and keeps:
 
-**The console's Swap panel publishes real offer files.** An `OpenSwapShielded` action (signed by
-the browser wallet like every other op) is proven as a Manager `execute` and then **never
-submitted**: the proven transaction is unbalanced by exactly +give/−want, which makes it the
-offer itself — encoded as a MIP-0005 `swapoffer1…` blob and `POST`ed to the offer-files kernel
-(`--with offerfiles` required; the panel degrades gracefully without it). Give and want are
-any two **distinct shielded demo tokens** — since the contract removal, two of the four shielded
-tokens the local issuers mint (twBTC/twETH/twUSDC/twUSDM), which is the same market the offer
-poster posts into; the console's taker flow or the kernel's own
-`api-examples/11-settle-offer.ts` settle it. Two switches make this work, both ON in the demo and
-OFF upstream by default: `ALLOW_CONTRACT_MAKER_OFFERS` (kernel-side — contract-maker offers
-cannot pass `wellFormed` against the kernel's blank reference state, so the exact
-missing-contract failure retries without contract-proof verification; native zswap proofs and
-signatures are always verified, and the node verifies the contract proof at settlement) and
-`AA_OFFER_ALLOW_FALLIBLE` (console-side — measured when `execute` was compactc's k=19, whose
-transcript exceeds the ledger's guaranteed-section budget, so every AA offer's legs sat in the
-fallible section; measured live: a foreign taker settles them anyway, ledger-exact. The default
-MinoCrab k=18 artifact roughly halves the circuit and may no longer force it; the flag stays ON
-so the demo behaves identically either way, and the fallible path is the one with live evidence). Each blob is also saved under the `aa-out`
-volume at `/aa/out/offers/<offerId>.swapoffer`.
+* **REGISTER DEPLOYS A CONTRACT.** The account id IS the contract address, which does not
+  exist until the deploy transaction is built — so nothing can name it in advance, and
+  registering is two transactions and minutes of proving rather than one call. Wave 1
+  carries the eight operations the node was measured accepting; wave 2 is a maintenance
+  update carrying the rest (the two gated overflow circuits, the offer and the five bridge
+  circuits) and **retiring the maintenance authority**, which otherwise sits above the
+  MIP-0013 seam.
+* **THERE ARE TWO KINDS OF SIGNATURE.** Registration asks for an EIP-191 `personal_sign`
+  over a fixed sentence that names no operation and moves no funds; its only job is to
+  reveal the wallet's public **point**, which no EVM wallet exposes and which the activation
+  circuit carries as an argument. Everything else is `eth_signTypedData_v4` over an EIP-712
+  struct whose `challenge` field binds the account, the arguments, the witness coin and the
+  authorisation nonce — so the approved call and the executed call are provably the same.
+* **CUSTODY IS STATELESS.** A shielded coin an account holds is **not in ledger state**: it
+  lives in the owner's private coin store, and the chain carries only an encrypted 192-byte
+  inbox entry. So a deposit is coin *plus* entry, and the console has to walk the inbox and
+  capture the coin's Merkle position afterwards or the coin is unspendable. The accounts
+  table shows the unshielded balances (public, on the account's ledger) and the shielded
+  holdings (private, from the console's store) as the two different things they are.
+* ⚠ **THE CONSOLE IS THE CUSTODIAN ON THIS STACK.** It keeps each account's coin store AND
+  its X25519 **viewing secret** in `/aa/out/aa-roster.json`. That is the same posture the
+  old console had when it held the Manager's owner secret, and the reason this is a
+  disposable localnet whose seeds are published in `wallets/wallets.json`. A product would
+  keep that key in the user's own storage and hand the console only the public half.
+
+The relay proves through the profile's internal proof server and submits, paying fees from
+its own relay wallet (`aa-console` in `wallets/wallets.json`, funded automatically by
+`up.sh` — unshielded NIGHT + DUST only, deliberately shielded-free). Every gated `evm`
+circuit is **k = 18** (keccak, EIP-712 and ECDSA all in-circuit) and its proving key is
+570 MB, uploaded per call, so expect a minute or two per action.
+`AA_CONSOLE_DEV_SIGNER=1` enables a built-in test signer for wallet-less CI runs.
+
+**ONE IMAGE now serves deploy, console and e2e.** There used to be three tags differing only
+in whether the Manager's `execute.prover` was pruned. The prover keys an image keeps are
+**named** (`AA_PROVER_KEYS`), and the named set — the activation, the two deposits, the three
+withdraws, the inbox append, the offer, the vault's `initialise` and the faucet's mints — is
+exactly what all three roles prove. Measured on this tree: the account's compiled bundle is
+**7.2 GB** with every prover key and **2.9 GB** with the default set; the vault's is 717 MB
+before and 114 MB after. `AA_WITH_BRIDGE=1` adds ~1.2 GB more.
+
+**Withdraws.** Unshielded withdraws pay a 32-byte user address. Shielded withdraws pay **any
+pasted `mn_shield-addr…`** — the address decodes to the recipient's coin public key (which
+rides the signed action) and encryption public key (which feeds the build-time
+coin-encryption mapping); the stack's own wallets remain selectable shortcuts. A shielded
+withdraw spends **one held coin** and returns the change to the console's store; filing the
+change's inbox entry is a second gated call and therefore a second signature, so the console
+does not do it silently.
+
+**Send to another account is a withdraw and a deposit.** AA-v3's internal transfers moved
+value between two ROWS of one contract's balance map. Two accounts are two contracts, and an
+account never calls another account, so the console's Send performs
+`withdraw_shielded_with_evm` to a wallet it runs and then a **permissionless**
+`deposit_shielded` into the recipient: two transactions, one signature, and the hop visible
+in the job log.
+
+**The console's Swap panel publishes real offer files.** `open_swap_shielded_with_evm` is
+proven and then **never submitted**: the proven transaction is unbalanced by exactly
++give/−want, which makes it the offer itself — encoded as a MIP-0005 `swapoffer1…` blob and
+`POST`ed to the offer-files kernel (`--with offerfiles` required; the panel degrades
+gracefully without it). Give and want are any two **distinct shielded tokens**. Each blob is
+saved under the `aa-out` volume at `/aa/out/offers/<offerId>.swapoffer` beside its terms.
+
+Two things changed here and both are worth stating:
+
+* **ONE LIVE OFFER PER ACCOUNT.** The MIP-0013 seam consumes one device entry per call, so
+  signing a second offer while the first is unsettled makes the **first** permanently
+  unsettleable. The console refuses the second, in the page and again in the relay.
+* **`AA_OFFER_ALLOW_FALLIBLE` IS GONE.** It overrode project 00006's rule that an offer's
+  legs must sit in the guaranteed segment 0 — a rule measured to be **unsatisfiable for any
+  device-gated circuit**, because the seam writes ledger state before any value moves, so
+  everything after that write is in the transaction's fallible half by construction. The
+  rule is now the one a taker actually needs — **all the legs in one segment, whichever it
+  is**, declared in the offer's terms and checked against the bytes — and it fails closed,
+  so there is nothing left to override. `ALLOW_CONTRACT_MAKER_OFFERS` (kernel-side) is
+  unchanged and still ON in the demo.
 
 ## The AA console mints through the local issuers
 
-This is the largest single change on the `aa` side of the contract removal, and it is almost
-invisible from the outside: the console's faucet, fund and send actions still hand a wallet its
-named tokens, and the AA Manager still sees nothing but 32 raw colour bytes.
+Unchanged by the account migration, and worth restating because it is the one part of the
+`aa` profile that did not move: the console's faucet, fund and send actions hand a wallet its
+named tokens, and an account contract sees nothing but 32 raw colour bytes.
 
-**What went away.** The console used to derive its three colours itself —
-`rawTokenType(domainSepFromName("WBTC"), offerFilesContractAddress)` — with the address read from
-the kernel's `GET /v1/midnight/config`. Both halves of that are gone: no contract mints by domain
-separator any more, and there is no address to derive from, because the route no longer answers
-one.
+The console reads `${AA_FAUCET_URL}/metadata.undeployed.json` — the same registry document
+its infrastructure probe already read — and takes symbol, colour (`deployments[].tokenId`),
+decimals, privacy and the per-token ISSUER ADDRESS out of it. Six tokens, one contract each.
+Its faucet / fund / send actions call each issuer's `mint` circuit directly
+(`mint(recipient, amount, nonce)` shielded, `mint(recipient, amount)` unshielded) and then
+deposit into the account.
 
-**What replaced it.** The console reads `${AA_FAUCET_URL}/metadata.undeployed.json` — the same
-registry document its infrastructure probe already read for the faucet card — and takes symbol,
-colour (`deployments[].tokenId`), decimals, privacy and the per-token ISSUER ADDRESS out of it.
-Six tokens, one contract each. Its faucet / fund / send actions call each issuer's `mint` circuit
-directly (`mint(recipient, amount, nonce)` shielded, `mint(recipient, amount)` unshielded) and then
-deposit into the Manager exactly as before. Those circuits take the same `Either` recipient shapes
-the deleted offer-files ones did, which is why `images/aa-contracts/runner/mint-recipient.ts`
-carried over with its behaviour unchanged — and why deposits, withdrawals and the whole EIP-712
-action set did not move at all: the Manager only ever handled colour bytes, and colour bytes are
-what it still gets.
+**The generated modules are COPIED into the image, never recompiled.** `contracts/v2/managed/`
+is committed upstream, and those exact bytes are the ones whose verifier keys the faucet
+registered on chain — upstream's deploy runner refuses to touch the chain unless the artifact
+bytes equal the committed ones. They are zkir-v2 / `[v6]`, so the console proves them on the
+PLAIN proof server (`AA_WALLET_PROOF_SERVER_URL`), while every Passport circuit keeps the
+profile's own experimental `[v7]` one. `scripts/verify-source-pins.sh` asserts
+`/aa/.mint-test-tokens-commit` on the running image: an image built from a different
+mint-test-tokens commit would prove against verifier keys this stack never deployed, and
+nothing else would notice.
 
-**The generated modules are COPIED into the image, never recompiled.** `contracts/v2/managed/` is
-committed upstream, and those exact bytes are the ones whose verifier keys the faucet registered on
-chain — upstream's deploy runner refuses to touch the chain unless the artifact bytes equal the
-committed ones, so recompiling them here, even with the identical compiler, would produce a
-different tree to verify against and would be exactly what upstream tells integrators not to do.
-They are zkir-v2 / `[v6]`, so the console proves them on the PLAIN proof server
-(`AA_WALLET_PROOF_SERVER_URL`), while the Manager and the test Minter keep the profile's own
-experimental `[v7]` one. The image gained `MINT_TEST_TOKENS_REPO` / `MINT_TEST_TOKENS_REF` build
-args and bakes `/aa/.mint-test-tokens-commit`, which `scripts/verify-source-pins.sh` now asserts on
-BOTH AA images: an AA image built from a different mint-test-tokens commit would prove against
-verifier keys this stack never deployed, and nothing else in the stack would notice.
-
-**Two smaller consequences.** The console no longer registers token names in the kernel. It used to
-POST every token with a hardcoded `decimals: 6`, which was wrong for four of the six, and
-`registry-bridge` owns `known_tokens` now. And `/api/info.tokens` carries `decimals`, `label` and
-`issuer` per token plus `tokensSource: "mint-test-tokens"` and `tokensRegistryRevision`, so the
-page's defaults became POSITIONAL — "the Nth token of this family, in registry order" — rather than
-the literals `wBTC`/`wETH`/`wUSD` they used to be.
-
-**The AA E2E driver did not change.** `runner/aa-e2e.ts` mints through the AA repository's own
-test-support Minter contract, never through offer-files, so nothing in it referenced the removed
-contract and nothing in it had to move.
+**The e2e driver uses the fork's own test faucet**, not the six issuers — `aa-e2e.sh` needs
+two distinct shielded colours and no profile but its own, which is exactly what the retired
+AA-v3 Minter provided and what `contracts/faucet.compact` provides now, from the same
+repository and the same compiler as the account.
 
 ## The offer book persists across restarts
 
@@ -612,6 +642,226 @@ the `proof-params-init` one-shot in `compose/core.yml`.
 
 Boolean proof-server environment knobs (`MIDNIGHT_PROOF_SERVER_NO_FETCH_PARAMS` and friends)
 require the **literal** strings `true` / `false` on rc.5; `=1` aborts the server at startup.
+
+## The `signet` profile — the bridge's MPC responder, on a real EVM chain
+
+```bash
+# the one secret this profile cannot derive; it is a bearer credential, so it lives only here
+echo 'SIGNET_EVM_RPC_URL=https://<your sepolia endpoint>' >> .env
+./up.sh --with aa --with signet
+./verify.sh                       # the `signet` section runs automatically when the profile is up
+```
+
+### What it is for
+
+The `aa` profile deploys an ERC20 **bridge vault** because every Passport account's constructor
+seals a reference to one. Without `signet` that vault is initialised against a **stub** MPC root
+key derived from the public string `AA_DOMAIN`: the five bridge circuits are compiled and their
+verifier keys are on chain, and nothing can move funds across them, because no MPC signs anything
+and the derived deposit addresses are derivable by anybody. That is correct for a disposable
+localnet and is stated at length in `docs/KNOWN-LIMITATIONS.md`.
+
+`signet` replaces the stub with a real signer. With it up:
+
+- `aa-deploy` **generates** a per-stack 32-byte MPC root secret, writes it to
+  `/aa/out/signet-root.env` (mode 600) on the `aa-out` volume, initialises the vault against its
+  **public** half, pins the vault to `AA_EVM_CHAIN_ID` (11155111, Sepolia, by default) and records
+  `mpc.provenance: "fakenet"` in the deploy receipt. It **refuses** the stub outright on this
+  profile;
+- `signet-fakenet` holds the other half of that key. It watches the Signet singleton this stack
+  deployed, serves **only** this stack's vault, signs the vault's EVM transactions, broadcasts
+  them on the operator's RPC and posts the attestation back on Midnight.
+
+### One service, and what is deliberately not one
+
+| | |
+|---|---|
+| `signet-fakenet` | the responder. Image `midnight-2-offers/signet-fakenet:local`, built from `images/signet-fakenet/` |
+
+There is no key-generation one-shot and no funding one-shot:
+
+- **the root secret is generated by `aa-deploy`**, because it is the earlier consumer — it cannot
+  initialise the vault without the public half — and it already owns the `aa-out` volume. A
+  separate one-shot would have to be ordered ahead of a service declared in *another* compose
+  fragment, which means overlaying `aa.yml`'s `depends_on` from `signet.yml` and making the order
+  of the `-f` arguments load-bearing;
+- **the responder's wallet is funded by `up.sh`**, exactly like the `aa-console` relay wallet and
+  the `aa-taker` wallet, with `scripts/fund-wallet.sh`. `MidnightMonitor` builds that wallet
+  *lazily*, on its first request, so the container is healthy before the funding lands — but it
+  must be funded before the first bridge deposit, because it pays for the **two** contract writes
+  the responder posts per bridge leg (`respond`, then `respondBidirectional`). Wallet
+  `signet-responder` in `wallets/wallets.json`, on a seed of its own: the responder writes
+  concurrently with the rest of the stack, and two facades on one seed force each other's
+  connection down.
+
+`signet` **needs `aa`**, and `up.sh` says so and exits 2 rather than letting compose render a
+responder that dies on a missing receipt three minutes later. It publishes **no host port**: the
+responder's helper API (`GET /responses/{requestId}`) listens on the container's `:3040` and is
+reached over the compose network only. That API is also the service's healthcheck target, and it
+is a good one: the server starts it *after* its Midnight monitor has connected, so "healthy" means
+"watching the singleton", not "process running".
+
+### The image, and why it is ours
+
+Built from [`acedward/solana-signet-program`](https://github.com/acedward/solana-signet-program)
+`00034-trace-fallback` @ `a1a7798` (fork PR #1) — upstream `sig-net/solana-signet-program` at tag
+`fakenet-v0.23.0` (`13fd0e8e`, the commit behind `ghcr.io/sig-net/fakenet:0.23.0`) plus two local
+patches:
+
+1. **`eth_call` replay when the RPC has no `debug_traceTransaction`.** Upstream recovers a mined
+   call's return data with `debug_traceTransaction` — the same method the real MPC uses — and
+   fails the request permanently when the RPC rejects it. Every free Sepolia tier rejects it, so
+   without this the signed transfer can be broadcast and never attested. The patch falls back, and
+   only when the error is "method not supported", to an `eth_call` of the same
+   from/to/data/value at the mined block's **parent**.
+2. **`MIDNIGHT_CALLER_ALLOWLIST`.** Upstream serves *every* request notified on the singleton it
+   watches. On a private stack the singleton is ours alone, so this is a habit rather than a
+   defence — but it is the habit that makes the same image safe on a shared singleton, and the
+   entrypoint sets the list from the deploy receipt so it cannot drift from the vault on chain.
+
+`./scripts/build-fakenet-image.sh` rebuilds it without a stack. The image asserts both patches are
+present at build time, so a ref that moved back to upstream fails the build rather than producing
+a responder that cannot attest and answers everyone; `scripts/verify-source-pins.sh` re-reads both
+off a built image.
+
+### The two secrets, and where they go
+
+| Secret | Lives in | Read by |
+|---|---|---|
+| `SIGNET_EVM_RPC_URL` — the keyed EVM endpoint | the **uncommitted** `.env` only | `compose/signet.yml` → the container's `EVM_RPC_URL` |
+| the per-stack MPC root **private** key | `/aa/out/signet-root.env` on the `aa-out` volume, mode 600 | `aa-deploy` (writes it), the responder's entrypoint (reads it) |
+
+Neither is ever a command-line argument, a compose value, or a log line. `MPC_ROOT_KEY` does not
+appear in `compose/signet.yml` at all — the entrypoint reads it from the volume, which also means
+the singleton address and the allow-list come from the deploy receipt rather than from
+configuration that could drift. `./down.sh -v` removes `aa-out`, so the root key rotates with the
+chain whose vault was initialised against it; that is the only lifecycle that keeps a vault and its
+signer in step. `scripts/check-no-secrets.sh` (wired into `scripts/ci-check.sh`) greps the tracked
+tree for the shape of all of this.
+
+### ⚠ It is demo-grade by construction, and both reasons are printed every run
+
+1. **The stack holds both halves of the MPC root key.** It proves the protocol end to end — the
+   request, the singleton events, the EVM transaction, the attestation check inside the circuit,
+   the coins — and it does **not** demonstrate a signer nobody here controls.
+2. **The attestation is recovered by replay, not by a mined trace**, whenever the RPC has no
+   `debug` namespace. A replay reads pre-block state, so a call whose result depended on writes
+   earlier in the same block could return different bytes than the mined trace the real MPC signs.
+   For one ERC20 `transfer` from an address nothing else touches, it does not. With a traced
+   endpoint the same image takes the upstream path unchanged.
+
+`./up.sh` prints both in its summary, `./verify.sh` prints them in the `signet` section, and
+`docs/KNOWN-LIMITATIONS.md` carries the long form.
+
+### What `./verify.sh` proves
+
+`scripts/verify-signet.sh` is read-only; its only network call is `eth_chainId`.
+
+- the responder is **healthy**, i.e. its responses API answers, i.e. its Midnight monitor connected;
+- the receipt records `mpc.provenance: "fakenet"` and the EVM chain id this stack was brought up
+  for — a stack that ran `aa` first and gained `signet` later keeps the **stub**, because
+  `aa-deploy` is idempotent, and that is exactly the case this catches;
+- **the derivations agree.** The vault's own EVM address and the MPC response key are re-derived
+  from the per-stack root secret *inside the responder's image*, with Sig Network's own
+  `@sig-net/midnight`, and compared with the receipt. Deriving them with the fork's client — the
+  code that wrote the receipt — would be circular; this is a second implementation of the same
+  specification, and a disagreement means every deposit address this stack shows is one the
+  responder will never sweep;
+- the responder's allow-list is exactly this stack's vault, and it watches exactly this stack's
+  singleton;
+- **no FOREIGN request was served.** This used to be "zero requests, ever", which was right while
+  nothing on the stack could raise one; the Bridge tab can (project 00035), so what must stay zero
+  is a request from a caller that is not this stack's vault. The script reports which case it is in
+  and counts the requests the allow-list ignored;
+- a read-only `eth_chainId` on the operator's endpoint equals the chain the vault is pinned to. A
+  mismatch is how funds get stranded at a correctly derived address on the wrong chain.
+
+## The Bridge tab — ERC20s in and out of an account or a wallet (profile `aa` + `signet`)
+
+```bash
+./up.sh --with aa --with signet --with offerfiles --with frontend   # then http://127.0.0.1:10700 → Bridge
+./scripts/aa-bridge-dryrun.sh          # one signing request, nothing funded, nothing broadcast
+./scripts/aa-bridge-e2e.sh --evidence <dir>   # the full round trip; it SPENDS on the EVM chain
+./scripts/aa-story-e2e.sh --evidence <dir>    # …and what the bridge is FOR: an offer in bridged
+                                              #   colours, taken by the frontend's own wallet
+```
+
+Tokens on the EVM chain become **shielded Midnight coins**, one colour per ERC20 per vault:
+`tokenType(vaultTokenDomainSeparator(erc20), vault)`, with the ERC20's own raw units as the coin
+value and the ERC20's own decimals everywhere it is shown. 1 USDC is `1000000`; **10 WEENUS is
+`10000000000000000000`**, which is past `Number.MAX_SAFE_INTEGER` — every amount in the console is
+a bigint or a decimal string, and `images/aa-contracts/runner/aa-bridge.test.ts` is a BUILD gate
+for exactly that.
+
+### A round trip is three acts, and the middle one is not on Midnight
+
+Nothing on Midnight can wait for an Ethereum transaction inside one proof, so it cannot be one
+click and it is not presented as one:
+
+| act | deposit | withdraw |
+|---|---|---|
+| **start** (one Midnight transaction) | `bridge_deposit_start_with_evm` on the account, or the vault's `startDeposit` at root | `bridge_withdraw_start_with_evm`: the account sends the coin, the vault claims it |
+| **relay** (off chain) | the MPC signs `transfer(vault, amount)` from the recipient's derived deposit address; the console broadcasts it; the MPC attests | the MPC signs `transfer(dest, amount)` from the **vault's own** EVM account; same loop |
+| **settle** (one Midnight transaction) | `bridge_deposit_complete` — the vault mints, the account (or the wallet) receives, the inbox entry is sealed in the same transaction | `bridge_withdraw_complete`, or `bridge_withdraw_refund` when the transaction never executed — the ATTESTATION picks the branch, not the caller |
+
+The middle act is a resumable job: `POST /api/bridge/relay/<requestId>` (and its alias
+`/api/bridge/settle/<requestId>`) finishes a request the operator started hours ago, and pressing
+it on a finished one changes nothing. Every request is persisted in `/aa/out/aa-bridge.json` on the
+`aa-out` volume, with its Sepolia hash, block, status and attestation kind.
+
+### Two recipients, two addresses, two protocols
+
+| recipient | who authorises | where the coin lands | what the console holds |
+|---|---|---|---|
+| **your account** — `right(contract address)` | the browser, EIP-712 over the account's `evm` arm | the account's custody, with its inbox entry | the account's coin store and viewing key, as it already did |
+| **a Midnight shielded address** — `left(coin public key)` | nobody: the vault's `startDeposit`/`completeDeposit` are permissionless and the console's relay wallet pays | that wallet, which sees it by syncing | **nothing of that wallet's** |
+
+Each (vault, recipient) pair has its own Ethereum address, derived from the vault's own exported
+`depositPath` circuit: tokens sent there can only ever be minted to that recipient, whoever submits
+the calls. The wallet path needs the recipient's **encryption** public key mapped into the settle
+transaction (`additionalCoinEncPublicKeyMappings`, 00034 question Q42) — the shielded address
+carries it, and without it the coin lands and its owner cannot see it. That is why a bare coin
+public key is refused as a deposit recipient, and why the e2e's decisive assertion is a wallet
+syncing from its own seed and finding the coin.
+
+⚠ **Every deposit address dies with `./down.sh -v`** (project 00035 question Q13). It is derived
+from the vault's CONTRACT address, and a wiped chain deploys a new vault — so fund, start, relay
+and complete within ONE stack session, and use `./down.sh` **without** `-v` to keep them across a
+restart. The quote says so, and `up.sh`'s summary repeats it.
+
+### Caps, guards and the one thing the console will never accept
+
+- **Caps** (spec FR-017, the owner's decision): `AA_BRIDGE_CAP_USDC=5`, `AA_BRIDGE_CAP_WEENUS=50`,
+  `AA_BRIDGE_CAP_ETH=0.05`, in DECIMAL units, summed over the console store's lifetime. A token with
+  no cap is **refused**, not allowed: an unknown ERC20 bridged without a ceiling is how a demo stack
+  spends somebody's real funds. Checked at the quote, checked again at the start, charged once.
+- **The FR-004 guard**: a start is refused, before any Midnight transaction, unless the deposit
+  address holds the tokens **and** the gas — naming the exact shortfall. A start against an empty
+  address burns DUST and a device entry for a request whose Ethereum leg can only return false.
+- **No private key, anywhere** (FR-015). The console is given a read-only RPC URL so it can quote
+  balances; it has no key of any kind and no field that would take one. The operator funds deposit
+  addresses from their own wallet, and `scripts/aa-bridge-e2e.sh` reads the funder key from the
+  operator's own file and hands it to a SEPARATE container through a mode-600 mount — never on a
+  command line, because this is a shared machine.
+
+### The bridged colours are a second token source
+
+`/api/info.tokens` now carries `source: "faucet" | "bridged"`. Bridged colours are appended after
+the faucet ones (so the page's positional defaults are unchanged), they have no issuer, and every
+mint path refuses them by name: they are minted by the vault against tokens that arrived on the
+EVM chain, and no faucet can create one. The console also registers each of them in the kernel's
+name registry (`POST /v1/known-tokens`, idempotent) so the offer-files frontend renders an offer in
+them as "1 USDC" and "10 WEENUS" (spec FR-009). The kernel has no update route, so a name already
+taken by another colour is reported loudly and left alone.
+
+### `AA_WITH_BRIDGE`, and why `--with signet` turns it on
+
+The bridge's VERIFIER keys are on every account either way (5 × ~2 KB in the wave-2 maintenance
+update). `AA_WITH_BRIDGE` decides whether the IMAGE keeps the five bridge circuits' and the vault's
+flow circuits' PROVER keys — about 1.2 GB — and without them `bridge_deposit_start_with_evm` cannot
+be proved, so the tab can only say "unavailable". `up.sh --with signet` therefore exports
+`AA_WITH_BRIDGE=1`; the compose default stays `0`, so `--with aa` alone is the image it always was,
+and the FIRST `--with signet` build after a bridge-less one rebuilds the image's last stages.
 
 ## umbra-evm — read-only Ethereum JSON-RPC (profile `evm`)
 
@@ -1323,7 +1573,7 @@ prose is kept because it explains *why* each row is what it is.
 | Offer poster (the book fills itself) | `poster` — **needs `faucet` too** | health `http://127.0.0.1:10803/health` | same repo/commit — **selects** an existing coin of exactly `OFFER_POSTER_GIVE_AMOUNT` and posts one takeable offer per interval, paying fees with its own DUST. It does not mint: inventory is finite and comes from `faucet-mint`, and both token ids are resolved by symbol out of `registry-env`'s file. Dedicated seed (`0ffe…`), NIGHT from a `poster-fund` one-shot; durable journal on its own volume |
 | zswap-da frontend (swap SPA) | `frontend` — the Faucet link needs `faucet` | `http://127.0.0.1:10600` | [`effectstream/effectstream@400880ce`](https://github.com/effectstream/effectstream/tree/400880ceb6814738d1ae193dae18ad5128922edc/templates/zswap-da), branch **`midnight-1`** — fetched directly at build time and adapted by the checked-in 8-file `images/zswap-da/ledger-v9.patch`; no frontend source tree is committed. **No contract and no compactc in this image**: upstream [PR #922](https://github.com/effectstream/effectstream/pull/922) removed the template's local faucet contract, as kernel #69/#70 removed the kernel's, so the patch is now purely the 1.x → 2.x dependency port plus six ledger-v8 → v9 modules. Test tokens come from the `faucet` profile and the SPA's top-nav **Faucet** link opens this stack's `faucet-site` at `?network=undeployed`. Whole-coin display reads each token's real `decimals` off `GET /v1/known-tokens` (8/18/6/6/6/8 for the six local tokens), and the page is **usable in a browser on ANY port block**: the image injects `window.MIDNIGHT_HOST_PORTS`, `window.MIDNIGHT_NETWORK_ID` and `window.FAUCET_HOST_PORT` at container start and `browser-network-urls.patch` resolves the kernel's compose-internal URIs and the faucet origin through them |
 | Shielded NIGHT dApp (NIGHT ⇄ sNight) | `shielded-night` | `http://127.0.0.1:10900` | [effectstream/shielded-night](https://github.com/effectstream/shielded-night) — branch **`main`** @ `1337afc3…`, the merge of [PR #16](https://github.com/effectstream/shielded-night/pull/16), which brought the `undeployed` lane onto this dApp's 2.x profile and retired the `ledger-v9` branch this profile used to track. `main` carries both generations; this profile selects 2.x twice — `MN_ENV=undeployed` for the one-shots, `UNDEPLOYED_PROTOCOL=midnight-2.x` in the injected `/config.js`, which labels the page's local network **`Local (undeployed · 2.x)`**. Contract, harness and page from ONE commit, no patch of any kind; the **v2** contract is **recompiled in-image** with SHA-256-pinned compactc `0.34.0` and the build fails unless the output is byte-identical to the committed `contracts/v2/managed/` (the tree's 1.x contract is 0.31.1 and is shipped as committed — this stack never selects a 1.x network). Deploys ONCE per stack (`shielded-night-deploy` one-shot, address persisted on a volume and injected into the page as `/config.js`). With `--with offerfiles` a second one-shot names **this stack's** sNight colour in the kernel's token registry — the schema seeds *preview's*, and the colour follows the contract address |
-| AA Manager + Minter | `aa` | deploy receipt in the `aa-out` volume | [acedward/AA-midnight-evm-experiment-v3](https://github.com/acedward/AA-midnight-evm-experiment-v3) — `main @ 41de69de` (sha-pinned; key-breaking merges need a redeploy) · [PR #12](https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12) split `manager.compact` into a preset + nine modules. Compiled in-image with the compactc `0.34.0` / compact-runtime `0.19.0` the kernel tree still pins — ONE toolchain, which is what closed the old two-toolchain hazard, and which must now also match the runtime the COPIED mint-test-tokens artifacts were built for, since the console loads those beside the Manager's — **except `execute`**, which comes from [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release **`v0.2.0`** by default (`AA_ZKIR_SOURCE=minocrab`): the same contract transcribed into MinoCrab, a third-party Rust compiler, landing `execute` at **k = 18 / 211,047 rows** instead of compactc's k = 19 / 382,780 — half the proving key (544 MiB vs 1.14 GB), roughly half the proving time. The image downloads the release's files and takes them by SHA-256; the identity is `sha256(SHA256SUMS)` = `4a8c0183…`, **never the tag**. **Unaudited compiler; equivalence TESTED, NOT PROVEN** (59 differential tests, 5,128 tamper probes, 0 acceptance disagreements) — dev chains only, see [KNOWN-LIMITATIONS](docs/KNOWN-LIMITATIONS.md). `AA_ZKIR_SOURCE=compactc` opts out; `minocrab-all` takes all nine circuits |
+| Passport accounts (contract, vault, singleton, client) | `aa` | deploy receipt in the `aa-out` volume | [acedward/passport](https://github.com/acedward/passport) — branch `00034-passport-evm-account-zswap` @ `ee1ffeda` (sha-pinned as `PASSPORT_REF`; a change to any contract in the tree is key-breaking and needs a redeploy). The whole CALL TREE is compiled in-image with the compactc `0.34.0` / compact-runtime `0.19.0` the kernel tree pins — ONE toolchain, and here it is a hard requirement rather than hygiene: the compiler embeds a fingerprint of each CALLEE's verifier key and the runtime compares it, so the singleton, the vault that calls it and the account that calls the vault must come out of one compiler. It must also match the runtime the COPIED mint-test-tokens artifacts were built for, since the console loads those beside the account's. The one external artefact downloaded is the [`@sig-net/midnight`](https://www.npmjs.com/package/@sig-net/midnight) npm tarball — two `.compact` SOURCE files, taken by URL and verified against `SIGNET_PKG_SHA256` = `0e7414d5…`, never by the version. **Replaces the AA-v3 Manager + Minter and the MinoCrab `execute` artifact, all three retired** |
 | **AA web console** (this stack's UI) | `aa` | **`http://127.0.0.1:10700`** | this repo (`images/aa-contracts/console/`) — tabs: AA+EVM, AA+Midnight (preview), COW solver feed, infrastructure canvas, Memos, Repos |
 | `@effectstream` packages | (npm) | — | [effectstream/effectstream](https://github.com/effectstream/effectstream) — the versions the kernel pin resolves: `@effectstream/celestia`, `midnight-contracts`, `orchestrator` `@0.200.2` · `mip-zswap-offer@0.4.0-v9.0` · `@midnightntwrk/ledger-v9@1.0.0-rc.3` (a root `overrides` entry, so ONE ledger WASM per process) · midnight-js network-id `5.0.0-beta.6` |
 | Midnight Intents relay | (dropped) | — | [shieldedtech/midnight-intents-swaps](https://github.com/shieldedtech/midnight-intents-swaps) *(upstream)* — pinned `d444c83` by the solver branch; NOT run (the solver observes only). `solver-sink` stands in for its RECEIVE half, plus the one public route the monitor reads (`GET /tokens`) |

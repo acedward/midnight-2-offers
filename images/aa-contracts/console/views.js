@@ -6,6 +6,7 @@
 
 const HEAD_NOTES = {
   aa: "The AA Wallet — your browser EVM wallet signs EIP-712 actions; the stack's relay proves them (~1–2 min) and submits to Midnight. The wallet never sees a Midnight key.",
+  bridge: "The ERC20 bridge: Sepolia tokens become shielded Midnight coins in your account or in any Midnight wallet, and go back. The MPC signs the Ethereum side; this stack holds both halves of its root key, so the bridge is demo-grade by construction.",
   aainfra: "The AA plumbing: the stack's contracts and wallets, token faucets and funding, and every account on the Manager.",
   solver: "The offer book, and the ported COW solver observed live over its relay WebSocket boundary — received by a demo sink that can never send it work.",
   infra: "Every component of the compose stack, probed over the internal network by the console's relay service.",
@@ -14,7 +15,7 @@ const HEAD_NOTES = {
   faucet: "The local test-token faucet: six issuers deployed onto THIS chain, and the site that mints from them. It needs an injected DApp-connector wallet — it has none of its own.",
   repos: "The exact branches, commits and pull requests every piece of this stack is built from.",
 };
-const VIEW_NAMES = ["aa", "aainfra", "aamid", "solver", "faucet", "infra", "memos", "repos"];
+const VIEW_NAMES = ["aa", "bridge", "aainfra", "aamid", "solver", "faucet", "infra", "memos", "repos"];
 
 // One lazy iframe, shared by the two tabs that embed another site of this stack. The src is
 // set on FIRST activation only, and it comes from /api/info rather than from a constant: both
@@ -293,21 +294,22 @@ const REPOS = [
     notes: [],
   },
   {
-    repo: "acedward/AA-midnight-evm-experiment-v3", url: "https://github.com/acedward/AA-midnight-evm-experiment-v3",
-    role: "AA Manager + test Minter contracts, EIP-712 codec (baked as /aa/aalib)",
-    ref: "main @ 41de69de (sha-pinned)",
+    repo: "acedward/passport", url: "https://github.com/acedward/passport",
+    role: "THE ACCOUNT MODEL — a fork of midnightntwrk/passport with a third authorisation arm whose device is an Ethereum EOA (`evm`), an open ZSwap offer circuit, a witness-free ERC20 bridge vault, and the TypeScript client this console runs on. One contract PER USER; there is no shared Manager any more",
+    ref: "00034-passport-evm-account-zswap @ ee1ffeda (sha-pinned as PASSPORT_REF)",
     notes: [
-      ["PR #12", "https://github.com/acedward/AA-midnight-evm-experiment-v3/pull/12", "manager.compact split into a preset plus nine modules — BREAKING: the ledger slot order changed, so this pin needed a redeploy"],
-      ["", "", "compiled in-image with compactc 0.34.0 / compact-runtime 0.19.0 — the pin still travels with the kernel tree, and the RUNTIME expectation now comes from mint-test-tokens contracts/v2, whose committed artifacts this image also ships and the console imports"],
+      ["", "", "the image compiles the whole CALL TREE with ONE compactc 0.34.0 — the Signet singleton, then the vault that calls it, then the account that calls the vault — because the compiler embeds a fingerprint of each callee's verifier key and the runtime compares it"],
+      ["", "", "every gated `evm` circuit is k=18 (keccak + EIP-712 + ECDSA in-circuit); the offer circuit's prover key is 570 MB, which is why the image keeps a NAMED set of prover keys rather than all of them"],
+      ["", "", "an account deploys in TWO waves: eight operations (the node's measured ceiling) then a maintenance update carrying the rest and retiring the maintenance authority"],
     ],
   },
   {
-    repo: "acedward/AA-midnight-evm-experiment-minocrab", url: "https://github.com/acedward/AA-midnight-evm-experiment-minocrab",
-    role: "DEFAULT source of the Manager's `execute` artifact — the contract transcribed into MinoCrab, a third-party Rust compiler: k=18 / 211,047 rows instead of compactc's k=19 / 382,780, half the proving key, roughly half the proving time",
-    ref: "release v0.2.0 @ 7cdfa5b0 (identified by sha256(SHA256SUMS) 4a8c0183…, never by the tag)",
+    repo: "sig-net/midnight-examples", url: "https://github.com/sig-net/midnight-examples",
+    role: "UPSTREAM of the ERC20 vault the fork rewrote to be witness-free (a callee cannot run a witness, so the original could never be called by an account). MIT",
+    ref: "examples/erc20-vault @ 11482cdc — forked, not depended on",
     notes: [
-      ["", "", "the image downloads execute.{zkir,bzkir,verifier} (+ .prover where it proves) from the release and verifies them against the pinned SHA256SUMS; set AA_ZKIR_SOURCE=compactc to opt out, minocrab-all for all nine circuits"],
-      ["", "", "equivalence-tested against compactc (59 differential tests, 26 scenarios, 5,128 tamper probes, 0 acceptance disagreements) — TESTED, NOT PROVEN; unaudited compiler, dev chains only"],
+      ["", "", "the Signet protocol module @sig-net/midnight 0.22.0-rc.1 IS depended on, and only for two .compact sources: the image fetches its npm tarball by URL and verifies SHA-256 0e7414d5…"],
+      ["", "", "the vault is deployed and initialised once per stack; on a localnet its MPC root key is a STUB derived from AA_DOMAIN, so the bridge circuits are deployed but cannot move funds"],
     ],
   },
   {
@@ -477,31 +479,44 @@ function renderRepos() {
     tr.append(tdRepo, tdRole, tdRef, tdNotes);
     tbody.append(tr);
   }
-  // The table above is what the repository CLAIMS. This one line is what the running
-  // image actually has: the zkir-source receipt, read from /api/info, which the relay
-  // built by hashing the key files on its own disk. If a stale image is serving this
+  // The table above is what the repository CLAIMS. These lines are what the RUNNING image
+  // actually has, read from /api/info: the fork commit it compiled, the compiler that did
+  // it, and the artefact fingerprints the deploy recorded. If a stale image is serving this
   // page, the two disagree here and nowhere else.
   fetch("/api/info").then((r) => r.json()).then((info) => {
-    const z = info?.zkirSource;
-    if (!z) return;
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = 4;
-    td.style.whiteSpace = "normal";
-    td.style.paddingTop = "10px";
-    if (z.source === "compactc") {
-      td.textContent = "LIVE IN THIS IMAGE — Manager circuits: compactc (AA_ZKIR_SOURCE=compactc; the MinoCrab release is not used).";
-    } else {
-      const ks = Object.entries(z.circuits ?? {})
-        .map(([n, c]) => `${n} k=${c.k}/${(c.rows ?? 0).toLocaleString("en-US")} rows${c.verifierMatches ? "" : " ⚠ VERIFIER DOES NOT MATCH THE RELEASE"}`)
-        .join(" · ");
-      td.textContent =
-        `LIVE IN THIS IMAGE — Manager circuits from MinoCrab release ${z.release} (${z.portCommit.slice(0, 12)}…), ` +
-        `taken by sha256(SHA256SUMS) ${z.sumsSha256.slice(0, 12)}…, keys for contract ${z.contractCommit.slice(0, 12)}…: ${ks}. ` +
-        "UNAUDITED third-party compiler — equivalence tested, not proven. Dev chains only.";
+    const b = info?.build;
+    if (!b) return;
+    const add = (text) => {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 4;
+      td.style.whiteSpace = "normal";
+      td.style.paddingTop = "10px";
+      td.textContent = text;
+      tr.append(td);
+      tbody.append(tr);
+    };
+    add(
+      `LIVE IN THIS IMAGE — passport ${String(b.passportCommit).slice(0, 12)}…, compiled with compactc `
+      + `${b.compactcVersion} for compact-runtime ${b.compactRuntimeVersion}; Signet module `
+      + `${b.signetPkgVersion} (tarball sha256 ${String(b.signetPkgSha256).slice(0, 12)}…); `
+      + `${(b.proverKeys ?? []).length} prover keys kept${b.withBridge ? ", bridge included" : ", bridge circuits deployed but not provable here"}.`,
+    );
+    const a = info?.artefacts ?? {};
+    const parts = Object.entries(a).map(([n, v]) => `${n} ${String(v.fingerprint).slice(0, 16)}… (${v.verifierKeys} keys)`);
+    if (parts.length) {
+      add(
+        "ARTEFACT FINGERPRINTS (spec FR-022 — an account is compiled against ONE vault build, and a "
+        + "rebuilt vault orphans every account bound to the old one): " + parts.join(" · "),
+      );
     }
-    tr.append(td);
-    tbody.append(tr);
+    if (info?.mpc?.provenance === "derived-from-AA_DOMAIN") {
+      add(
+        "⚠ THE VAULT'S MPC ROOT KEY IS A LOCAL STUB derived from AA_DOMAIN: its private half is public, "
+        + "no MPC runs on this stack, and the bridge circuits are deployed but cannot move funds. "
+        + "AA_MPC_ROOT_SECRET overrides it.",
+      );
+    }
   }).catch(() => {});
 }
 

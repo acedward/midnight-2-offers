@@ -189,16 +189,22 @@ KERNEL_EXPECTED="${KERNEL_REF:-5d794f9a27f6d65529bf176650405f740531d430}"
 # Provenance now, not a build input — and read from the matrix rather than duplicated here.
 INDEXER_EXPECTED="$(pin 'components[indexer-standalone].sourceProvenance.commit')"
 SOLVER_EXPECTED="${SOLVER_REF:-5d794f9a27f6d65529bf176650405f740531d430}"
-AA_EXPECTED="${AA_REF:-41de69ded41ff933fe0db8697b264dc46fc6e0cb}"
-# The MinoCrab port's release: three DIFFERENT kinds of identity, and only the
-# first is a commit. `MINOCRAB_SUMS_SHA256` is the one that decides which bytes
-# the image took — the tag is a locator and the commit says which tree produced
-# them, but a release could in principle be re-cut from the same commit.
-MINOCRAB_EXPECTED="${MINOCRAB_REF:-7cdfa5b0c994a70502ab2b564b509c8abe2f7efb}"
-MINOCRAB_SUMS_EXPECTED="${MINOCRAB_SUMS_SHA256:-4a8c0183cd887e3ca2d3446f196fab1102540e09d6e0e8ae9c1859532d8dd7ac}"
-MINOCRAB_RELEASE_EXPECTED="${MINOCRAB_RELEASE:-v0.2.0}"
-AA_ZKIR_SOURCE_EXPECTED="${AA_ZKIR_SOURCE:-minocrab}"
+# The Passport fork: the account contract, the witness-free ERC20 vault, the vendored Signet
+# singleton, the test faucet and the TypeScript client, all compiled INSIDE the aa image. A
+# deployed account IS its verifier keys, so this is the pin that decides whether the console
+# in front of an operator can talk to the accounts on this chain at all.
+PASSPORT_EXPECTED="${PASSPORT_REF:-ee1ffedab40f1abe8f3041a9423ae24e89b90bc2}"
+# The Signet protocol's Compact module. TWO kinds of identity and only the second decides
+# which bytes: the version is the URL, the SHA-256 is the tarball. (They replaced the retired
+# MinoCrab release's three, project 00034.)
+SIGNET_PKG_VERSION_EXPECTED="${SIGNET_PKG_VERSION:-0.22.0-rc.1}"
+SIGNET_PKG_SHA256_EXPECTED="${SIGNET_PKG_SHA256:-0e7414d52b225e31def3d776cae376ff1e6c2bf7b592f02dc422b5bb6fb6fd71}"
 UMBRA_EXPECTED="${UMBRA_REF:-5a46348585ae23994cc408a06f6ef18a78b06273}"
+# The `signet` profile's MPC responder: OUR FORK of sig-net/solana-signet-program. The commit is
+# the image's whole identity here — it is upstream `fakenet-v0.23.0` plus two local patches, and
+# an image built from upstream instead would look identical, start cleanly, and then fail to
+# attest on a free-tier RPC while answering every caller on the singleton.
+SIGNET_FAKENET_EXPECTED="${SIGNET_FAKENET_REF:-a1a7798f35cab07d5279cfd9785777944b94a572}"
 FRONTEND_EXPECTED="${FRONTEND_REF:-400880ceb6814738d1ae193dae18ad5128922edc}"
 # effectstream/shielded-night branch `main` @ the merge of upstream PR #16, which brought the
 # `undeployed` lane onto this dApp's 2.x profile (MN_ENV=undeployed on the contracts/v2
@@ -226,39 +232,41 @@ if present solver; then
   assert_pin solver "${SOLVER_IMAGE:-midnight-2-offers/cow-solver:local}" /app/.solver-commit "$SOLVER_EXPECTED"
   assert_pin solver-kernel-base "${SOLVER_IMAGE:-midnight-2-offers/cow-solver:local}" /app/.kernel-commit "$KERNEL_EXPECTED"
 fi
-# The Manager's zkir artifact provenance, asserted on BOTH aa images. `execute`
-# (or all nine, with minocrab-all) comes from a published release identified by
-# the SHA-256 of its SHA256SUMS; a stale image that predates the re-pin reads back
-# the wrong hash here, which is precisely the class verify-source-pins exists for.
-assert_zkir_source() { # <label> <image>
+# ── the aa image (ONE image now: deploy, console and e2e all run it) ────────
+#
+# It used to be two images with different prover-key pruning, and a `zkir source` label
+# recording which compiler produced the AA-v3 Manager's `execute`. There is no `execute`, the
+# MinoCrab port is retired, and the prover keys an image keeps are NAMED — so what is asserted
+# here is the fork commit, the toolchain pin, the copied issuer artifacts, and the identity of
+# the one external artefact the compile downloads.
+assert_aa_image() { # <label> <image>
   local label="$1" image="$2"
-  assert_label "${label} zkir source" "$image" /aa/.aa-zkir-source "$AA_ZKIR_SOURCE_EXPECTED"
-  [[ "$AA_ZKIR_SOURCE_EXPECTED" == "compactc" ]] && return 0
-  assert_pin   "${label} minocrab"        "$image" /aa/.minocrab-commit      "$MINOCRAB_EXPECTED"
-  assert_label "${label} minocrab release" "$image" /aa/.minocrab-release     "$MINOCRAB_RELEASE_EXPECTED"
-  assert_label "${label} minocrab SHA256SUMS" "$image" /aa/.minocrab-sums-sha256 "$MINOCRAB_SUMS_EXPECTED"
+  assert_pin   "${label}"                    "$image" /aa/.passport-commit         "$PASSPORT_EXPECTED"
+  # The kernel tree is still cloned into this image, but ONLY for the compactc pin and its
+  # checksums. The label is kept because a stale aa image built against a pre-#69 kernel is
+  # exactly what this file exists to catch.
+  assert_pin   "${label}-kernel-toolchain"   "$image" /aa/.kernel-commit           "$KERNEL_EXPECTED"
+  # The console mints through the LOCAL issuers, whose COMMITTED artifacts this image copies.
+  # Their verifier keys are what the `faucet` profile registered on chain, so an image built
+  # from a different mint-test-tokens commit would prove against keys this stack never
+  # deployed. Same pin as compose/faucet.yml, asserted on the running image.
+  assert_pin   "${label}-mint-test-tokens"   "$image" /aa/.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
+  assert_label "${label} signet module"      "$image" /aa/.signet-pkg-version      "$SIGNET_PKG_VERSION_EXPECTED"
+  assert_label "${label} signet tarball"     "$image" /aa/.signet-pkg-sha256       "$SIGNET_PKG_SHA256_EXPECTED"
 }
 
 if present aa-deploy; then
-  assert_pin aa "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.aa-commit "$AA_EXPECTED"
-  # The kernel tree is still cloned into this image, but ONLY for the compactc pin
-  # and its checksums — the offer-files contract it used to compile is gone. The
-  # label is kept because a stale AA image built against a pre-#69 kernel is
-  # exactly what this file exists to catch.
-  assert_pin aa-kernel-toolchain "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.kernel-commit "$KERNEL_EXPECTED"
-  # THE NEW ONE, and the important one: the console mints through the LOCAL
-  # issuers, whose COMMITTED artifacts this image copies. Their verifier keys are
-  # what the `faucet` profile registered on chain, so an AA image built from a
-  # different mint-test-tokens commit would prove against keys this stack never
-  # deployed. Same pin as compose/faucet.yml, asserted on the running image.
-  assert_pin aa-mint-test-tokens "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" /aa/.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
-  assert_zkir_source aa "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}"
+  assert_aa_image aa "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}"
 fi
 if present aa-console; then
-  assert_pin aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.aa-commit "$AA_EXPECTED"
-  assert_pin aa-console-kernel-toolchain "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.kernel-commit "$KERNEL_EXPECTED"
-  assert_pin aa-console-mint-test-tokens "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}" /aa/.mint-test-tokens-commit "$MINT_TEST_TOKENS_EXPECTED"
-  assert_zkir_source aa-console "${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
+  # Defaults to the SAME tag as aa-deploy since 00034; an operator who still overrides
+  # AA_CONSOLE_IMAGE gets it asserted separately, which is the point of naming it here.
+  aa_console_image="${AA_CONSOLE_IMAGE:-${AA_IMAGE:-midnight-2-offers/aa-contracts:local}}"
+  if [[ "$aa_console_image" != "${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" ]] || ! present aa-deploy; then
+    assert_aa_image aa-console "$aa_console_image"
+  else
+    ok "aa-console runs the same image as aa-deploy (one aa-contracts image since 00034)"
+  fi
 fi
 # ── ONE COMPACT TOOLCHAIN ACROSS THE IMAGES (infra issues/00011) ────────────
 #
@@ -269,18 +277,23 @@ fi
 # issues/00011 was opened about. At KERNEL_REF 5d794f9 the kernel image compiles
 # NOTHING and ships no compactc, so that comparison has no left-hand side.
 #
-# The invariant it protected is still real, and it now has three parties:
-#   1. the two AA images must share one compactc (they compile the same Manager
-#      and Minter, and `aa-console` loads what `aa-deploy` deployed);
-#   2. each AA image's INSTALLED @midnight-ntwrk/compact-runtime must equal what
-#      its compactc emits — asserted inside the image at build time;
-#   3. …and must equal the runtime the COPIED mint-test-tokens artifacts were
-#      built for, which is the cross-repo half and also an in-image assertion.
+# The invariant it protected is still real, and since 00034 it has FOUR parties, because the
+# aa image compiles a whole CALL TREE rather than one contract:
+#   1. every aa image in the stack must share one compactc. That used to be two images
+#      compiling the same Manager; it is one image now, so (1) is nearly vacuous — but it
+#      still catches an operator who overrides AA_CONSOLE_IMAGE with a stale tag;
+#   2. the account, the ERC20 vault and the Signet singleton must be compiled by the SAME
+#      compactc, because the compiler embeds a fingerprint of each callee's verifier key and
+#      the runtime compares it (ContractInterfaceMismatchError). They are, by construction:
+#      one RUN in one stage compiles all three;
+#   3. the image's INSTALLED @midnight-ntwrk/compact-runtime must equal what its compactc
+#      emits, and there must be exactly ONE copy of it — asserted inside the image;
+#   4. …and must equal the runtime the COPIED mint-test-tokens artifacts were built for AND
+#      the one the Passport fork declares, which is the cross-repo half and also in-image.
 #
-# (2) and (3) cannot be re-checked from here without shipping more receipts, and
-# an image that failed them does not exist. (1) can, and it is the one a stale
-# image reintroduces: two AA images from different builds. Each records the
-# version it used, so this compares images rather than restating a constant.
+# (2), (3) and (4) cannot be re-checked from here without shipping more receipts, and an
+# image that failed them does not exist. (1) can, and each image records the version it
+# used, so this compares images rather than restating a constant.
 read_toolchain() { # <image> <path>
   docker run --rm --entrypoint cat "$1" "$2" 2>/dev/null | tr -d '\r\n'
 }
@@ -288,7 +301,7 @@ assert_one_toolchain() {
   local base="" ver image label entry bad=0 seen=0
   for entry in \
     "aa:${AA_IMAGE:-midnight-2-offers/aa-contracts:local}" \
-    "aa-console:${AA_CONSOLE_IMAGE:-midnight-2-offers/aa-contracts:console}"
+    "aa-console:${AA_CONSOLE_IMAGE:-${AA_IMAGE:-midnight-2-offers/aa-contracts:local}}"
   do
     label="${entry%%:*}"; image="${entry#*:}"
     ver="$(read_toolchain "$image" /aa/.compactc-version)"
@@ -299,12 +312,12 @@ assert_one_toolchain() {
       continue
     fi
     if [[ "$ver" != "$base" ]]; then
-      err "compact toolchain: ${label} image compiled with compactc ${ver}, the other AA image with ${base}"
+      err "compact toolchain: ${label} image compiled with compactc ${ver}, the other aa image with ${base}"
       bad=$(( bad + 1 ))
     fi
   done
   if (( seen == 0 )); then
-    err "compact toolchain: no AA image carries /aa/.compactc-version"
+    err "compact toolchain: no aa image carries /aa/.compactc-version"
     FAILURES=$(( FAILURES + 1 ))
     return
   fi
@@ -333,6 +346,21 @@ fi
 
 if present evm-rpc; then
   assert_pin umbra-evm "${EVM_IMAGE:-midnight-2-offers/umbra-evm:local}" /app/.umbra-commit "$UMBRA_EXPECTED"
+fi
+if present signet-fakenet; then
+  assert_pin signet-fakenet "${SIGNET_FAKENET_IMAGE:-midnight-2-offers/signet-fakenet:local}" \
+    /app/.signet-fakenet-commit "$SIGNET_FAKENET_EXPECTED"
+  # …and the two patches themselves, read off the image's own source tree. The commit label is
+  # written by the build and would survive a Dockerfile that stopped applying them; these two
+  # greps are the thing that cannot.
+  if docker run --rm --entrypoint sh "${SIGNET_FAKENET_IMAGE:-midnight-2-offers/signet-fakenet:local}" -c \
+       'grep -q replayCallOutput /app/fakenet-signer/src/modules/ethereum/EthereumMonitor.ts &&
+        grep -q MIDNIGHT_CALLER_ALLOWLIST /app/fakenet-signer/src/config/EnvConfig.ts' >/dev/null 2>&1; then
+    ok "the signet responder carries both local patches (eth_call replay + caller allow-list)"
+  else
+    err "the signet responder image is MISSING one of the two local patches — it was built from upstream, not from the fork"
+    FAILURES=$(( FAILURES + 1 ))
+  fi
 fi
 if present frontend; then
   assert_pin zswap-da "${FRONTEND_IMAGE:-midnight-2-offers/zswap-da:local}" /.zswap-da-commit "$FRONTEND_EXPECTED"

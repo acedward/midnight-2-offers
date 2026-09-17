@@ -437,11 +437,36 @@ complete URL for a faucet behind a proxy or on another host.
 brand-new EMPTY wallet on every page load. Since #922 removed the SPA's mint, an empty wallet is one
 that can never acquire anything — the faucet site drives an injected extension wallet, and an
 in-page wallet is not one. The stack therefore fixes it (`FRONTEND_WALLET_SEED`, wallet `demo-spa`),
-the entrypoint refuses anything that is not 64 lowercase hex with **exit 78** (a truncated seed is a
-DIFFERENT wallet, which looks exactly like "the mint did not work"), and `faucet-mint`'s default
+the entrypoint refuses anything that is not lowercase hex of a valid length with **exit 78** (a
+truncated seed is a DIFFERENT wallet, which looks exactly like "the mint did not work"), and
+`faucet-mint`'s default
 `spa` grant prefunds it with one whole twETH — the token the poster WANTS, so the SPA can take a
 poster offer immediately. `FRONTEND_WALLET_SEED=` restores the random wallet and
 `FAUCET_MINT_GRANTS=` removes the grant.
+
+**Two lengths are valid** (project 00035). 64 hex is upstream's 32-byte seed. **128 hex is a BIP-39
+master seed**, and passing one makes the in-page wallet the *same wallet* a browser wallet shows
+for that mnemonic — same shielded address, same unshielded address, same dust address. Nothing in
+the bundle changes for it: `connectLocal(seed)` hands the string to `buildWalletFacade`, which does
+`HDWallet.fromSeed(Buffer.from(seed,'hex'))` and then the standard `m/44'/2400'/0'/<role>'/0'`
+roles — exactly what `tools/mnemonic-wallets/derive.mjs` (and Lace) do, on the same
+`@midnightntwrk/wallet-sdk-hd` pin. `scripts/fund-wallet.sh` already funds 64- *or* 128-hex seeds,
+so the stack funds such a wallet with no extra step.
+
+To derive one **without writing the mnemonic anywhere**, pipe it in and keep only the seed:
+
+```bash
+# reads the phrase from a 600-mode file you already hold; nothing is echoed and nothing is stored
+./tools/mnemonic-wallets/derive.sh --json --mnemonic "$(cat ~/.config/<yours>.txt)" \
+  | python3 -c 'import json,sys; print("FRONTEND_WALLET_SEED=" + json.load(sys.stdin)[0]["masterSeed"])' \
+  >> .env
+```
+
+⚠ **A master seed IS the wallet, and the page serves it in clear.** `/config.js` is readable by
+anything that can reach the frontend port, so a stack seeded this way is **local-only**: keep
+`BIND_ADDR=127.0.0.1`, do not put it behind a proxy or on a shared host, and prefer a wallet whose
+contents you would not mind losing. `docs/KNOWN-LIMITATIONS.md` says the same where somebody
+auditing the stack will read it.
 
 `FAUCET_PORT` is injected whether or not the `faucet` profile is up, because the `frontend`
 fragment deliberately does not depend on it — it mounts nothing of that profile's and compose
@@ -510,11 +535,13 @@ ENVIRONMENT and never in the file passed to `--env-file`: that file is regenerat
 Its step 1 is a set of OFFLINE gates that need no daemon, no network and no registry — the
 artifact-decision matrix, the fetch pins, the proof-server mirror record, the rendered compose
 pins, and `verify-pin-defaults.sh`, which fails when any two defaults of one SOURCE pin
-(`KERNEL_REF`, `SOLVER_REF`, `FRONTEND_REF`, `AA_REF`, `UMBRA_REF`, `SHIELDED_NIGHT_REF`,
-`MINOCRAB_REF`) disagree anywhere in `compose/`, `images/`, `scripts/` or `.env.example`. It
-covers two pins that are not commits at all and would otherwise go unchecked: the AA image's
-`MINOCRAB_SUMS_SHA256` (a 64-hex release identity) and `MINOCRAB_RELEASE` (a `vX.Y.Z` tag) —
-a pin with two values is not a pin whatever shape it has. That check exists
+(`KERNEL_REF`, `SOLVER_REF`, `FRONTEND_REF`, `PASSPORT_REF`, `UMBRA_REF`,
+`SHIELDED_NIGHT_REF`, `MINT_TEST_TOKENS_REF`) disagree anywhere in `compose/`, `images/`,
+`scripts/` or `.env.example`. It covers two pins that are not commits at all and would
+otherwise go unchecked: the aa image's `SIGNET_PKG_SHA256` (the 64-hex identity of the
+`@sig-net/midnight` tarball it compiles two `.compact` sources out of) and
+`SIGNET_PKG_VERSION` (the version that only says where to look) — a pin with two values is
+not a pin whatever shape it has. That check exists
 because the repository once shipped a split kernel pin, and every OTHER check compares a running
 image against ONE of the copies — so the failure read as a stale image rather than as the
 configuration defect it was. Each gate that has a `--self-test` runs it, so a check that stopped
@@ -557,9 +584,14 @@ docker compose … run --rm price-feed --once   # one cycle now; exit 0/2/64
 1 WBTC ≈ 32 WETH from day one. The profile buys **fresh** prices, not working ones. That is why
 it is opt-in here, and why upstream keeps its own copy behind `--profile prices`.
 
-**`COINGECKO_API_KEY` is the only genuine secret this repository uses.** Every other "secret"
-here — the wallet seeds, `SOLVER_STATUS_AUTH_TOKEN`, the Celestia auth token — is public dev
-material and documented as such. This one is a third-party credential on a metered quota, so:
+**`COINGECKO_API_KEY` and `SIGNET_EVM_RPC_URL` are the genuine secrets this repository asks an
+operator for**, and `FRONTEND_WALLET_SEED` becomes one the moment it is a real wallet's master seed
+(see *The in-page wallet's seed*). Everything else called a "secret" here — the wallet seeds,
+`SOLVER_STATUS_AUTH_TOKEN`, the Celestia auth token — is public dev material and documented as
+such. The rules below were written for the CoinGecko key and apply to all three; `SIGNET_EVM_RPC_URL`
+is covered again under the `signet` profile in [COMPONENTS.md](COMPONENTS.md), and
+`scripts/check-no-secrets.sh` (run by `ci-check.sh` step 1) greps the tracked tree for the shape of
+every one of them. This one is a third-party credential on a metered quota, so:
 
 - it has **no default anywhere** — not in `compose/prices.yml`, not in a Dockerfile, not in
   `.env.example` (which carries the variable NAME and a warning, and no value);
@@ -592,6 +624,95 @@ something needs.
 (`PRICE_FEED_BATCH_SIZE`, default 50), and the default interval is 24 h. A cycle also runs
 immediately at start, which is what `up.sh` waits for. A `429` stops a cycle where it stands and
 keeps everything it already wrote.
+
+## Running the ERC20 bridge (profile `aa` + `signet`)
+
+```bash
+./up.sh --with aa --with signet --with offerfiles --with frontend   # Bridge tab at :10700
+./scripts/aa-bridge-dryrun.sh                    # 1. does the responder answer AT ALL?  (free)
+./scripts/aa-bridge-e2e.sh --evidence ./evidence # 2. the full round trip                (SPENDS)
+./scripts/aa-story-e2e.sh  --evidence ./evidence # 3. the seven-step story                (SPENDS)
+```
+
+**Run the dry run first, every time, on a stack that has never bridged.** It raises ONE signature
+request for a random throwaway recipient and waits for the MPC's signature. Nothing is funded and
+nothing is broadcast, so it costs a Midnight transaction's DUST and no gas at all — and it answers
+the one question that otherwise fails minutes into a run that has already put real tokens at a
+deposit address: *can the responder prove its own `respond` against the proof server it was given?*
+(project 00035 question Q11). Its report is `/aa/out/aa-bridge-dryrun.json`.
+
+**The two operator secrets.** The bridge needs the same `SIGNET_EVM_RPC_URL` the responder uses —
+`compose/aa.yml` feeds it to the console as `AA_BRIDGE_EVM_RPC_URL`, so the console's balance reads
+and the MPC's broadcasts can never be pointed at different chains — and, for the e2e ONLY, a funder
+private key. Neither is ever an argument:
+
+| secret | where it lives | who sees it |
+|---|---|---|
+| `SIGNET_EVM_RPC_URL` | the uncommitted env file | `signet-fakenet` and `aa-console`. Never echoed in `/api/info`, in a bridge record or in a log line |
+| `SEPOLIA_FUNDER_KEY` | `~/.config/aa-00034/sepolia.env`, mode 600 | `scripts/aa-bridge-e2e.sh` and `scripts/aa-story-e2e.sh`, each of which writes it into a mode-600 file under a private temp directory and mounts that file into the e2e container. **Never `-e KEY=value`**: a `docker compose run` command line is visible in `ps` on a shared machine. Removed on exit, whatever happens |
+
+**The console has no key and no field that would take one** (spec FR-015). In the browser flow the
+operator sends the tokens and the gas from their own wallet to the address the Bridge tab shows.
+
+**Caps.** `AA_BRIDGE_CAP_USDC` (5), `AA_BRIDGE_CAP_WEENUS` (50), `AA_BRIDGE_CAP_ETH` (0.05), in
+DECIMAL units, summed over the console store's lifetime — which is the `aa-out` volume's lifetime,
+so `./down.sh -v` resets them along with the chain. A token with no cap is REFUSED; set
+`AA_BRIDGE_CAP_<SYMBOL>` or a non-zero `AA_BRIDGE_CAP_DEFAULT` to bridge anything else.
+
+**One rule that will bite an operator who does not know it.** Every deposit address is derived from
+the vault's CONTRACT address, so `./down.sh -v` invalidates all of them. Fund, start, relay and
+complete inside ONE session; stop and restart with `./down.sh` **without** `-v`. See
+[KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) for what to do about funds left at a wiped chain's
+deposit address (short version: keep the static root, and it needs a tool that is not in this repo).
+
+**Resuming.** Every request is persisted with its id. `GET /api/bridge/requests` lists them and
+`POST /api/bridge/relay/<requestId>` finishes one — the start is never redone, and pressing it on a
+finished request changes nothing. The Bridge tab's Requests pane has the same button.
+
+## Offers in bridged tokens, and the take you did not make (profile `aa` + `signet` + `offerfiles` + `frontend`)
+
+```bash
+./up.sh --with aa --with signet --with offerfiles --with frontend
+./scripts/aa-story-e2e.sh --evidence ./evidence   # the whole story headlessly; it SPENDS
+```
+
+This is what the bridge is for. An account holding a bridged coin publishes an OPEN swap offer
+whose two legs are bridged colours (Publish Offer on the console's **AA + EVM** tab), the console
+posts it to the offer-files kernel, and **anybody** settles it — in the offer-files SPA at
+`:10600`, by the solver, from another machine. The maker never pays a fee and never submits.
+
+**Amounts on that form are the TOKEN'S OWN UNITS.** `1` against 6-decimal USDC and `10` against
+18-decimal WEENUS; the line under the form shows what each becomes in base units before you sign.
+Every other form in the console still takes base units — the offer form is the one where the
+difference is unusable, because 10 WEENUS is `10000000000000000000`.
+
+**The frontend renders the legs readably because of a registry row, not a patch.** The console
+posts every bridged colour to the kernel's `POST /v1/known-tokens` with the ERC20's symbol and
+decimals, and the SPA reads decimals from that registry (`images/zswap-da/PROVENANCE.md`). That
+registration does not need the `faucet` profile. The kernel has no update route and `name` is
+UNIQUE, so a row that already names a DIFFERENT colour cannot be repaired from the console — it
+logs loudly and carries on, because the registry is display only and nothing about custody
+depends on it.
+
+**Nothing tells a maker that its offer was taken**, and the settlement nullifies a coin the
+console's store still lists — so the account's next call would fail inside proving, minutes later,
+with a message about a merkle path. The console therefore watches: every `AA_OFFER_POLL_MS`
+(15 s) it asks the kernel for the status of each of its live offers and, independently, asks the
+account contract's own action history. A call of `open_swap_shielded_with_evm` on the account IS
+the settlement — and it is the only source of the commitment window, because a taker's
+`transactionHash()` is not a key the indexer accepts. The reconcile then drops the spent coin,
+captures the received one (cross-checked against the inbox entries the offer sealed), records the
+settling transaction and clears the live offer.
+
+| when | what runs |
+|---|---|
+| every 15 s, while the console is up | the poller, per account with a live offer. It skips a pass while a job is proving, because both write the account record |
+| at console start | one pass, so an offer taken while the console was down is picked up on next load |
+| on demand | **Refresh** on the account view, or `POST /api/refresh {accountId}` / `{owner}` — the same reconcile, answering with what changed |
+| after this console's own taker settles | the same routine, with the transaction id it happens to hold as a hint |
+
+It is idempotent: running it twice on a settled offer reports "no live offer" the second time and
+writes the same store.
 
 ## The `shielded-night` profile
 

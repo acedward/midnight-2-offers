@@ -1,12 +1,29 @@
 {
   "$comment": "Rows of the README's 'Where every component comes from' table. Prose is written here; every pin is a placeholder that scripts/render-readme-pins.py fills from compose/, images/, .env.example and config/artifact-decisions.json — see that script's docstring for the placeholder list. Run `scripts/render-readme-pins.py --write` after editing; ci-check.sh fails when README.md is stale.",
   "columns": [
-    { "key": "component", "title": "Component" },
-    { "key": "source", "title": "Source" },
-    { "key": "pin", "title": "Pin" },
-    { "key": "pinnedIn", "title": "Pinned in" }
+    {
+      "key": "component",
+      "title": "Component"
+    },
+    {
+      "key": "source",
+      "title": "Source"
+    },
+    {
+      "key": "pin",
+      "title": "Pin"
+    },
+    {
+      "key": "pinnedIn",
+      "title": "Pinned in"
+    }
   ],
-  "mustBeEqual": [["KERNEL_REF", "SOLVER_REF"]],
+  "mustBeEqual": [
+    [
+      "KERNEL_REF",
+      "SOLVER_REF"
+    ]
+  ],
   "rows": [
     {
       "component": "Midnight node `{version:midnight-node}`",
@@ -63,8 +80,8 @@
       "pinnedIn": "{files:FRONTEND_REF}"
     },
     {
-      "component": "**mint-test-tokens** \u2014 six local test-token issuers + the faucet site",
-      "source": "[`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` ([PR #4](https://github.com/effectstream/mint-test-tokens/pull/4)); **NO compiler in the image** \u2014 `contracts/v2/managed/` is tracked upstream and the deploy runner re-proves those bytes against the pinned commit on every run",
+      "component": "**mint-test-tokens** — six local test-token issuers + the faucet site",
+      "source": "[`effectstream/mint-test-tokens`](https://github.com/effectstream/mint-test-tokens) `main` ([PR #4](https://github.com/effectstream/mint-test-tokens/pull/4)); **NO compiler in the image** — `contracts/v2/managed/` is tracked upstream and the deploy runner re-proves those bytes against the pinned commit on every run",
       "pin": "{commit:MINT_TEST_TOKENS_REF@effectstream/mint-test-tokens}",
       "pinnedIn": "{files:MINT_TEST_TOKENS_REF}"
     },
@@ -75,16 +92,22 @@
       "pinnedIn": "{files:SHIELDED_NIGHT_REF}"
     },
     {
-      "component": "**AA-v3** — Manager + Minter contracts, relay",
-      "source": "[`acedward/AA-midnight-evm-experiment-v3`](https://github.com/acedward/AA-midnight-evm-experiment-v3) `main`; compiled in-image with the kernel's compactc 0.34.0",
-      "pin": "{commit:AA_REF@acedward/AA-midnight-evm-experiment-v3}",
-      "pinnedIn": "{files:AA_REF}"
+      "component": "**Passport accounts** — account contract, ERC20 vault, client",
+      "source": "[`acedward/passport`](https://github.com/acedward/passport) `00034-passport-evm-account-zswap`; the whole call tree compiled in-image with the kernel's compactc 0.34.0",
+      "pin": "{commit:PASSPORT_REF@acedward/passport}",
+      "pinnedIn": "{files:PASSPORT_REF}"
     },
     {
-      "component": "AA `execute` circuit (MinoCrab, k=18)",
-      "source": "[`acedward/AA-midnight-evm-experiment-minocrab`](https://github.com/acedward/AA-midnight-evm-experiment-minocrab) release `{full:MINOCRAB_RELEASE}`; default `AA_ZKIR_SOURCE=minocrab`, unaudited compiler, dev chains only",
-      "pin": "{commit:MINOCRAB_REF@acedward/AA-midnight-evm-experiment-minocrab} · `sha256(SHA256SUMS)` {ref:MINOCRAB_SUMS_SHA256}",
-      "pinnedIn": "{files:MINOCRAB_REF,MINOCRAB_SUMS_SHA256}"
+      "component": "Signet protocol module (two `.compact` sources)",
+      "source": "[`@sig-net/midnight`](https://www.npmjs.com/package/@sig-net/midnight) `{full:SIGNET_PKG_VERSION}` — the npm tarball, fetched by URL and verified by SHA-256; no npm runs in the compile stage",
+      "pin": "`sha256(tarball)` {ref:SIGNET_PKG_SHA256}",
+      "pinnedIn": "{files:SIGNET_PKG_VERSION,SIGNET_PKG_SHA256}"
+    },
+    {
+      "component": "**signet MPC responder** — the `signet` profile's fakenet",
+      "source": "[`acedward/solana-signet-program`](https://github.com/acedward/solana-signet-program) `00034-trace-fallback` (fork PR #1) — upstream `sig-net/solana-signet-program` at tag `fakenet-v0.23.0` plus two local patches: an `eth_call` replay when the RPC has no `debug_traceTransaction` (demo-grade) and `MIDNIGHT_CALLER_ALLOWLIST`",
+      "pin": "{commit:SIGNET_FAKENET_REF@acedward/solana-signet-program}",
+      "pinnedIn": "{files:SIGNET_FAKENET_REF}"
     },
     {
       "component": "AA web console",

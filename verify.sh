@@ -41,6 +41,7 @@ FAUCET_MODE=auto
 # for a human running ./verify.sh and ON in scripts/ci-check.sh, which is the gate.
 AA_MINT=0
 FAUCET_MINT=0
+SIGNET_MODE=auto
 SOLVER_MODE=auto
 POSTER_MODE=auto
 PRICES_MODE=auto
@@ -63,6 +64,8 @@ Options:
                  unshielded token minted through the LOCAL mint-test-tokens issuers and
                  deposited, asserted against the Manager's ledger balances (minutes)
   --no-aa-mint   the default
+  --signet       require the signet section (fail if the profile is not up)
+  --no-signet    skip the signet section even if the profile is up
   --kernel       require the kernel section (fail if the service is not up)
   --no-kernel    skip the kernel section even if the service is up
   --frontend     require the frontend section (fail if the profile is not up)
@@ -94,7 +97,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --core-only) SKIP_WALLETS=1; AA_MINT=0; FAUCET_MINT=0; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; FAUCET_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
+    --core-only) SKIP_WALLETS=1; AA_MINT=0; FAUCET_MINT=0; EVM_MODE=off; CELESTIA_MODE=off; AA_MODE=off; SIGNET_MODE=off; KERNEL_MODE=off; FRONTEND_MODE=off; SHIELDED_NIGHT_MODE=off; FAUCET_MODE=off; SOLVER_MODE=off; POSTER_MODE=off; PRICES_MODE=off; shift ;;
     --evm)       EVM_MODE=on; shift ;;
     --no-evm)    EVM_MODE=off; shift ;;
     --celestia)    CELESTIA_MODE=on; shift ;;
@@ -103,6 +106,8 @@ while [[ $# -gt 0 ]]; do
     --no-aa)       AA_MODE=off; shift ;;
     --aa-mint)     AA_MINT=1; shift ;;
     --no-aa-mint)  AA_MINT=0; shift ;;
+    --signet)      SIGNET_MODE=on; shift ;;
+    --no-signet)   SIGNET_MODE=off; shift ;;
     --kernel)      KERNEL_MODE=on; shift ;;
     --no-kernel)   KERNEL_MODE=off; shift ;;
     --frontend)    FRONTEND_MODE=on; shift ;;
@@ -331,6 +336,40 @@ case "$AA_MODE" in
     else
       echo
       dim "aa profile not up — skipping (./up.sh --with aa to include it)"
+    fi
+    ;;
+esac
+
+# ── signet (the bridge's MPC responder) ──────────────────────────────────────
+# Presence = a signet-fakenet container exists (running or not). The script itself demands a
+# RUNNING one, which is the difference between "this profile was asked for" and "it works".
+SIGNET_PRESENT=0
+if [[ -n "$(docker ps -aq \
+      --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=signet-fakenet" 2>/dev/null)" ]]; then
+  SIGNET_PRESENT=1
+fi
+
+case "$SIGNET_MODE" in
+  off) ;;
+  on|auto)
+    if (( SIGNET_PRESENT )); then
+      echo
+      log "signet"
+      if "$REPO_ROOT/scripts/verify-signet.sh"; then
+        ok "signet assertions passed"
+      else
+        err "signet assertions failed"
+        FAILURES=$(( FAILURES + 1 ))
+      fi
+    elif [[ "$SIGNET_MODE" == "on" ]]; then
+      echo
+      err "--signet was requested but no signet-fakenet container exists for project '${COMPOSE_PROJECT_NAME}'"
+      dim "bring it up with: ./up.sh --with aa --with signet   (and SIGNET_EVM_RPC_URL in the env file)"
+      FAILURES=$(( FAILURES + 1 ))
+    else
+      echo
+      dim "signet profile not up — skipping (the aa profile's bridge vault is stub-keyed without it)"
     fi
     ;;
 esac

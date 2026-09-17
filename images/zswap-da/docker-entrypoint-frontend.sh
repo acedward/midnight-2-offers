@@ -53,6 +53,19 @@
 # it survives a reload. Unset, the bundle keeps upstream's random behaviour,
 # which is what anyone serving this dist/ outside the demo wants.
 #
+# TWO SEED LENGTHS ARE VALID (project 00035). 64 hex chars is upstream's 32-byte
+# seed. 128 hex chars is a BIP-39 MASTER SEED — and passing one makes the in-page
+# wallet the SAME wallet a browser wallet shows for that mnemonic, address for
+# address. Nothing in the bundle has to change for it: `connectLocal(seed)` hands
+# the string to `buildWalletFacade`, which does
+# `HDWallet.fromSeed(Buffer.from(seed,'hex')).selectAccount(0).selectRole(r).deriveKeyAt(0)`
+# — a BIP-32 seed import, which takes 64 bytes as readily as 32, and is exactly the
+# derivation `tools/mnemonic-wallets/derive.mjs` (and Lace) use, on the same
+# @midnightntwrk/wallet-sdk-hd pin. So the only thing that had to give was the
+# length check below. A demo that wants the operator's own Midnight wallet in the
+# page sets FRONTEND_WALLET_SEED to that mnemonic's master seed in the UNCOMMITTED
+# env file; it is a secret and lives nowhere else.
+#
 # An empty variable is treated as ABSENT — compose renders every unset
 # pass-through as "" — so a blank never becomes a literal empty URL or port.
 set -eu
@@ -97,8 +110,14 @@ if [ -n "${DEMO_WALLET_SEED:-}" ]; then
   case "${DEMO_WALLET_SEED}" in
     *[!0-9a-f]*|"") echo "frontend entrypoint: DEMO_WALLET_SEED is not lowercase hex" >&2; exit 78 ;;
   esac
-  [ "${#DEMO_WALLET_SEED}" -eq 64 ] \
-    || { echo "frontend entrypoint: DEMO_WALLET_SEED must be 64 hex characters (32 bytes), got ${#DEMO_WALLET_SEED}" >&2; exit 78; }
+  # 64 = a 32-byte seed; 128 = a BIP-39 master seed (see the header). Any other
+  # length is a TRUNCATION, and a truncated seed is silently a different wallet
+  # than the one the stack funded — which looks exactly like "the mint did not
+  # work". So it fails here, saying which two lengths are meant.
+  case "${#DEMO_WALLET_SEED}" in
+    64|128) ;;
+    *) echo "frontend entrypoint: DEMO_WALLET_SEED must be 64 hex characters (a 32-byte seed) or 128 (a BIP-39 master seed), got ${#DEMO_WALLET_SEED}" >&2; exit 78 ;;
+  esac
 fi
 
 {

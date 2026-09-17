@@ -119,6 +119,20 @@ Every step's console output is also written to `.ci-logs/<project>/NN-<step>.log
 | `aa-console` | service | 4a verify.sh | `scripts/verify-aa.sh` | `aa-console takes its token set from the local mint-test-tokens registry` |
 | ↳ |  | 4a verify.sh --aa-mint | `scripts/verify-aa.sh` | `console mint: one shielded and one unshielded token minted through the local issuers and deposited` **·B** |
 
+#### `compose/signet.yml` — profile `signet` (needs `aa`)
+
+The MPC responder that turns the `aa` profile's bridge vault from "the circuits are deployed"
+into "funds can cross". Its central assertion is a SECOND derivation: the vault's own EVM address
+and the MPC response key are re-derived from the per-stack root secret *inside the responder's own
+image*, with Sig Network's `@sig-net/midnight`, and compared with the deploy receipt — deriving
+them with the fork's client, which is the code that wrote the receipt, would be circular.
+
+| Service | Kind | Gate step | Script | Assertion |
+|---|---|---|---|---|
+| `signet-fakenet` | service | 4a verify.sh | `scripts/verify-signet.sh` | `the vault was initialised against this stack's own MPC root (mpc.provenance=fakenet)` **·B** |
+| ↳ |  | 4a verify.sh | `scripts/verify-signet.sh` | `the responder serves exactly one caller, and it is this stack's vault` **·B** |
+| ↳ |  | 4a verify.sh | `scripts/verify-signet.sh` | `zero signature requests served` **·B** |
+
 #### `compose/faucet.yml` — profile `faucet`
 
 | Service | Kind | Gate step | Script | Assertion |
@@ -183,7 +197,7 @@ Measured on one cold `--all` run (Apple silicon, every image rebuilt, 2 257 s en
 |---|---|---|
 | `verify-e2e-coverage.sh` (step 1) | the whole point: a new service, or a renamed assertion, cannot silently un-cover anything | **< 2 s**, offline (step 1 is 20 s in total) |
 | `verify-oneshots.sh` (step 4d) | 13 one-shots were asserted by exit code alone | **2 s** — it only reads `docker logs` |
-| `verify-aa.sh --mint` (step 4a) | PR-B's claim that the AA console mints through the **local mint-test-tokens issuers** was proven by hand in a browser and by nothing else. This drives the console's own HTTP API — the exact path the page uses — and then reads the **Manager's ledger balances** back | **156 s** (64 s of it is the one `execute` proof to register; then two mint+deposit cycles) |
+| `verify-aa.sh --mint` (step 4a) | The claim that the AA console REGISTERS an account (a two-wave contract deploy) and mints through the **local mint-test-tokens issuers** was proven by hand in a browser and by nothing else. This drives the console's own HTTP API — the exact path the page uses, EIP-191 enrolment included — and then reads the **account's own ledger** and the console's coin store back | **minutes** (most of it the two-wave deploy and the k=18 activation proof; then two mint+deposit cycles) |
 | `verify-faucet.sh --mint` (step 4a) | `faucet-mint-test` never ran in the gate, and with it nothing ever asked the plain `proof-server` for a proof | **~60 s** |
 | `verify-spa-roundtrip.sh` (step 4e) | the batcher's **`midnight-balancer`** target — the sponsored take — is reachable from no other step. The poster only exercises the `celestia` target | **54 s** (a warm chain; two proving rounds and a Celestia round trip) |
 | `aa-e2e.sh` (step 4f) | the EVM-signed `execute` path had no gate at all | **331 s**, including the `:e2e` image build. Four `execute` proofs at ~59 s each |

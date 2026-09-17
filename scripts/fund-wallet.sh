@@ -113,7 +113,17 @@ fund_one() {
 
   if is_seed "$target"; then
     seed="$target"
-    log "funding seed ${seed:0:8}…${seed: -6}"
+    # A 64-hex seed on this stack is a PUBLISHED dev value (wallets/wallets.json documents every
+    # one of them), so an abbreviation is a useful identifier and discloses nothing. A 128-hex
+    # one is a BIP-39 MASTER SEED — since project 00035 this script is called with an operator's
+    # real wallet — and 14 of its characters in a log is 14 characters of a private key too many.
+    # The wallet is identified by the ADDRESSES printed two lines below, which are public and are
+    # a better identifier anyway.
+    if [[ "${#seed}" -gt 64 ]]; then
+      log "funding a wallet from a 128-hex master seed (the seed itself is not printed)"
+    else
+      log "funding seed ${seed:0:8}…${seed: -6}"
+    fi
     local aj
     aj=$(address_json "$seed") || die "show-address failed for the target seed"
     unshielded_addr=$(printf '%s' "$aj" | jqf '.unshielded')
@@ -150,7 +160,11 @@ fund_one() {
   [[ -n "$shielded_addr"   && "$SHIELDED_AMOUNT" != "0" ]] && outputs+=(--output "addr=${shielded_addr},amount=${SHIELDED_AMOUNT}")
 
   if (( ${#outputs[@]} )); then
-    log "sending NIGHT from ${FROM_SEED:0:8}…${FROM_SEED: -6}"
+    if [[ "${#FROM_SEED}" -gt 64 ]]; then
+      log "sending NIGHT from a wallet given by a 128-hex master seed (not printed)"
+    else
+      log "sending NIGHT from ${FROM_SEED:0:8}…${FROM_SEED: -6}"
+    fi
     [[ "$AMOUNT" != "0" && -n "$unshielded_addr" ]] && info "unshielded ${AMOUNT} stars"
     [[ "$SHIELDED_AMOUNT" != "0" && -n "$shielded_addr" ]] && info "shielded   ${SHIELDED_AMOUNT} stars"
     # The toolkit fetches and replays the chain to build the tx, so this takes ~20-30s on a

@@ -1,10 +1,46 @@
-// AA Console — browser side. Deliberately thin: this page holds NO Midnight
-// wallet and NO prover. It signs `eth_signTypedData_v4` requests the relay
-// builds (AA repo codec, server-side) and polls relay jobs. See aa-console.ts.
+// AA Console — browser side. Deliberately thin: this page holds NO Midnight wallet and NO
+// prover. It signs what the relay builds and polls the relay's jobs. See aa-console.ts.
+//
+// ⚠ PROJECT 00034 CHANGED TWO THINGS A READER OF THIS FILE WILL TRIP OVER.
+//
+//   1. THERE ARE TWO KINDS OF SIGNATURE NOW. `register` asks for an EIP-191
+//      `personal_sign` over a fixed sentence — it names no operation, authorises nothing and
+//      moves no funds. Its only job is to reveal the wallet's public POINT, which no EVM
+//      wallet exposes and which the account's activation circuit carries as an argument
+//      (Q30). Every other action is `eth_signTypedData_v4` over an EIP-712 struct whose
+//      `challenge` field binds the account, the arguments and the witness coin. `/api/prepare`
+//      answers with exactly one of `message` or `typedData`, and `signPrepared` branches on it.
+//   2. REGISTER DEPLOYS A CONTRACT. The account id IS the contract address and it does not
+//      exist until the deploy lands, so the page cannot show one in advance, and registering
+//      is two transactions and minutes of proving rather than one call (Q40).
 "use strict";
 
 const $ = (id) => document.getElementById(id);
 const short = (h) => (h && h.length > 20 ? `${h.slice(0, 10)}…${h.slice(-6)}` : h ?? "—");
+
+// ── amounts (project 00035, spec FR-008) ────────────────────────────────────
+// Every token on this stack has its OWN scale — the six faucet issuers are 8/18/6/6/6/8 and a
+// bridged colour is whatever its ERC20 says (USDC 6, WEENUS 18). A page that prints a base-unit
+// integer beside a symbol prints a number nobody can check: 10 WEENUS is 10000000000000000000,
+// which is also past what a JS Number can hold — hence BigInt and string maths, never `/ 10**d`.
+const fromRaw = (raw, decimals) => {
+  let v;
+  try { v = BigInt(String(raw ?? "0")); } catch { return String(raw ?? "0"); }
+  if (!Number.isInteger(decimals) || decimals < 0) return v.toString();
+  const neg = v < 0n;
+  const digits = (neg ? -v : v).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  const frac = decimals === 0 ? "" : digits.slice(digits.length - decimals).replace(/0+$/, "");
+  return `${neg ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
+};
+/** Decimals for a token NAME, from /api/info's list. Null when the page has no row for it. */
+const decimalsOfName = (name) =>
+  (state.info?.tokens ?? []).find((t) => t.name === name)?.decimals ?? null;
+/** …and for a COLOUR, which is how the kernel's book names a leg. */
+const tokenOfColour = (colour) => {
+  const c = String(colour ?? "").replace(/^0x/, "").toLowerCase();
+  return (state.info?.tokens ?? []).find((t) => String(t.color).toLowerCase() === c) ?? null;
+};
 
 const state = {
   info: null,
@@ -72,8 +108,19 @@ async function signPrepared(prep) {
     const r = await api("/api/dev-sign", { prepId: prep.prepId });
     return r.signature;
   }
-  // prep.request is a ready-made {method:'eth_signTypedData_v4', params:[owner, json]}.
-  return await window.ethereum.request(prep.request);
+  if (prep.message) {
+    // ENROLMENT (register only). `personal_sign` takes the message first and the address
+    // second — the opposite order to `eth_signTypedData_v4`, which is a classic way to get a
+    // silent "wrong signer" out of a wallet.
+    return await window.ethereum.request({
+      method: "personal_sign",
+      params: [prep.message, state.signer],
+    });
+  }
+  return await window.ethereum.request({
+    method: "eth_signTypedData_v4",
+    params: [state.signer, JSON.stringify(prep.typedData)],
+  });
 }
 
 // ── data + rendering ─────────────────────────────────────────────────────────
@@ -82,8 +129,13 @@ async function loadInfo() {
   state.info = await api("/api/info");
   const i = state.info;
   $("s-net").textContent = i.network;
-  $("s-manager").textContent = short(i.manager);
-  $("s-minter").textContent = short(i.minter);
+  // The shared pieces this stack deployed. There is no Manager and no Minter: an account is
+  // a contract per user, and what is shared is the VAULT every account's constructor seals.
+  $("s-manager").textContent = short(i.vault?.address);
+  $("s-manager").title = i.vault?.address ?? "";
+  $("s-minter").textContent = i.accountPlan
+    ? `${i.accountPlan.circuits.length} circuits · wave 1 ${i.accountPlan.waveOne.length} + wave 2 ${i.accountPlan.waveTwo.length} · authority retired`
+    : "—";
   // DECIMALS ARE SHOWN, because they are not all 6 any more: the six local
   // issuers are 8/18/6/6/6/8, and every amount in this page is BASE UNITS.
   $("s-tokens").textContent = (i.tokens ?? []).length
@@ -108,6 +160,7 @@ async function loadInfo() {
   fillTokens("fs-token", "shielded", nth("shielded", 0));
   fillTokens("sw-give-token", "shielded", nth("shielded", 0));
   fillTokens("sw-want-token", "shielded", nth("shielded", 1));
+  renderSwapLegs();
   const fillAll = (sel, def) => {
     const el = $(sel);
     el.innerHTML = "";
@@ -126,8 +179,12 @@ async function loadInfo() {
   tp.className = `pill ${i.taker?.funded ? "ok" : "warn"}`;
   tp.textContent = i.taker?.funded ? `funded (${i.taker.balance})` : "UNFUNDED — fund-wallet.sh <aa-taker seed> --shielded-amount";
   $("s-taker").append(tp, ` ${short(i.taker?.address ?? "")}`);
-  if (i.withdrawKnownIssue) $("withdraw-note").textContent = i.withdrawKnownIssue;
-  else $("withdraw-note").style.display = "none";
+  const note = $("withdraw-note");
+  if (note) {
+    note.textContent =
+      "A shielded withdraw spends ONE held coin and returns the change to this console's "
+      + "store; the change gets no inbox entry unless you file one (a second signature).";
+  }
   $("use-dev").style.display = i.devSigner ? "" : "none";
 }
 
@@ -144,7 +201,9 @@ function renderAccounts() {
   thead.innerHTML = "";
   {
     const tr = document.createElement("tr");
-    for (const h of ["account id", "EVM owner", "nonce", ...tokenNames, ""]) {
+    // "account id" IS the contract address now; `inbox` is how many coin descriptions the
+    // account has been given, which is the only on-chain trace a shielded holding leaves.
+    for (const h of ["account (contract address)", "EVM owner", "authNonce", "inbox", ...tokenNames, ""]) {
       const th = document.createElement("th");
       th.textContent = h;
       tr.append(th);
@@ -157,8 +216,9 @@ function renderAccounts() {
     const tr = document.createElement("tr");
     const mark = mine(a) ? " (you)" : "";
     const cells = [
-      [short(a.accountId), ""], [short(a.owner) + mark, ""], [a.nonce, "num"],
-      ...tokenNames.map((tn) => [(a.balances ?? {})[tn] ?? "0", "num"]),
+      [short(a.accountId), ""], [short(a.owner) + mark, ""], [a.authNonce ?? a.nonce ?? "—", "num"],
+      [a.inboxCount ?? "—", "num"],
+      ...tokenNames.map((tn) => [(a.balancesDecimal ?? {})[tn] ?? fromRaw((a.balances ?? {})[tn] ?? "0", decimalsOfName(tn)), "num"]),
     ];
     for (const [text, cls] of cells) {
       const td = document.createElement("td");
@@ -168,6 +228,13 @@ function renderAccounts() {
     }
     const td = document.createElement("td");
     if (mine(a)) { const b = document.createElement("span"); b.className = "pill ok"; b.textContent = "yours"; td.append(b); }
+    if (a.liveOffer) {
+      const o = document.createElement("span");
+      o.className = "pill warn";
+      o.title = `${a.liveOffer.give} for ${a.liveOffer.want} — one live offer per account (Q7)`;
+      o.textContent = "offer live";
+      td.append(" ", o);
+    }
     tr.append(td);
     tbody.append(tr);
   }
@@ -212,8 +279,16 @@ async function loadBook() {
   state_el.append(pill);
   const tbody = $("book");
   tbody.innerHTML = "";
+  // A leg is `{amount, token|color}` in base units. Rendered with the colour's own decimals
+  // and symbol when this console knows them (a bridged colour does, as soon as the Bridge tab
+  // has resolved it), and truthfully raw-with-a-short-colour when it does not.
   const leg = (side) => (Array.isArray(side) ? side : side ? [side] : [])
-    .map((l) => `${l.amount ?? l.value ?? "?"} ${short(String(l.color ?? l.colour ?? l.token ?? "?"))}`)
+    .map((l) => {
+      const colour = String(l.color ?? l.colour ?? l.token ?? "?");
+      const raw = String(l.amount ?? l.value ?? "?");
+      const t = tokenOfColour(colour);
+      return t ? `${fromRaw(raw, t.decimals)} ${t.name}` : `${raw} ${short(colour)}`;
+    })
     .join(", ");
   for (const o of offers) {
     const computed = o.computed ?? {};
@@ -315,9 +390,14 @@ $("f-fund").onsubmit = busy(async () => {
 });
 
 
-// Transfer — token-first flow, symmetric with Withdraw: pick from the typed,
-// balance-annotated list, THEN the destination account + amount. The picked
-// token's family decides the signed action (selector 5 vs 4).
+// Send to another account — token-first flow, symmetric with Withdraw.
+//
+// ⚠ IT IS NOT AN INTERNAL TRANSFER ANY MORE (Q41). Both accounts used to be rows in ONE
+// contract's balance map, so a transfer was two map updates and one signed action. They are
+// separate contracts now, and an account never calls another account — so this is a
+// WITHDRAW of a shielded coin to a wallet the console runs, followed by a permissionless
+// DEPOSIT into the recipient. Two transactions, one signature (the deposit needs none), and
+// the hop is visible in the job log rather than hidden.
 function renderTransfer() {
   const tok = (state.info?.tokens ?? []).find((t) => t.name === state.trToken);
   $("tr-list").style.display = tok ? "none" : "";
@@ -349,15 +429,17 @@ function renderTransfer() {
   chip.textContent = tok.family;
   $("tr-chosen-bal").textContent = `balance ${(acct?.balances ?? {})[tok.name] ?? "0"}`;
   $("tr-doc").textContent = sh
-    ? "Selector 4 — internal SHIELDED transfer between AA accounts, signed by your EVM wallet."
-    : "Selector 5 — internal unshielded transfer between AA accounts, signed by your EVM wallet.";
+    ? "withdraw_shielded_with_evm → the console's funder wallet → deposit_shielded into the "
+      + "recipient. One signature from you; the deposit is permissionless."
+    : "UNSHIELDED value is a public balance and needs no inbox entry: withdraw it to the other "
+      + "owner's wallet address and let them deposit it. Pick a shielded token to send here.";
 }
 $("tr-back").onclick = () => { state.trToken = null; renderTransfer(); };
 $("f-tr").onsubmit = busy(() => {
   const tok = (state.info?.tokens ?? []).find((t) => t.name === state.trToken);
   const acct = currentAccount();
   return prepareSignSubmit({
-    kind: tok.family === "shielded" ? "transfer-shielded" : "transfer",
+    kind: "send-to-account",
     owner: state.signer, accountId: acct.accountId,
     toAccountId: $("tr-to").value, amount: $("tr-amount").value, token: tok.name,
   });
@@ -442,8 +524,20 @@ $("f-fundsh").onsubmit = busy(async () => {
   await watchJob(jobId);
 });
 $("f-swap").onsubmit = busy(async () => {
-  // Step 1: sign + contract call + prove — the result is the offer's bech32m,
-  // shown below; publishing is the explicit second step.
+  // Step 1: sign + contract call + prove — the result is the offer's bech32m, shown below;
+  // publishing is the explicit second step.
+  //
+  // Q7, checked here so the wallet is never asked to sign something that cannot settle: the
+  // MIP-0013 seam consumes ONE device entry per call, so signing a second offer while the
+  // first is unsettled makes the FIRST one permanently unsettleable. The relay refuses it
+  // too; this is only so the refusal arrives before the wallet prompt.
+  const from = state.accounts.find((a) => a.accountId === $("sw-from").value);
+  if (from?.liveOffer) {
+    throw new Error(
+      `this account already has a live offer (${from.liveOffer.give} for ${from.liveOffer.want}). `
+      + "Settle it, or forget it in the book, before making another — one live offer per account.",
+    );
+  }
   showActivity();
   $("swap-built").style.display = "none";
   const prep = await api("/api/prepare", {
@@ -463,6 +557,30 @@ $("f-swap").onsubmit = busy(async () => {
     $("swap-built").style.display = "";
   }
 });
+/** What the two typed amounts ARE on chain. The offer's legs are base units and the form's
+ *  are token units; showing both removes the one ambiguity this form has. */
+function renderSwapLegs() {
+  const el = $("swap-legs");
+  if (!el) return;
+  const g = (state.info?.tokens ?? []).find((t) => t.name === $("sw-give-token").value);
+  const w = (state.info?.tokens ?? []).find((t) => t.name === $("sw-want-token").value);
+  const raw = (value, token) => {
+    if (!token) return "?";
+    const m = /^(\d*)(?:\.(\d*))?$/.exec(String(value ?? "").trim());
+    if (!m) return "not a number";
+    const frac = (m[2] ?? "");
+    if (frac.length > token.decimals) return `too many decimals (${token.name} has ${token.decimals})`;
+    return `${(m[1] || "0") + frac.padEnd(token.decimals, "0")} base units`;
+  };
+  el.textContent = `give ${$("sw-give").value} ${g?.name ?? "?"} = ${raw($("sw-give").value, g)}  ·  `
+    + `want ${$("sw-want").value} ${w?.name ?? "?"} = ${raw($("sw-want").value, w)}`;
+}
+for (const id of ["sw-give", "sw-want", "sw-give-token", "sw-want-token"]) {
+  const el = $(id);
+  if (el) el.addEventListener("input", renderSwapLegs);
+  if (el) el.addEventListener("change", renderSwapLegs);
+}
+
 $("op-publish").onclick = busy(async () => {
   $("publish-result").textContent = "publishing…";
   try {
@@ -555,10 +673,18 @@ function renderWallet() {
     chip.className = `chip ${t.family === "shielded" ? "sh" : "ush"}`;
     chip.textContent = t.family;
     const amt = document.createElement("span"); amt.className = "amt";
-    amt.textContent = (acct.balances ?? {})[t.name] ?? "0";
+    // The DECIMAL value is what a reader can check; the base units stay in the tooltip,
+    // because they are what the circuits take and what an error message will quote.
+    const raw = (acct.balances ?? {})[t.name] ?? "0";
+    amt.textContent = (acct.balancesDecimal ?? {})[t.name] ?? fromRaw(raw, t.decimals);
+    amt.title = `${raw} base units (${t.decimals} decimals)`;
     row.append(tok, chip, amt); list.append(row);
   }
   $("wl-nonce").textContent = acct.nonce;
+  // FR-011's "while open": the RELAY's poller is what notices an external take, so the page
+  // only has to show what it found. This runs on the 15 s accounts poll, which is why step 7
+  // of the story needs no click at all.
+  renderReconcile(acct.lastReconcile ?? null);
   renderWithdraw();
   renderTransfer();
   for (const id of ["sw-from"]) {
@@ -572,6 +698,9 @@ function renderWallet() {
 // background accounts poll.
 let readsBusy = false;
 async function renderReads() {
+  // The AA-v3 "Contract reads" panel is gone (its functions do not exist on a Passport
+  // account); the callers stay so the render sequence is unchanged.
+  if (!$("wl-readlist")) return;
   if (!state.signer || readsBusy) return;
   readsBusy = true;
   try {
@@ -610,7 +739,52 @@ async function renderReads() {
   } finally { readsBusy = false; }
 }
 $("wl-account").onchange = () => { renderWallet(); renderReads(); };
-$("wl-refresh").onclick = busy(async () => { await loadAccounts(); await renderReads(); });
+// ⚠ REFRESH IS NOT A RE-READ ANY MORE (spec FR-011, the owner's Q7 addition). It runs the
+// console's reconcile against the chain: if this account's offer was taken by somebody else —
+// in the offer-files frontend, by the solver, by anyone — the settlement nullified a coin this
+// store still lists, and the page would keep showing it until the account's next call failed
+// inside proving. The poller does this every AA_OFFER_POLL_MS anyway; the button is for the
+// operator who has just clicked "take" in another tab and does not want to wait.
+$("wl-refresh").onclick = busy(async () => {
+  const el = $("wl-reconcile");
+  if (el) { el.style.display = ""; el.textContent = "reconciling this account against the chain…"; }
+  try {
+    const r = await api("/api/refresh", state.signer ? { owner: state.signer } : {});
+    renderReconcile((r.reports ?? [])[0] ?? null);
+  } catch (e) {
+    if (el) el.textContent = `reconcile failed: ${e?.message ?? e}`;
+  }
+  await loadAccounts();
+  await renderReads();
+});
+
+/** The reconcile's own words, under the balances. `changes` is the same list the job log and
+ *  the console's stdout carry, so three surfaces never disagree about what happened. */
+function renderReconcile(report) {
+  const el = $("wl-reconcile");
+  if (!el) return;
+  if (!report) { el.style.display = "none"; return; }
+  el.style.display = "";
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.innerHTML = report.settled
+    ? "<b>the offer was taken by somebody else</b> — the account has been reconciled:"
+    : (report.error ? "<b>reconcile failed</b>:" : "reconcile:");
+  el.append(head);
+  const ul = document.createElement("ul");
+  ul.style.cssText = "margin:4px 0 0 16px;padding:0";
+  for (const line of report.changes ?? []) {
+    const li = document.createElement("li"); li.textContent = line; ul.append(li);
+  }
+  if (report.error) { const li = document.createElement("li"); li.textContent = report.error; ul.append(li); }
+  el.append(ul);
+  if (report.settleTx) {
+    const p = document.createElement("div");
+    p.style.marginTop = "4px";
+    p.textContent = `settling transaction ${report.settleTx.txHash} (block ${report.settleTx.blockHeight})`;
+    el.append(p);
+  }
+}
 $("wl-more").onclick = busy(() => prepareSignSubmit({ kind: "register", owner: state.signer }));
 $("act-head").onclick = () => $("activity-aa").classList.toggle("collapsed");
 

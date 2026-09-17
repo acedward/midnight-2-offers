@@ -67,6 +67,8 @@
   .seg.small button { padding: 5px 12px; font-size: 12px; }
   .actpane { display: none; }
   .actpane.active { display: block; }
+  .brpane { display: none; }
+  .brpane.active { display: block; }
   .activity-sticky {
     position: sticky; bottom: 10px; z-index: 5;
     box-shadow: 0 -10px 28px rgba(0, 0, 0, .5);
@@ -142,6 +144,7 @@
      through the compose proof server and submits to Midnight. The wallet never sees a Midnight key.</p>
   <nav class="seg" id="seg">
     <button data-view="aa" class="active">AA + EVM</button>
+    <button data-view="bridge" id="tab-bridge" style="display:none">Bridge</button>
     <button data-view="aainfra">AA infra</button>
     <button data-view="aamid">AA + Midnight</button>
     <button data-view="solver">Offers + Solver</button>
@@ -161,7 +164,7 @@
     <div id="w-status" class="wl-status"><span class="pill dim">disconnected</span></div>
 
     <div id="wl-connect">
-      <p class="note" style="margin-top:2px">Funds live on Midnight, inside the Manager contract. Your EVM
+      <p class="note" style="margin-top:2px">Funds live on Midnight, inside <b>your own account contract</b>. Your EVM
       wallet only ever signs typed data — no chain, no gas, no funds needed on the EVM side; the
       stack's relay proves each action (~1–2 min) and submits it.</p>
       <button id="connect" class="wl-cta">Connect wallet</button>
@@ -171,36 +174,32 @@
 
     <div id="wl-main" style="display:none">
       <div id="wl-warn" class="wl-warn" style="display:none">
-        <span><b>Not registered</b> — this address owns no AA account yet. Register creates one
+        <span><b>Not registered</b> — this address owns no account yet. Register <b>deploys a contract</b> for it (two transactions, minutes of proving), and the contract address becomes the account id
         (fresh salt → fresh account id), signed by your wallet.</span>
         <button id="op-register" disabled>Register</button>
       </div>
 
-      <!-- Live contract reads — run automatically for the CONNECTED address the
-           moment the wallet connects; registration is NOT required (the rows
-           simply read empty). The disclosure at the page bottom stays for
-           running the same functions against arbitrary addresses. -->
-      <div class="wl-balcard">
-        <div class="wl-balhead" style="margin-bottom:2px">
-          <h2 style="margin:0">Contract reads</h2>
-          <span id="wl-reads-state" class="pill dim">…</span>
-        </div>
-        <dl class="kv" id="wl-readlist" style="margin-top:8px"></dl>
-      </div>
+      <!-- The AA-v3 "Contract reads" panel (deploymentDomain / isRegistered / evmOwner /
+           evmNonce / poolValue) was removed: those functions belong to the retired Manager
+           contract, not to a Passport account, and every row read "unknown function". -->
 
       <div id="wl-balances" style="display:none">
         <div class="wl-balcard">
           <div class="wl-balhead">
             <select id="wl-account" title="your AA accounts"></select>
-            <button id="wl-refresh" class="ghost" title="re-read every value from the ledger">↻ Refresh</button>
+            <button id="wl-refresh" class="ghost" title="re-read every value from the ledger AND reconcile this account&#10;against the chain — the check that notices an offer somebody else took">↻ Refresh</button>
           </div>
           <div id="wl-ballist"></div>
           <div class="wl-nonce">account nonce <span id="wl-nonce">0</span></div>
+          <!-- What the last reconcile found: the poller writes one of these every time it
+               notices an offer of this account consumed by somebody else, and Refresh runs
+               the same thing on demand (spec FR-011, owner's Q7). -->
+          <div id="wl-reconcile" class="note" style="display:none;margin-top:6px"></div>
         </div>
 
         <nav class="wl-ops" id="ops-seg">
           <button data-ops="withdraw" class="active">Withdraw Tokens</button>
-          <button data-ops="transfer">Transfer Tokens</button>
+          <button data-ops="transfer">Send to account</button>
           <button data-ops="offer">Publish Offer</button>
         </nav>
 
@@ -232,9 +231,11 @@
 
         <div id="ops-transfer" class="opspane">
           <div class="opgroup">
-            <h3>Transfer — pick a token</h3>
-            <p class="note">Moves balance between AA accounts inside the Manager. Pick what to
-            transfer — the token's type decides which selector is signed.</p>
+            <h3>Send to another account — pick a token</h3>
+            <p class="note">Two accounts are two contracts, so this is a <b>withdraw</b> of one shielded
+            coin to the console's funder wallet followed by a permissionless <b>deposit</b> into the
+            recipient — one signature from you, two transactions on chain. AA-v3's internal
+            transfers had no counterpart here (question Q41).</p>
             <div id="tr-list"></div>
             <div id="tr-form" style="display:none">
               <div class="wdp-head">
@@ -247,7 +248,7 @@
               <form id="f-tr"><div class="row">
                 <div style="flex:2"><label>to account</label><select id="tr-to" required></select></div>
                 <div><label>amount</label><input id="tr-amount" value="100000" pattern="[0-9]+" required></div>
-                <div><button type="submit" id="op-transfer">Transfer</button></div>
+                <div><button type="submit" id="op-transfer">Send</button></div>
               </div></form>
             </div>
           </div>
@@ -256,18 +257,25 @@
         <div id="ops-offer" class="opspane">
           <div class="opgroup">
             <h3>Publish offer <span class="chip sh">shielded swap</span></h3>
-            <p class="note">Selector 6 — opens a shielded swap on the Manager. The proven transaction is
+            <p class="note"><code>open_swap_shielded_with_evm</code> — one proved call releases the give
+            coin with no output and claims the want coin into custody. The proven transaction is
             <em>never submitted</em> — unbalanced by exactly +give/−want, it IS the offer, published to
             the offer-files kernel for a taker (or the solver) to settle. The give leg spends the
             account's <b>shielded</b> balance — fund it on the <b>AA infra</b> tab first.</p>
+            <p class="note">Both amounts are in the <b>token's own units</b>, not base units:
+            <code>1</code> against 6-decimal USDC is 1000000 on chain, and <code>10</code> against
+            18-decimal WEENUS is 10000000000000000000. A bridged colour appears in these lists as soon
+            as the Bridge tab has resolved it, and the kernel's registry is told its symbol and
+            decimals so the offer-files frontend renders the same two numbers you typed.</p>
             <form id="f-swap"><div class="row">
               <div style="display:none"><label>account</label><select id="sw-from" required></select></div>
               <div><label>give token</label><select id="sw-give-token" required></select></div>
-              <div><label>give amount</label><input id="sw-give" value="100000" pattern="[0-9]+" required></div>
+              <div><label>give amount</label><input id="sw-give" value="1" pattern="[0-9]*[.]?[0-9]+" required></div>
               <div><label>want token</label><select id="sw-want-token" required></select></div>
-              <div><label>want amount</label><input id="sw-want" value="70000" pattern="[0-9]+" required></div>
+              <div><label>want amount</label><input id="sw-want" value="10" pattern="[0-9]*[.]?[0-9]+" required></div>
               <div><button type="submit" disabled id="op-swap">1 · Build offer</button></div>
             </div></form>
+            <p class="note" id="swap-legs">—</p>
             <div id="swap-built" style="display:none;margin-top:12px">
               <label>built offer (MIP-0005 bech32m) — <span id="swap-built-meta"></span></label>
               <textarea id="swap-blob" readonly rows="5" style="width:100%;background:var(--bg);color:var(--dim);border:1px solid var(--edge);border-radius:6px;font:11px/1.5 var(--mono);padding:8px 10px;resize:vertical"></textarea>
@@ -288,7 +296,7 @@
   <details class="advanced">
     <summary>Read &amp; pure functions</summary>
     <section class="wide" style="margin-top:8px">
-      <p class="note">The Manager's non-mutating surface: <b>pure</b> functions run the compiled
+      <p class="note">The account's non-mutating surface: <b>pure</b> functions run the compiled
       circuit module locally, <b>read</b> functions are ledger lookups through the indexer. No
       signature, no proof, instant.</p>
       <form id="f-pure"><div class="row">
@@ -310,13 +318,123 @@
   </section>
 </main>
 
+<main id="view-bridge" class="view">
+  <section class="wide" id="bridge-unavailable" style="display:none;border-color:#8a6d2f">
+    <h2>Bridge — not available on this stack</h2>
+    <ul class="note" id="bridge-reasons" style="margin:6px 0 0 18px"></ul>
+    <p class="note">The bridge needs three things: an image built with <code>AA_WITH_BRIDGE=1</code>,
+    a vault whose MPC root a responder actually holds (<code>mpc.provenance = fakenet</code>), and an
+    EVM endpoint. <code>./up.sh --with aa --with signet</code> arranges all three.</p>
+  </section>
+
+  <section class="wide" id="bridge-main" style="display:none">
+    <h2>ERC20 bridge <span class="pill dim" id="bridge-chain">—</span> <span class="pill warn" id="bridge-attestation">—</span></h2>
+    <p class="note">Tokens on the EVM chain become SHIELDED coins on Midnight, one colour per
+    ERC20 per vault. A round trip is always three acts: a <b>start</b> transaction that asks the MPC
+    to sign, an off-chain <b>relay</b> (the MPC signs, we broadcast, the MPC attests), and a
+    <b>settle</b> transaction that verifies the attestation in-circuit. Nothing on Midnight can wait
+    for an Ethereum transaction inside one proof, which is why it cannot be one click.</p>
+    <p class="note warn" id="bridge-vault-note">—</p>
+    <nav class="seg small" id="bridge-seg">
+      <button data-bridge="deposit" class="active">Deposit</button>
+      <button data-bridge="withdraw">Withdraw</button>
+      <button data-bridge="requests">Requests</button>
+    </nav>
+
+    <div id="bridge-deposit" class="brpane active">
+      <div class="row">
+        <div><label>token</label><select id="br-token"></select></div>
+        <div style="flex:2"><label>or an ERC20 address</label><input id="br-token-custom" placeholder="0x…"></div>
+        <div><label>amount (in the token's own decimals)</label><input id="br-amount" value="1">
+          <p class="note" style="margin:4px 0 0">one leg carries at most 2<sup>64</sup>−1 raw units — about
+          <b>18.44</b> of an 18-decimal token. Larger amounts are two deposits, and they share one
+          deposit address.</p></div>
+      </div>
+      <label>recipient</label>
+      <div class="row" style="align-items:center">
+        <div style="flex:0 0 auto">
+          <label style="margin:0"><input type="radio" name="br-rec" id="br-rec-account" value="account" checked style="width:auto"> my account</label>
+        </div>
+        <div style="flex:0 0 auto">
+          <label style="margin:0"><input type="radio" name="br-rec" value="wallet" id="br-rec-wallet" style="width:auto"> a Midnight shielded address</label>
+        </div>
+        <div style="flex:2"><input id="br-rec-address" placeholder="mn_shield-addr_undeployed1…" disabled></div>
+        <div style="flex:0 0 auto"><button type="button" class="ghost" id="br-use-frontend">use the frontend wallet</button></div>
+      </div>
+      <p class="note">A deposit to <b>your account</b> is signed by your wallet (the account's EVM arm
+      authorises it). A deposit to <b>a shielded address</b> is paid by this console's relay wallet at
+      the vault's root, and the console never receives that wallet's keys — the address alone carries
+      the coin and encryption public keys the mint needs.</p>
+
+      <div class="wl-balcard" id="br-quote" style="display:none">
+        <div class="kv">
+          <dt>send to</dt><dd><span id="br-deposit-address">—</span>
+            <button type="button" class="ghost" id="br-copy" style="padding:1px 8px;font-size:11px">copy</button></dd>
+          <dt>required</dt><dd id="br-required">—</dd>
+          <dt>that address holds</dt><dd id="br-holds">—</dd>
+          <dt>cap headroom</dt><dd id="br-cap">—</dd>
+        </div>
+        <p class="note" id="br-ready">—</p>
+        <p class="note warn">⚠ This address is derived from the vault's CONTRACT address, so it dies
+        with <code>./down.sh -v</code>. Fund it, start, relay and complete within one stack session;
+        <code>./down.sh</code> without <code>-v</code> keeps it across a restart.</p>
+        <div class="row">
+          <div><button type="button" class="ghost" id="br-refresh">↻ re-check balances</button></div>
+          <div><button type="button" id="br-start" disabled>Start deposit</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="bridge-withdraw" class="brpane">
+      <div class="row">
+        <div><label>coin</label><select id="brw-token"></select></div>
+        <div><label>amount</label><input id="brw-amount" value="0.2"></div>
+        <div style="flex:2"><label>destination EVM address</label><input id="brw-dest" placeholder="0x…"></div>
+      </div>
+      <div class="wl-balcard" id="brw-quote" style="display:none">
+        <div class="kv">
+          <dt>the vault's own EVM account</dt><dd id="brw-vault">—</dd>
+          <dt>it holds</dt><dd id="brw-holds">—</dd>
+          <dt>gas it needs</dt><dd id="brw-gas">—</dd>
+          <dt>your account holds</dt><dd id="brw-account-holds">—</dd>
+        </div>
+        <p class="note" id="brw-ready">—</p>
+        <p class="note">A withdrawal is paid out of the vault's OWN Ethereum account, and its gas comes
+        from there too — send that ETH from your wallet. On a transfer that never executed the amount is
+        re-minted back to your account automatically (the attestation decides the branch, not you).</p>
+        <div class="row">
+          <div><button type="button" class="ghost" id="brw-refresh">↻ re-check balances</button></div>
+          <div><button type="button" id="brw-start" disabled>Start withdrawal</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="bridge-requests" class="brpane">
+      <p class="note">Every request this console has started, with the state it reached. A request is
+      resumable from its id: the start is never redone, and pressing Resume on a finished one changes
+      nothing.</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>request</th><th>direction</th><th>amount</th><th>recipient</th><th>EVM tx</th>
+          <th>attested</th><th>state</th><th></th></tr></thead>
+        <tbody id="br-requests"></tbody>
+      </table></div>
+      <p class="note" id="br-spent">—</p>
+    </div>
+  </section>
+
+  <section id="activity-bridge" class="wide">
+    <h2>Activity <span id="job-state3"></span></h2>
+    <div id="joblog3" style="margin-top:10px;background:var(--bg);border:1px solid var(--edge);border-radius:6px;font:12px/1.6 var(--mono);padding:10px 12px;min-height:90px;max-height:300px;overflow-y:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dim)">idle — a bridge round trip is start → MPC → settle, and each half is minutes</div>
+  </section>
+</main>
+
 <main id="view-aainfra" class="view">
   <section>
     <h2>Stack</h2>
     <dl class="kv">
       <dt>network</dt><dd id="s-net">—</dd>
-      <dt>manager</dt><dd id="s-manager">—</dd>
-      <dt>minter</dt><dd id="s-minter">—</dd>
+      <dt>vault (shared)</dt><dd id="s-manager">—</dd>
+      <dt>account plan</dt><dd id="s-minter">—</dd>
       <dt>tokens</dt><dd id="s-tokens">—</dd>
       <dt>relay wallet</dt><dd id="s-relay">—</dd>
       <dt>taker wallet</dt><dd id="s-taker">—</dd>
@@ -326,7 +444,8 @@
   <section>
     <h2>Fund account</h2>
     <p class="note">Relay operations (no signature): mint demo tokens and deposit them into the
-    chosen account. <b>Unshielded</b> feeds transfers and withdrawals; <b>shielded</b> feeds the
+    chosen account. <b>Unshielded</b> is a public balance on the account's ledger; <b>shielded</b>
+    is a coin in this console's private store (the chain holds only its encrypted inbox entry) and feeds the
     swap's give leg.</p>
     <form id="f-fund"><div class="row">
       <div><label>account</label><select id="fund-account" required></select></div>
@@ -344,7 +463,7 @@
 
   <section>
     <h2>Faucet — mint to a wallet</h2>
-    <p class="note">Mints tokens straight to one of the stack's wallets (no Manager deposit) —
+    <p class="note">Mints tokens straight to one of the stack's wallets (no account deposit) —
     e.g. give the taker the want-leg funds for settling offers. It calls the LOCAL
     <code>mint-test-tokens</code> issuer for the selected token (one contract per token), from the
     relay's own wallet.</p>
@@ -373,7 +492,7 @@
   </section>
 
   <section class="wide">
-    <h2>Accounts on the Manager <button id="refresh" class="ghost" style="float:right;padding:2px 10px;font-size:12px">refresh</button></h2>
+    <h2>Accounts this console has registered <button id="refresh" class="ghost" style="float:right;padding:2px 10px;font-size:12px">refresh</button></h2>
     <div class="tablewrap"><table>
       <thead id="accounts-head"><tr><th>account id</th><th>EVM owner</th><th>nonce</th><th></th></tr></thead>
       <tbody id="accounts"></tbody>
@@ -571,5 +690,6 @@
 
 <script src="/app.js"></script>
 <script src="/views.js"></script>
+<script src="/bridge.js"></script>
 </body>
 </html>

@@ -1,6 +1,5 @@
-// aa-console-mint.ts — drive the AA console's OWN HTTP API for one shielded and one
-// unshielded mint THROUGH THE LOCAL mint-test-tokens ISSUERS, and assert the Manager's
-// ledger balances that result.
+// aa-console-mint.ts — drive the AA console's OWN HTTP API to REGISTER an account and fund
+// it through the LOCAL mint-test-tokens issuers, then assert the result from chain state.
 //
 //   docker exec <aa-console container> bun /aa/runner/aa-console-mint.ts
 //
@@ -8,49 +7,44 @@
 // scripts/ci-check.sh passes --aa-mint by default.)
 //
 // ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
-// PR-B (00017 P5.5) replaced the console's three DERIVED offer-files colours with a read of
-// the faucet registry: the console's mint buttons now call the six LOCAL issuers' `mint`
-// circuits. Until this file, that claim was checked in exactly two ways — `/api/info` says
-// `tokensSource: "mint-test-tokens"` and lists six names with the right decimals — and both
-// are CONFIGURATION. Neither proves a mint through those issuers ever succeeds. The only
-// end-to-end evidence was a human clicking the buttons once (recorded in the plan's P6/P8).
+// Everything else verify-aa.sh checks is CONFIGURATION: the deploy receipt says what was
+// deployed and `/api/info` says what the console believes about its token set. Neither
+// proves that a register or a mint through those issuers ever succeeds. This drives the
+// exact path the page drives, over the same HTTP surface, in the same order.
 //
-// So this drives the exact path the page drives, over the same HTTP surface, in the same
-// order:
+// ── ⚠ WHAT PROJECT 00034 CHANGED HERE ───────────────────────────────────────
+// `register` no longer mints an id inside a shared Manager. It DEPLOYS a contract, and that
+// changes this driver in three visible ways:
 //
-//   POST /api/prepare  {kind:"register", owner}   -> prepId + the eth_signTypedData_v4 request
-//   (sign)                                        -> what MetaMask does, with a throwaway key
-//   POST /api/submit   {prepId, signature}        -> jobId; the relay recovers the signer,
-//                                                    proves `execute` and submits
-//   POST /api/fund          {accountId, amount, token}  -> MINT unshielded via the issuer,
-//                                                          then depositUnshielded
-//   POST /api/fund-shielded {accountId, amount, token}  -> MINT shielded via the issuer,
-//                                                          then depositShielded
-//   POST /api/pure {fn:"unshieldedBalance"|"shieldedBalance"} -> the MANAGER'S LEDGER
+//   1. THE FIRST SIGNATURE IS NOT AN AUTHORISATION. An account's initial device is enrolled
+//      by revealing its public POINT, which no EVM wallet exposes and which
+//      `activate_initial_device_with_evm` carries as an argument — so the console asks for
+//      an EIP-191 `personal_sign` over a fixed sentence that names no operation and moves
+//      no funds (Q30). `/api/prepare` answers with `message` instead of `typedData`, and
+//      this driver signs it with `personalSign`, which is what a wallet would do.
+//   2. THE ACCOUNT ID EXISTS ONLY AFTERWARDS. It is the contract address, derived from the
+//      deploy transaction, so there is nothing to sign over in advance (Q40). The driver
+//      reads it out of the finished job.
+//   3. THE SHIELDED HALF IS NOT ON THE LEDGER. A Passport account's shielded coins live in
+//      the owner's private state and the chain carries only an encrypted inbox entry, so
+//      the assertion for the shielded deposit is the console's own coin store plus the
+//      account's `inbox_count` — both read back over the API, neither taken on trust from
+//      the job's own "done".
 //
-// The last step is the assertion that matters: `/api/fund*` returning a job that says "done"
-// proves the relay did not throw; only the ledger read proves the value landed, on the right
-// account, under the right colour, at the right scale.
-//
-// ── WHY IT SIGNS INSTEAD OF USING THE CONSOLE'S DEV SIGNER ──────────────────
+// ── WHY IT SIGNS WITH @metamask/eth-sig-util ───────────────────────────────
 // `AA_CONSOLE_DEV_SIGNER` is off by default and stays off: enabling a built-in signer with a
-// well-known key by default would change what the demo ships to make a test easier. Signing
-// here costs four lines and is a MORE faithful reproduction of the browser anyway — it signs
-// `request.params[1]`, the typed-data JSON the console handed out, exactly as MetaMask would,
-// rather than re-deriving the action.
-//
-// ── WHY THE REGISTER STEP IS NOT OPTIONAL ──────────────────────────────────
-// The Manager refuses a deposit to an unknown account: `assert(accounts.member(acct), "credit
-// account is not registered")` guards both depositShielded and depositUnshielded. So the
-// account has to exist, and creating it is one EVM-signed `execute` — which is also the
-// cheapest possible proof that the relay's whole prepare/recover/prove/submit chain works.
+// well-known key would change what the demo ships to make a test easier. Signing here with
+// the library a real MetaMask uses also makes this a CROSS-CHECK of the frozen byte contract
+// (spec SC-006) rather than a re-derivation of it: if this project's EIP-712 codec and
+// MetaMask's ever disagreed, the point the console recovers would belong to another address
+// and the submit would be refused by name.
 
 // ── issue 00020: NEVER let bun auto-install a pinned dependency ─────────────
 // `await import("<pkg>")` in a bun process with network access SUCCEEDS on a package that is
 // not installed — bun fetches it from npm at run time, at whatever version the registry
-// resolves, into ~/.bun/install/cache. For a signing library that would mean signing with an
-// unpinned implementation and calling the result a verified path. Resolve first, and require
-// the answer to come from the image's own tree.
+// resolves. For a signing library that would mean signing with an unpinned implementation
+// and calling the result a verified path. Resolve first, and require the answer to come from
+// the image's own tree.
 for (const pkg of ["@metamask/eth-sig-util"]) {
   const where = Bun.resolveSync(pkg, "/aa");
   if (!where.startsWith("/aa/node_modules/")) {
@@ -60,7 +54,7 @@ for (const pkg of ["@metamask/eth-sig-util"]) {
   }
 }
 
-const { signTypedData, SignTypedDataVersion } = await import("@metamask/eth-sig-util");
+const { personalSign } = await import("@metamask/eth-sig-util");
 
 const TAG = "[aa-console-mint]";
 const log = (...a: unknown[]) => console.log(TAG, ...a);
@@ -68,12 +62,13 @@ const fail = (msg: string): never => { console.error(`${TAG} FAIL ${msg}`); proc
 
 const BASE = (process.env["AA_CONSOLE_MINT_URL"] ?? "http://127.0.0.1:8090").replace(/\/+$/, "");
 // A throwaway EVM key used for nothing else in this stack. Public by design, like every seed
-// here; it owns one AA account on a devnet that is wiped by `./down.sh -v`.
-// (`a11ce0de` x8 = 64 hex chars; distinct from the console's own env-gated dev key.)
+// here; it owns one account on a devnet that `./down.sh -v` wipes.
 const OWNER_KEY = (process.env["AA_CONSOLE_MINT_KEY"]
-  ?? "0x" + "a11ce0de".repeat(8)) as `0x${string}`;
+  ?? `0x${"a11ce0de".repeat(8)}`) as `0x${string}`;
 const AMOUNT = BigInt(process.env["AA_CONSOLE_MINT_AMOUNT"] ?? "1000");
-const JOB_TIMEOUT_MS = Number(process.env["AA_CONSOLE_MINT_JOB_TIMEOUT_MS"] ?? 900_000);
+// A two-wave account deploy on a cold devnet is minutes, and the k=18 activation proof is
+// the slowest single step in this stack.
+const JOB_TIMEOUT_MS = Number(process.env["AA_CONSOLE_MINT_JOB_TIMEOUT_MS"] ?? 1_800_000);
 
 async function api<T = any>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -89,7 +84,7 @@ async function api<T = any>(path: string, body?: unknown): Promise<T> {
   return parsed as T;
 }
 
-/** Poll a console job to completion. Its `log` is echoed, because when a mint fails the
+/** Poll a console job to completion. Its `log` is echoed, because when a step fails the
  *  reason is in there and nowhere else. */
 async function awaitJob(jobId: string, what: string): Promise<any> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
@@ -105,11 +100,13 @@ async function awaitJob(jobId: string, what: string): Promise<any> {
   }
 }
 
-// ── 0. the console's own view of the token set ──────────────────────────────
+// ── 0. the console's own view ───────────────────────────────────────────────
 const info = await api("/api/info");
+if (info.model !== "passport-per-user-account") {
+  fail(`/api/info reports model=${JSON.stringify(info.model)} — this driver is for the Passport account model`);
+}
 if (info.tokensSource !== "mint-test-tokens") {
-  fail(`/api/info reports tokensSource=${JSON.stringify(info.tokensSource)}, expected "mint-test-tokens" ` +
-    `— this console is not reading the local faucet registry, so there is nothing to mint through`);
+  fail(`/api/info reports tokensSource=${JSON.stringify(info.tokensSource)}, expected "mint-test-tokens"`);
 }
 if (info.tokensError) fail(`the console could not resolve its token set: ${info.tokensError}`);
 const tokens: Array<{ name: string; family: string; color: string; decimals: number; issuer?: string }> =
@@ -126,86 +123,88 @@ const pick = (family: string, wanted?: string) => {
 const SH = pick("shielded", process.env["AA_CONSOLE_MINT_SHIELDED"] ?? "twUSDC");
 const UN = pick("unshielded", process.env["AA_CONSOLE_MINT_UNSHIELDED"] ?? "utwUSDC");
 log(`registry revision ${String(info.tokensRegistryRevision ?? "?").slice(0, 16)}…`);
-log(`shielded  ${SH.name} colour ${SH.color.slice(0, 16)}… decimals ${SH.decimals} issuer ${String(SH.issuer).slice(0, 16)}…`);
-log(`unshielded ${UN.name} colour ${UN.color.slice(0, 16)}… decimals ${UN.decimals} issuer ${String(UN.issuer).slice(0, 16)}…`);
+log(`vault ${String(info.vault?.address ?? "?").slice(0, 20)}… — sealed into every account this console registers`);
+log(`shielded   ${SH.name} colour ${SH.color.slice(0, 16)}… decimals ${SH.decimals}`);
+log(`unshielded ${UN.name} colour ${UN.color.slice(0, 16)}… decimals ${UN.decimals}`);
 
-// ── 1. register an account: prepare -> sign -> submit ───────────────────────
-// The owner address is derived by the SAME helper the console uses, out of the image's aalib,
-// so the address this signs with and the address the relay recovers cannot drift.
-const { addressForPrivateKey } = await import("/aa/aalib/signature.js");
-const OWNER = String(addressForPrivateKey(OWNER_KEY)).toLowerCase();
+// ── 1. register: prepare -> personal_sign -> submit ─────────────────────────
+const keyBuf = Buffer.from(OWNER_KEY.slice(2), "hex");
+// The address the console will be told to expect. Derived with the PROJECT's own client
+// rather than with an Ethereum utility library, because the two must agree by construction:
+// the console recovers a point from the signature and hashes it to an address, and if this
+// driver named a different one the submit would be refused by name rather than silently.
+// `addressHex` already carries the `0x`.
+const { EvmDevice } = await import("../passport/src/wallet/signer.js");
+const OWNER = EvmDevice.fromPrivateKey(new Uint8Array(keyBuf)).addressHex.toLowerCase();
 log(`owner EOA ${OWNER}`);
 
 const prep = await api("/api/prepare", { kind: "register", owner: OWNER });
-const accountId: string = prep.summary?.accountId ?? prep.action?.accountId;
-if (!/^0x[0-9a-f]{64}$/i.test(accountId ?? "")) fail(`/api/prepare returned no account id (${JSON.stringify(prep.summary)})`);
-log(`account ${accountId}`);
-
-// EXACTLY what MetaMask signs: the JSON string the console put in params[1]. Not a
-// re-derivation of the action — the console verifies against its own in-memory prep, and a
-// signature over anything but that digest is refused with "recovered signer is not the owner".
-const typedData = JSON.parse(prep.request.params[1]);
-if (String(prep.request.params[0]).toLowerCase() !== OWNER) {
-  fail(`the console addressed the signing request to ${prep.request.params[0]}, not ${OWNER}`);
+if (typeof prep.message !== "string" || !prep.message) {
+  fail(`/api/prepare(register) returned no personal_sign message — the enrolment step is missing (Q30)`);
 }
-const signature = signTypedData({
-  privateKey: Buffer.from(OWNER_KEY.slice(2), "hex"),
-  data: typedData,
-  version: SignTypedDataVersion.V4,
-});
-log(`signed ${typedData.primaryType} (${signature.slice(0, 18)}…)`);
+if (prep.typedData) fail("/api/prepare(register) returned typed data; enrolment must be EIP-191, not EIP-712");
+log(`enrolment message (authorises nothing): ${JSON.stringify(prep.message.split("\n")[0])}`);
+
+// EXACTLY what a wallet's personal_sign does: EIP-191 over the message the console handed
+// out. The console recovers the public point from it and checks the derived address.
+const signature = personalSign({ privateKey: keyBuf, data: prep.message });
+log(`signed (${signature.slice(0, 18)}…)`);
 
 const reg = await api("/api/submit", { prepId: prep.prepId, signature });
-await awaitJob(reg.jobId, "register");
+const regJob = await awaitJob(reg.jobId, "register");
+const address: string = regJob.data?.address ?? regJob.txId;
+if (!/^[0-9a-f]{64}$/i.test(String(address).replace(/^0x/, ""))) {
+  fail(`register finished without an account address (${JSON.stringify(regJob.data)})`);
+}
+log(`account ${address} — ${regJob.data?.circuits ?? "?"} circuits deployed across two waves`);
 
-const registered = await api("/api/pure", { fn: "isRegistered", args: [accountId] });
-if (registered.result?.registered !== true) fail(`the account is not in the Manager's accounts set after register`);
-log(`register OK — the Manager's accounts set contains ${accountId.slice(0, 18)}…`);
-
-// ── 2. the two mints, each followed by its deposit ──────────────────────────
-// `/api/fund` and `/api/fund-shielded` are ONE console operation each: mint the token from
-// its LOCAL ISSUER into the funder wallet, then deposit it into the AA account. That is the
-// pair of buttons the page's Fund panel drives, and the reason both are exercised is that
-// they take different circuits on both halves (mintShieldedTo/depositShielded vs
-// mintUnshieldedTo/depositUnshielded), and the shielded half is the one that needs the
-// recipient's encryption key to be right.
-const before = {
-  un: BigInt((await api("/api/pure", { fn: "unshieldedBalance", args: [accountId, UN.color] })).result.balance),
-  sh: BigInt((await api("/api/pure", { fn: "shieldedBalance", args: [accountId, SH.color] })).result.balance),
+const findAccount = async () => {
+  const list = await api(`/api/accounts?owner=${OWNER}`);
+  const row = (list.accounts ?? []).find((a: any) => a.address === address);
+  if (!row) fail(`the console's registry does not list ${address} for ${OWNER}`);
+  return row;
 };
-log(`manager balances before: ${UN.name}=${before.un} ${SH.name}=${before.sh}`);
+const registered = await findAccount();
+if (registered.booted !== true) fail("the account's ledger says booted=false — activation did not land");
+log(`register OK — booted, authNonce ${registered.authNonce}, inbox ${registered.inboxCount}`);
 
-const fundUn = await api("/api/fund", { accountId, amount: String(AMOUNT), token: UN.name });
+// ── 2. the two fundings, each a mint through the issuer plus a deposit ──────
+// They take different circuits on both halves (mint + deposit_unshielded vs mint +
+// deposit_shielded), and the shielded half is the one that also has to seal an inbox entry
+// to the account's advertised key and capture the coin's Merkle position afterwards.
+const before = await findAccount();
+log(`before: ${UN.name} (ledger) = ${before.unshielded?.[UN.name] ?? "0"}; ` +
+    `${SH.name} (coin store) = ${before.shielded?.[SH.name] ?? "0"}; inbox ${before.inboxCount}`);
+
+const fundUn = await api("/api/fund", { accountId: address, amount: String(AMOUNT), token: UN.name });
 const jUn = await awaitJob(fundUn.jobId, `fund ${UN.name}`);
 
-const fundSh = await api("/api/fund-shielded", { accountId, amount: String(AMOUNT), token: SH.name });
+const fundSh = await api("/api/fund-shielded", { accountId: address, amount: String(AMOUNT), token: SH.name });
 const jSh = await awaitJob(fundSh.jobId, `fund-shielded ${SH.name}`);
 
-// ── 3. the assertion: the MANAGER'S LEDGER moved by exactly the deposited amounts ──
-const after = {
-  un: BigInt((await api("/api/pure", { fn: "unshieldedBalance", args: [accountId, UN.color] })).result.balance),
-  sh: BigInt((await api("/api/pure", { fn: "shieldedBalance", args: [accountId, SH.color] })).result.balance),
-};
-log(`manager balances after:  ${UN.name}=${after.un} ${SH.name}=${after.sh}`);
+// ── 3. the assertion: chain state and custody both moved ───────────────────
+const after = await findAccount();
+log(`after:  ${UN.name} (ledger) = ${after.unshielded?.[UN.name] ?? "0"}; ` +
+    `${SH.name} (coin store) = ${after.shielded?.[SH.name] ?? "0"}; inbox ${after.inboxCount}`);
 
 const problems: string[] = [];
-if (after.un - before.un !== AMOUNT) {
-  problems.push(`${UN.name}: unshieldedBalances moved by ${after.un - before.un}, expected ${AMOUNT}`);
+const un = BigInt(after.unshielded?.[UN.name] ?? "0") - BigInt(before.unshielded?.[UN.name] ?? "0");
+if (un !== AMOUNT) problems.push(`${UN.name}: unshielded_balances moved by ${un}, expected ${AMOUNT}`);
+
+const sh = BigInt(after.shielded?.[SH.name] ?? "0") - BigInt(before.shielded?.[SH.name] ?? "0");
+if (sh !== AMOUNT) problems.push(`${SH.name}: the coin store moved by ${sh}, expected ${AMOUNT}`);
+
+// The inbox entry is what makes a shielded deposit DISCOVERABLE: without it the coin still
+// belongs to the account and nobody, including its owner, can ever find it (S3). A deposit
+// that did not advance inbox_count is the exact silent failure this checks for.
+if (BigInt(after.inboxCount) - BigInt(before.inboxCount) < 1n) {
+  problems.push(`inbox_count did not advance — the shielded deposit filed no entry, so the coin is undiscoverable`);
 }
-if (after.sh - before.sh !== AMOUNT) {
-  problems.push(`${SH.name}: shieldedBalances moved by ${after.sh - before.sh}, expected ${AMOUNT}`);
-}
-// The pooled coin is the shielded half's other half: the Manager custodies one coin per
-// colour, and a credited balance with no pool entry would mean the ledger and the custody
-// disagree.
-const pooled = await api("/api/pure", { fn: "poolHasColour", args: [SH.color] });
-if (pooled.result?.pooled !== true) problems.push(`${SH.name}: the Manager custodies no pooled coin of this colour`);
 
 if (problems.length) fail(problems.join("; "));
 
 log(`tx ids: ${UN.name} ${jUn.txId ?? "?"} · ${SH.name} ${jSh.txId ?? "?"}`);
-log(`OK: ${AMOUNT} ${SH.name} (shielded) and ${AMOUNT} ${UN.name} (unshielded) minted through the ` +
-    `local mint-test-tokens issuers and deposited into ${accountId.slice(0, 18)}… — Manager balances agree`);
+log(`OK: an account was deployed for ${OWNER}, and ${AMOUNT} ${SH.name} (shielded, with its inbox ` +
+    `entry) and ${AMOUNT} ${UN.name} (unshielded) were minted through the local issuers and deposited`);
 // A single machine-readable line the shell gate greps for.
-console.log(`${TAG} RESULT account=${accountId} shielded=${SH.name}:${after.sh - before.sh} ` +
-            `unshielded=${UN.name}:${after.un - before.un}`);
+console.log(`${TAG} RESULT account=${address} owner=${OWNER} shielded=${SH.name}:${sh} unshielded=${UN.name}:${un}`);

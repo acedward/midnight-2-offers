@@ -195,7 +195,7 @@ control is worse than one that is gone.
   console no longer registers names in the kernel — it used to POST every token with a hardcoded
   `decimals: 6`, wrong for four of the six, and `registry-bridge` owns `known_tokens` now. And the
   `aa` profile's swap panel needs the `faucet` profile to have tokens at all. Nothing about
-  deposits, withdrawals or the EIP-712 action set changed: the Manager only ever saw 32 raw colour
+  deposits, withdrawals or the EIP-712 action set changed: an account only ever sees 32 raw colour
   bytes.
 - **The AA images are pinned to mint-test-tokens as well now, and that pin must match the faucet's
   exactly.** The console loads the issuers' COMMITTED generated modules, copied into the
@@ -310,35 +310,173 @@ control is worse than one that is gone.
   to mint-test-tokens' `contracts/v2/package.json`. **The AA pin, the kernel pin and the
   mint-test-tokens pin cannot be moved independently.** The build fails closed on any disagreement.
 
-## The AA Manager's `execute` circuit comes from an unaudited third-party compiler
+## The `aa` profile's bridge vault: a STUB MPC key by default, a DEMO-GRADE one with `signet`
 
-This is the single most important caveat in this repository, and it is the DEFAULT, so it is
-stated here rather than left to a build flag nobody reads.
+This is the most important caveat on the `aa` side, and both halves of it are the DEFAULT for
+some stack, so both are stated here rather than left to a build flag nobody reads.
 
-- **`execute` is compiled by MinoCrab, not by `compactc`.** By default (`AA_ZKIR_SOURCE=minocrab`)
-  the AA image takes the Manager's `execute` ZKIR and keys from
-  [acedward/AA-midnight-evm-experiment-minocrab](https://github.com/acedward/AA-midnight-evm-experiment-minocrab)
-  release `v0.2.0` — the same contract transcribed into MinoCrab, a third-party Rust eDSL
-  compiler for Midnight. It buys a real thing: k = 18 / 211,047 rows instead of k = 19 / 382,780,
-  which halves the proving key (544 MiB rather than 1.14 GB) and roughly halves proving time,
-  and it is why the console's proof server stops being OOM-killed on a memory-tight host.
-- **MinoCrab is UNAUDITED and the equivalence is TESTED, NOT PROVEN.** The port's own differential
-  suite compares it against the `compactc` artifact for the same contract commit — 59 tests, 26
-  scenarios, 5,128 tamper probes, 0 acceptance disagreements — plus 7/7 proved selectors and
-  14/14 preimage accepts at the previous pin. That is evidence. Evidence is not a proof, and a
-  wrong circuit in a custody contract is a wrong circuit. **Dev chains only.** Do not put this on
-  anything that holds value.
-- **What IS mechanically guaranteed** is only the identity of the bytes: the image asserts
-  `sha256(SHA256SUMS) == MINOCRAB_SUMS_SHA256` (the pin in this repository), verifies every file
-  it takes against that `SHA256SUMS`, and asserts the release manifest's contract pin equals
-  `AA_REF` — so it cannot silently deploy keys for a different contract. None of that says the
-  circuit is correct.
-- **The other eight circuits stay compactc's** by default, deliberately: `execute` is the one
-  with end-to-end proving evidence, and it is the only one where k moves. `AA_ZKIR_SOURCE=minocrab-all`
-  opts into all nine and is gated by hashes alone. `AA_ZKIR_SOURCE=compactc` opts out entirely,
-  and `./verify.sh --aa` reports which one is live rather than assuming.
-- **Changing it is KEY-BREAKING.** A contract is deployed with one verifier key; proofs made
-  against another are rejected. Switching `AA_ZKIR_SOURCE` needs `./down.sh -v` and a redeploy.
+### Without `signet`: the MPC root key is a stub, and that is deliberate
+
+- **The vault is real; the MPC behind it is not.** Every account's constructor seals a
+  reference to the ERC20 bridge vault, so `aa-deploy` has to deploy and `initialise` one
+  before any account can exist. `initialise` pins the vault to an MPC root public key and an
+  EVM chain id, and on a bare localnet there is no MPC at all — so the key is DERIVED FROM A
+  PUBLIC STRING (`AA_DOMAIN`) and its private half is therefore known to anyone reading this
+  repository.
+- **What that means in practice.** The five bridge circuits are compiled and their verifier
+  keys are deployed, so an account is bridge-shaped — but nothing can move funds across the
+  bridge on such a stack, because no MPC signs anything. The deposit addresses the client
+  derives are derivable by anybody. This is correct for a disposable localnet whose genesis
+  seeds are published in `wallets/wallets.json` and **wrong anywhere else**.
+- **It is recorded rather than implied.** The deploy receipt carries
+  `mpc.provenance: "derived-from-AA_DOMAIN"`, `./verify.sh --aa` prints the warning every
+  run, `./up.sh` says it in its summary, and the console's Repos tab shows it.
+- **`AA_WITH_BRIDGE=0` is the default for the PROVER keys only.** The bridge's verifier keys
+  ride the wave-2 maintenance update either way, so an account registered by a default image
+  can be bridged later by an image built with `AA_WITH_BRIDGE=1`; what the flag buys is the
+  ~1.2 GB of proving keys needed to make those calls in this process.
+
+### With `signet`: a real signer, and a bridge that is still demo-grade
+
+`./up.sh --with aa --with signet` (project 00035) replaces the stub: `aa-deploy` generates a
+per-stack MPC root secret, initialises the vault against its public half and pins the vault to a
+REAL EVM chain (11155111, Sepolia, by default), and `signet-fakenet` — our patched fakenet —
+holds the other half and signs on that chain. `mpc.provenance` becomes `"fakenet"`, and
+`aa-deploy` REFUSES the stub on that profile, because a stub-keyed vault where funds actually move
+would strand every deposit at an address whose private key is published in `deploy-aa.ts`'s own
+comments. `docs/COMPONENTS.md` has the whole profile.
+
+That is a working bridge, and it is still **not a production one**, for two independent reasons.
+Both are printed by `./up.sh` and by `./verify.sh` on every run, and both must travel with any
+artefact this profile produces:
+
+1. **The stack holds BOTH halves of the MPC root key.** Everything downstream of the signature is
+   real — the request, the singleton events, the EVM transaction, the attestation check inside the
+   circuit, the coins. What is **not** demonstrated is a signer nobody here controls. A vault
+   verifies only against the response key pinned at its own `initialise`, so this is sound as a
+   demonstration and unsound as custody.
+2. **The attestation is recovered by an `eth_call` REPLAY, not by a mined trace**, whenever the RPC
+   has no `debug` namespace — which is every free tier, including the one this was built for. The
+   replay reads pre-block state at the mined block's parent, so a call whose return data depended
+   on writes earlier in the same block (or on its position in the block) can differ from what the
+   real MPC would have signed. For a single ERC20 `transfer` from an address nothing else touches
+   the two agree, which is the only shape this bridge uses. With a traced endpoint the same image
+   takes the upstream path unchanged and this caveat disappears.
+
+### Every deposit address dies with `./down.sh -v`, and funds left at one need a manual tool
+
+A deposit address is `deriveDepositEvmAddress(MPC root, **vault contract address**, depositPath(recipient))`.
+A wiped chain deploys a NEW vault, so every address this stack has ever shown changes — a static
+`AA_MPC_ROOT_SECRET` fixes the root and fixes nothing else (project 00035 question Q13). The
+practical rules, which `up.sh`'s summary and the Bridge tab's quote both state:
+
+- fund a deposit address, start, relay and complete **within one stack session**;
+- use `./down.sh` **without** `-v` to stop and restart a stack whose deposit addresses matter;
+- `-v` is for a deliberate fresh start, after which the addresses are new.
+
+**If tokens are left at a deposit address of a wiped chain**, they are not lost and they are not
+reachable from this stack either: sweeping them needs the (static) MPC root secret and the OLD
+vault's contract address, driven through a manual tool that re-derives the address and asks the MPC
+to sign a transfer for it. That tool is **out of scope here** — there is no such command in this
+repository. Keep the root secret if this matters to you, and prefer not to get into the situation:
+the console never invites funding before the stack can start the deposit, and the quote warns.
+
+### The Bridge tab is a console feature, and the console is still the custodian
+
+The tab (project 00035) does not change the trust model: the browser signs EIP-712 and holds no
+Midnight key, and the console holds the account's coin store and viewing key exactly as before.
+Two things are worth stating about the WALLET-recipient path, which is new:
+
+- the console never receives that wallet's keys — the shielded address carries the two PUBLIC keys
+  the mint needs, and the recipient discovers the coin by syncing;
+- it is the console's relay wallet that pays for the two transactions, so a stranger cannot start
+  a wallet deposit through your console without your console's DUST. Nothing about the FUNDS is at
+  the console's discretion: the deposit address is derived from the recipient, so anything sent
+  there can only ever be minted to that recipient.
+
+### The frontend wallet's seed is visible to anyone who can load the page
+
+Not new with `signet`, but it matters as soon as the page holds a wallet somebody cares about.
+`compose/frontend.yml` injects `FRONTEND_WALLET_SEED` into `/config.js` as
+`window.DEMO_WALLET_SEED`, so **the in-page wallet's seed is served, in clear, to every client
+that can reach the frontend port**. With the stack's own `demo-spa` seed that is harmless: it is
+published in `wallets/wallets.json` and controls nothing but throwaway localnet tokens. Since
+project 00035 the entrypoint also accepts a 128-hex BIP-39 **master seed**, which makes the
+in-page wallet the same wallet a browser wallet shows for that mnemonic — and a master seed IS the
+wallet. So: a stack seeded that way is **local-only**. `BIND_ADDR` defaults to `127.0.0.1` and must
+stay there; do not put such a stack behind a proxy, on a shared host, or on a public port, and
+prefer a wallet whose contents you would not mind losing.
+
+## The console holds every account's viewing key
+
+A Passport account's shielded coins are **not in ledger state**. They live in the owner's
+private coin store, and the chain carries only a 192-byte inbox entry encrypted to the
+account's advertised X25519 key. A browser holds no Midnight key, so on this stack the
+console is the custodian: it keeps each account's coin store AND its X25519 **secret** in
+`/aa/out/aa-roster.json` (the `aa-out` volume, destroyed by `./down.sh -v`).
+
+With that key the console can read every inbox entry the account has ever received. That is
+the same posture the previous console had when it held the AA-v3 Manager's owner secret, and
+it is why this is a demo stack. A product would keep the viewing key in the user's own
+storage and hand the console only `enc_key`, the public half. **Never point this at a
+network whose funds matter.**
+
+Two smaller consequences of the same fact:
+
+- **An account registered by another console is not drivable from this one.** The address
+  works — `CustodyAccount.connect(address)` is enough to read and to deposit — but spending
+  needs the coin store, which only the registering console has. There is no on-chain registry
+  to recover it from: one account is one contract, and nothing links an Ethereum address to
+  the accounts it controls.
+- **One coin per colour, and no in-circuit merge.** Stateless custody holds many coins per
+  colour, and this console keeps ONE of each so that "the account's twUSDC" is a number a
+  demo user can reason about. A second shielded deposit of the same colour is refused rather
+  than silently overwriting (and stranding) the first.
+
+## Registering an account is two transactions and minutes of proving
+
+The deploy budget is a real constraint, not a tuning knob. Every gated `evm` circuit is
+**k = 18** — keccak, EIP-712 and ECDSA are all in-circuit — and its verifier key is 3,321
+bytes. Measured against this node's live ledger parameters: eight operations land, **nine are
+refused**, and the client-side fee computation happily prices ten. So an account deploys in
+waves:
+
+- **wave 1** — the two permissionless deposits, the activation and five of the seven gated
+  circuits: a functional account the moment it lands;
+- **wave 2** — one maintenance update carrying the gated overflow, the offer circuit and the
+  five bridge circuits, and **retiring the maintenance authority** in the same update.
+
+Retiring the authority is deliberate and costly: while an authority is live it sits ABOVE the
+MIP-0013 seam and can replace any verifier key, which is a path around every signature the
+seam checks. The price is that a retired account can never receive a future arm's circuits —
+a new arm means a new account.
+
+Expect ~1–2 minutes per proved call on a normal host, and the 570 MB proving key is uploaded
+to the proof server per call. The `aa-proof-server` has been observed being OOM-killed under
+memory pressure; the console retries that exact transient class once.
+
+## One live offer per account
+
+The MIP-0013 seam consumes ONE device entry per authorised call. An offer is proved and then
+held, unsubmitted, until a taker settles it — so if the owner signs a SECOND offer in the
+meantime, the first one's authorisation nonce is stale and it can **never** settle. Nothing
+on chain prevents this; it is the client's job, and this console does it in two places (the
+page refuses before the wallet is prompted, the relay refuses again).
+
+AA-v3 allowed concurrent offers because its Manager kept a public per-account nonce rather
+than a rolling single-use device entry. That is a real capability lost in the migration, and
+the honest framing is that it was bought with the custody properties the seam provides.
+
+## AA-v3's internal transfers have no counterpart
+
+`TransferInternalShielded` and `TransferInternalUnshielded` moved value between two ROWS of
+one contract's balance map. Two Passport accounts are two contracts, and an account never
+calls another account — a contract-addressed output is only valid when the recipient claims
+it inside the same transaction tree, which would require the sender to CALL the recipient.
+
+The console's Send is therefore a **withdraw followed by a deposit**: two transactions, one
+signature (the deposit is permissionless), through a wallet the console runs. It is honest
+about the model rather than papering over it, and the hop is visible in the job log.
 
 ## The `faucet` profile
 

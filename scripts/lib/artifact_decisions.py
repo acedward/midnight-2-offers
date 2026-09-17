@@ -702,39 +702,14 @@ def _fx_proofdata_duplicate_source(doc: dict) -> dict:
     return doc
 
 
-def _source(doc: dict, sid: str) -> dict:
-    return next(s for s in doc["sources"] if s["id"] == sid)
-
-
-def _fx_release_identified_by_tag_only(doc: dict) -> dict:
-    """A tag is a movable label. Dropping the checksums hash would leave the tag as the
-    only identity, which is the failure this whole entry exists to prevent."""
-    del _source(doc, "minocrab-release")["checksums"]["assetSha256"]
-    return doc
-
-
-def _fx_release_manifest_hash_disagrees(doc: dict) -> dict:
-    """The manifest's hash is recorded twice — once on its own and once in the covered
-    file list. Two records of one identity that disagree is a re-pin someone did halfway."""
-    src = _source(doc, "minocrab-release")
-    src["manifest"]["assetSha256"] = "4" * 64
-    return doc
-
-
-def _fx_release_byte_total_moved(doc: dict) -> dict:
-    """A file swapped for a bigger one, with the per-file sizes left alone."""
-    _source(doc, "minocrab-release")["assetBytes"] += 4096
-    return doc
-
-
-def _fx_release_checksums_covers_itself(doc: dict) -> dict:
-    """SHA256SUMS listed among the files it covers — a circular claim."""
-    src = _source(doc, "minocrab-release")
-    src["files"].append(dict(src["checksums"]))
-    src["assetCount"] += 1
-    src["assetBytes"] += src["checksums"]["assetSize"]
-    return doc
-
+# The five fixtures that used to live here mutated the ONE `sources[]` entry this matrix
+# carried — the MinoCrab release that supplied the AA-v3 Manager's `execute` artifacts. That
+# contract is retired (project 00034) and `sources[]` is empty, so the fixtures have nothing
+# to mutate: a self-test that cannot construct its own subject is not a check that stopped
+# biting, it is a check whose subject left. The RULES they exercised are still enforced in
+# `validate` for any future entry — release identified by a checksums hash rather than a tag,
+# manifest hash recorded once, byte total equal to the sum of the parts, no checksums file
+# among the files it covers — and the day an entry returns, so do they.
 
 # (label, mutation, repin). repin=True recomputes pinsDigest after the mutation so the
 # fixture exercises its own rule rather than tripping the pins guard. repin=False is used
@@ -758,10 +733,6 @@ SELF_TESTS = [
     ("exact-mirror destination that is not byte-equal", _fx_mirror_not_exact),
     ("wrong Ledger-static cache namespace", _fx_proofdata_wrong_namespace),
     ("proof-data manifest source of truth erased", _fx_proofdata_duplicate_source),
-    ("consumed release identified by its tag alone", _fx_release_identified_by_tag_only),
-    ("release manifest hash disagrees with the covered file list", _fx_release_manifest_hash_disagrees),
-    ("release byte total no longer sums to its parts", _fx_release_byte_total_moved),
-    ("release checksums file listed among the files it covers", _fx_release_checksums_covers_itself),
 ]
 
 
