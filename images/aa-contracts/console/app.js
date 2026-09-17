@@ -698,6 +698,9 @@ function renderWallet() {
 // background accounts poll.
 let readsBusy = false;
 async function renderReads() {
+  // The AA-v3 "Contract reads" panel is gone (its functions do not exist on a Passport
+  // account); the callers stay so the render sequence is unchanged.
+  if (!$("wl-readlist")) return;
   if (!state.signer || readsBusy) return;
   readsBusy = true;
   try {

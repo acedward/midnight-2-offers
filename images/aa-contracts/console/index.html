@@ -179,17 +179,9 @@
         <button id="op-register" disabled>Register</button>
       </div>
 
-      <!-- Live contract reads — run automatically for the CONNECTED address the
-           moment the wallet connects; registration is NOT required (the rows
-           simply read empty). The disclosure at the page bottom stays for
-           running the same functions against arbitrary addresses. -->
-      <div class="wl-balcard">
-        <div class="wl-balhead" style="margin-bottom:2px">
-          <h2 style="margin:0">Contract reads</h2>
-          <span id="wl-reads-state" class="pill dim">…</span>
-        </div>
-        <dl class="kv" id="wl-readlist" style="margin-top:8px"></dl>
-      </div>
+      <!-- The AA-v3 "Contract reads" panel (deploymentDomain / isRegistered / evmOwner /
+           evmNonce / poolValue) was removed: those functions belong to the retired Manager
+           contract, not to a Passport account, and every row read "unknown function". -->
 
       <div id="wl-balances" style="display:none">
         <div class="wl-balcard">
