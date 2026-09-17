@@ -113,7 +113,6 @@ import {
   serialiseRelay,
   toRaw,
   upsertRequest,
-  vaultColour,
   vaultEvmAddressFor,
   ERC20_ABI,
   type BridgeRecipient,
@@ -161,8 +160,7 @@ import {
 import { buildTypedData, computeDigest } from "../passport/src/wallet/eip712.js";
 import { generateEncKeyPair } from "../passport/src/wallet/inbox.js";
 import { depositAsThirdParty, inboxWalkPortable } from "../passport/src/wallet/deposit.js";
-import { candidateIndices, mtIndexForSingleOutput } from "../passport/src/wallet/capture.js";
-import { sealInboxEntry } from "../passport/src/wallet/inbox.js";
+import { candidateIndices } from "../passport/src/wallet/capture.js";
 import {
   buildOpenSwapTypedData,
   freshWantNonce,

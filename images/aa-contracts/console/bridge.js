@@ -30,6 +30,21 @@
     activePane: "deposit",
   };
 
+  /** Raw units → a decimal string, BIGINT ONLY. Every amount this tab shows goes through it:
+   *  10 WEENUS is 10^19 raw, and `Number(10n ** 19n)` loses the low three digits without
+   *  telling anybody. The relay sends both forms for the values it computes; this covers the
+   *  ones that come from the account's coin store, which is keyed by colour and raw value. */
+  const fmt = (raw, decimals) => {
+    try {
+      const v = BigInt(raw ?? "0");
+      if (!decimals) return v.toString();
+      const digits = v.toString().padStart(decimals + 1, "0");
+      const whole = digits.slice(0, digits.length - decimals);
+      const frac = digits.slice(digits.length - decimals).replace(/0+$/, "");
+      return frac ? `${whole}.${frac}` : whole;
+    } catch { return String(raw ?? "0"); }
+  };
+
   const brToken = () => {
     const custom = $("br-token-custom").value.trim();
     if (custom) return { erc20: custom, symbol: custom.slice(0, 10), decimals: null, custom: true };
@@ -136,7 +151,9 @@
     sel.innerHTML = "";
     const held = bridge.tokens.filter((t) => BigInt((acct?.shielded ?? {})[t.symbol] ?? "0") > 0n);
     if (!held.length) sel.append(new Option("no bridged coin in this account yet", "", true, true));
-    for (const t of held) sel.append(new Option(`${t.symbol} (${t.decimals}d)`, t.erc20));
+    for (const t of held) {
+      sel.append(new Option(`${t.symbol} — ${fmt((acct.shielded ?? {})[t.symbol], t.decimals)} held`, t.erc20));
+    }
     if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
   }
 
@@ -239,7 +256,7 @@
     $("brw-gas").textContent = `${q.requiredEth} ETH (budget ${q.gasBudgetEth})`;
     const acct = myAccount();
     const held = (acct?.shielded ?? {})[q.token.symbol] ?? "0";
-    $("brw-account-holds").textContent = `${held} (raw) of ${q.token.symbol}`;
+    $("brw-account-holds").textContent = `${fmt(held, q.token.decimals)} ${q.token.symbol}`;
     const ready = $("brw-ready");
     ready.textContent = q.ready
       ? "ready — the vault's EVM account has the tokens and the gas"
@@ -282,7 +299,7 @@
       const cells = [
         req.requestId.slice(0, 14) + "…",
         req.direction,
-        `${req.amountRaw} raw ${req.symbol}`,
+        `${fmt(req.amountRaw, req.decimals)} ${req.symbol}`,
         req.recipient?.kind === "account"
           ? `account ${String(req.accountId ?? "").slice(0, 12)}…`
           : `wallet ${String(req.recipient?.coinPublicKey ?? "").slice(0, 12)}…`,
@@ -320,7 +337,7 @@
     const tokenSpend = Object.entries(spent.tokens ?? {})
       .map(([sym, raw]) => {
         const t = bridge.tokens.find((x) => x.symbol.toUpperCase() === sym);
-        return `${sym} ${raw} raw${t ? ` (cap ${t.cap.capDecimal})` : ""}`;
+        return t ? `${fmt(raw, t.decimals)} ${sym} of ${t.cap.capDecimal}` : `${sym} ${raw} raw`;
       }).join(" · ");
     $("br-spent").textContent = `bridged so far on this stack: ${tokenSpend || "nothing"}`;
   }
